@@ -16,7 +16,7 @@
 排在普通牌之前，因此碰和杠也必须执行排序。`Meld` 的 API 不会自动改变数组
 顺序。
 
-鸣牌来源使用 `player` 模块中经过范围校验的 `PlayerIndex`。
+鸣牌来源使用 `player_index` 模块中经过范围校验的 `PlayerIndex`。
 
 ## API
 

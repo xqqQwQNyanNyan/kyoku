@@ -1,5 +1,5 @@
 use kyoku::mahjong::meld::Meld;
-use kyoku::mahjong::player::PlayerIndex;
+use kyoku::mahjong::player_index::PlayerIndex;
 use kyoku::mahjong::tile::Tile;
 
 fn tile(value: u8) -> Tile {

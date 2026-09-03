@@ -1,4 +1,4 @@
-use super::player::PlayerIndex;
+use super::player_index::PlayerIndex;
 use super::tile::Tile;
 
 /// 玩家已经组成的面子。
