@@ -21,6 +21,11 @@ pub struct ReplayInspector {
     history: VecDeque<String>,
     global_index: usize,
     kyoku_index: Option<usize>,
+    kyoku_header: Option<String>,
+    kyoku_header_printed: bool,
+    completed_kyokus: usize,
+    ryukyoku_reason: Option<String>,
+    ryukyoku_deltas: Option<[i32; 4]>,
 }
 
 /// 检查器应用事件失败时携带的定位信息。
@@ -48,6 +53,19 @@ impl ReplayInspector {
 
     /// 应用一个事件，并将事件索引及状态变化追加到输出中。
     pub fn apply(&mut self, event: &Event) -> Result<(), Box<ReplayInspectionError>> {
+        self.apply_with_context(event, true, None)
+    }
+
+    /// 应用一个事件，并按需输出其差异。
+    ///
+    /// `visible` 只控制显示；事件始终会进入 [`Replayer`]，也始终会保留在失败诊断的
+    /// 最近事件中。`ryukyoku_reason` 是输入格式携带的可选调试信息，不进入领域状态。
+    pub fn apply_with_context(
+        &mut self,
+        event: &Event,
+        visible: bool,
+        ryukyoku_reason: Option<&str>,
+    ) -> Result<(), Box<ReplayInspectionError>> {
         let is_start_kyoku = matches!(event, Event::StartKyoku { .. });
         let global_index = self.global_index;
         let kyoku_index = if is_start_kyoku {
@@ -55,7 +73,7 @@ impl ReplayInspector {
         } else {
             self.kyoku_index
         };
-        let event_text = format_event(event);
+        let event_text = format_event_with_context(event, ryukyoku_reason);
         let before = self.replayer.state().cloned();
         if let Err(error) = self.replayer.apply(event) {
             return Err(Box::new(ReplayInspectionError {
@@ -73,8 +91,21 @@ impl ReplayInspector {
 
         let after = self.replayer.state().cloned();
         let prefix = format_index(global_index, kyoku_index);
-        if is_start_kyoku && let Some(state) = after.as_ref() {
-            self.append_line(&format_header(state, global_index, kyoku_index));
+        if is_start_kyoku {
+            self.kyoku_header = after
+                .as_ref()
+                .map(|state| format_header(state, global_index, kyoku_index));
+            self.kyoku_header_printed = false;
+            self.ryukyoku_reason = None;
+            self.ryukyoku_deltas = None;
+        }
+        if let Some(reason) = ryukyoku_reason
+            && matches!(event, Event::Ryukyoku { .. })
+        {
+            self.ryukyoku_reason = Some(reason.to_owned());
+        }
+        if let Event::Ryukyoku { deltas } = event {
+            self.ryukyoku_deltas = *deltas;
         }
 
         let changes = format_changes(before.as_ref(), after.as_ref(), event);
@@ -83,11 +114,39 @@ impl ReplayInspector {
             let _ = write!(&mut line, "\n  - {change}");
         }
         if let Some(state) = after.as_ref()
-            && let Some(summary) = format_settlement_summary(event, state)
+            && let Some(summary) = format_settlement_summary(
+                event,
+                state,
+                self.ryukyoku_reason.as_deref(),
+                self.ryukyoku_deltas,
+            )
         {
             let _ = write!(&mut line, "\n  - {summary}");
         }
-        self.append_line(&line);
+        if matches!(event, Event::EndKyoku) {
+            self.completed_kyokus += 1;
+        }
+        if matches!(event, Event::EndGame) {
+            let scores = after
+                .as_ref()
+                .map(|state| format_scores(&state_scores(state)))
+                .unwrap_or_else(|| "<none>".to_owned());
+            let _ = write!(
+                &mut line,
+                "\n  - game_summary kyokus={} final_scores={scores}",
+                self.completed_kyokus
+            );
+        }
+        if visible {
+            if !self.kyoku_header_printed
+                && !matches!(event, Event::StartGame { .. } | Event::EndGame)
+                && let Some(header) = self.kyoku_header.clone()
+            {
+                self.append_line(&header);
+                self.kyoku_header_printed = true;
+            }
+            self.append_line(&line);
+        }
         self.history.push_back(line);
         while self.history.len() > HISTORY_LIMIT {
             self.history.pop_front();
@@ -171,6 +230,10 @@ pub fn format_tile(tile: Tile) -> String {
 
 /// 将一个 MJAI 事件格式化为紧凑的可读文本。
 pub fn format_event(event: &Event) -> String {
+    format_event_with_context(event, None)
+}
+
+fn format_event_with_context(event: &Event, ryukyoku_reason: Option<&str>) -> String {
     match event {
         Event::None => "None".to_owned(),
         Event::StartGame {
@@ -282,9 +345,13 @@ pub fn format_event(event: &Event) -> String {
                 .map(format_convlog_slice)
                 .unwrap_or_else(|| "<none>".to_owned()),
         ),
-        Event::Ryukyoku { deltas } => {
-            format!("Ryukyoku(deltas={})", format_optional_deltas(*deltas))
-        }
+        Event::Ryukyoku { deltas } => match ryukyoku_reason {
+            Some(reason) => format!(
+                "Ryukyoku(reason={reason} deltas={})",
+                format_optional_deltas(*deltas)
+            ),
+            None => format!("Ryukyoku(deltas={})", format_optional_deltas(*deltas)),
+        },
         Event::EndKyoku => "EndKyoku".to_owned(),
         Event::EndGame => "EndGame".to_owned(),
     }
@@ -482,25 +549,59 @@ fn append_player_changes(
     }
 }
 
-fn format_settlement_summary(event: &Event, state: &RoundState) -> Option<String> {
-    let result = match event {
-        Event::Hora { deltas, .. } => Some(("Hora", *deltas)),
-        Event::Ryukyoku { deltas } => Some(("Ryuukyoku", *deltas)),
+fn format_settlement_summary(
+    event: &Event,
+    state: &RoundState,
+    ryukyoku_reason: Option<&str>,
+    ryukyoku_deltas: Option<[i32; 4]>,
+) -> Option<String> {
+    match event {
+        Event::Hora { deltas, .. } => {
+            let accumulated = match state.phase() {
+                RoundPhase::AwaitingEnd(RoundResult::Hora { score_deltas }) => score_deltas,
+                _ => return None,
+            };
+            Some(format!(
+                "result=Hora event_delta={} accumulated_deltas={} scores={}",
+                format_optional_deltas(*deltas),
+                format_scores(&accumulated),
+                format_scores(&state_scores(state))
+            ))
+        }
+        Event::Ryukyoku { deltas } => {
+            let reason = ryukyoku_reason
+                .map(|reason| format!(" reason={reason}"))
+                .unwrap_or_default();
+            Some(format!(
+                "result=Ryuukyoku{reason} event_delta={} scores={}",
+                format_optional_deltas(*deltas),
+                format_scores(&state_scores(state))
+            ))
+        }
         Event::EndKyoku => match state.phase() {
-            RoundPhase::Ended(result) => Some((format_round_result(result), None)),
+            RoundPhase::Ended(RoundResult::Hora { score_deltas }) => Some(format!(
+                "kyoku_summary round={}{} result=Hora accumulated_deltas={} final_scores={}",
+                format_wind(state.round().wind()),
+                state.round().number(),
+                format_scores(&score_deltas),
+                format_scores(&state_scores(state))
+            )),
+            RoundPhase::Ended(RoundResult::Ryukyoku) => {
+                let reason = ryukyoku_reason
+                    .map(|reason| format!(" reason={reason}"))
+                    .unwrap_or_default();
+                Some(format!(
+                    "kyoku_summary round={}{} result=Ryuukyoku{reason} settlement_deltas={} final_scores={}",
+                    format_wind(state.round().wind()),
+                    state.round().number(),
+                    format_optional_deltas(ryukyoku_deltas),
+                    format_scores(&state_scores(state))
+                ))
+            }
             _ => None,
         },
         _ => None,
-    }?;
-    let result_name = result.0.to_owned();
-    let deltas = result
-        .1
-        .map(|deltas| format!(" deltas={}", format_scores(&deltas)))
-        .unwrap_or_default();
-    Some(format!(
-        "result={result_name}{deltas} scores={}",
-        format_scores(&state_scores(state))
-    ))
+    }
 }
 
 fn tile_delta(before: &[Tile], after: &[Tile]) -> (Vec<Tile>, Vec<Tile>) {

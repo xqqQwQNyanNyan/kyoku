@@ -76,14 +76,19 @@ RoundState / PlayerState / Hand
 
 真正的麻将状态和约束留在领域模型里，这样以后无论输入来自天凤、雀魂还是别的格式，上层分析代码都不需要跟着牌谱格式变化。
 
-可以用开发用的 `replay` 二进制检查一份本地 Tenhou 牌谱：
+可以用开发用的 `replay` 二进制检查本地或远程 Tenhou 牌谱：
 
 ```bash
 cargo run --bin replay -- fixtures/tenhou/ranked_game.json
 cargo run --bin replay -- --full-state fixtures/tenhou/rinshan.json
+cargo run --bin replay -- --kyoku E2 --only hora,kan,dora,ryukyoku fixtures/tenhou/ranked_game.json
+cargo run --bin replay -- --from 120 --to 140 fixtures/tenhou/ranked_game.json
+cargo run --bin replay -- --state-at 120 fixtures/tenhou/ranked_game.json
+cargo run --bin replay -- 'https://tenhou.net/0/?log=<log-id>&tw=0'
+cargo run --bin replay -- '<log-id>'
 ```
 
-输入路径使用 `-` 时从标准输入读取。命令默认打印逐事件状态变化；回放失败时会显示事件索引、附近事件和最后一个有效局面。
+输入使用 `-` 时从标准输入读取。`--event`、`--from`、`--to` 和 `--state-at` 使用输出中的零基全局事件编号，范围端点包含在结果内；`--state-at` 捕获指定事件应用后的完整局面。`--kyoku E2` 会包含东二局的所有本场，写成 `E2.1` 时只选择一本场。`--only` 只过滤显示，事件仍会完整进入回放器；局开始、局结束和比赛结束摘要会保留。命令默认打印逐事件状态变化；回放失败时仍会显示事件索引、附近事件和最后一个有效局面。
 
 回放用的 Tenhou JSON 牌谱来自 `convlog` 仓库的 `convlog/tests/testdata`，本地副本放在
 `fixtures/tenhou/`。这些 fixture 被 Git 忽略，不属于项目源码；在新的工作区运行回放

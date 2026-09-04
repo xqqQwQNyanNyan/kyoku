@@ -127,6 +127,51 @@ fn failure_reports_indices_context_and_last_valid_snapshot() {
 }
 
 #[test]
+fn hidden_events_still_replay_and_remain_in_failure_diagnostics() {
+    let mut inspector = ReplayInspector::new();
+    inspector
+        .apply_with_context(&minimal_start_kyoku(), false, None)
+        .unwrap();
+    assert!(inspector.output().is_empty());
+
+    let error = inspector.apply(&Event::EndKyoku).unwrap_err();
+    assert_eq!(error.global_index, 1);
+    assert!(error.preceding_events[0].contains("StartKyoku"));
+    assert!(error.last_valid_state.contains("round=E1"));
+}
+
+#[test]
+fn a_lazily_printed_kyoku_header_uses_the_start_snapshot() {
+    let mut inspector = ReplayInspector::new();
+    inspector
+        .apply_with_context(&minimal_start_kyoku(), false, None)
+        .unwrap();
+    inspector
+        .apply_with_context(
+            &Event::Tsumo {
+                actor: 0,
+                pai: ConvlogTile::try_from(0_u8).unwrap(),
+            },
+            false,
+            None,
+        )
+        .unwrap();
+    inspector
+        .apply_with_context(
+            &Event::Dora {
+                dora_marker: ConvlogTile::try_from(1_u8).unwrap(),
+            },
+            true,
+            None,
+        )
+        .unwrap();
+
+    let header = inspector.output().lines().next().unwrap();
+    assert!(header.contains("[G000 K000]"));
+    assert!(header.contains("dora=[P]"));
+}
+
+#[test]
 fn inspector_reports_headers_deltas_summaries_and_full_state() {
     let mut inspector = ReplayInspector::new();
     inspector.apply(&minimal_start_kyoku()).unwrap();
@@ -160,9 +205,13 @@ fn inspector_reports_headers_deltas_summaries_and_full_state() {
     assert!(output.contains("P0 hand +[1m]"));
     assert!(output.contains("discard +[1m(tsumogiri)]"));
     assert!(
-        output.contains("result=Hora deltas=[1000 -1000 0 0] scores=[26000 24000 25000 25000]")
+        output.contains(
+            "result=Hora event_delta=[1000 -1000 0 0] accumulated_deltas=[1000 -1000 0 0] scores=[26000 24000 25000 25000]"
+        )
     );
-    assert!(output.contains("result=Hora scores=[26000 24000 25000 25000]"));
+    assert!(output.contains(
+        "kyoku_summary round=E1 result=Hora accumulated_deltas=[1000 -1000 0 0] final_scores=[26000 24000 25000 25000]"
+    ));
 
     let snapshot = inspector.full_state();
     assert!(snapshot.contains("P0 score=26000"));
@@ -185,12 +234,78 @@ fn inspector_reports_ryuukyoku_summary() {
     assert!(
         inspector
             .output()
-            .contains("result=Ryuukyoku deltas=[0 0 0 0] scores=[25000 25000 25000 25000]")
+            .contains("result=Ryuukyoku event_delta=[0 0 0 0] scores=[25000 25000 25000 25000]")
     );
+    assert!(inspector.output().contains(
+        "kyoku_summary round=E1 result=Ryuukyoku settlement_deltas=[0 0 0 0] final_scores=[25000 25000 25000 25000]"
+    ));
+}
+
+#[test]
+fn inspector_distinguishes_each_hora_delta_from_the_accumulated_result() {
+    let mut inspector = ReplayInspector::new();
+    inspector.apply(&minimal_start_kyoku()).unwrap();
+    inspector
+        .apply(&Event::Tsumo {
+            actor: 0,
+            pai: ConvlogTile::try_from(0_u8).unwrap(),
+        })
+        .unwrap();
+    inspector
+        .apply(&Event::Hora {
+            actor: 0,
+            target: 1,
+            deltas: Some([8_000, -8_000, 0, 0]),
+            ura_markers: None,
+        })
+        .unwrap();
+    inspector
+        .apply(&Event::Hora {
+            actor: 2,
+            target: 1,
+            deltas: Some([0, -2_000, 2_000, 0]),
+            ura_markers: None,
+        })
+        .unwrap();
+    inspector.apply(&Event::EndKyoku).unwrap();
+
+    let output = inspector.output();
+    assert!(
+        output.contains("event_delta=[0 -2000 2000 0] accumulated_deltas=[8000 -10000 2000 0]")
+    );
+    assert!(
+        output
+            .contains("kyoku_summary round=E1 result=Hora accumulated_deltas=[8000 -10000 2000 0]")
+    );
+}
+
+#[test]
+fn inspector_prints_input_ryuukyoku_reason_without_adding_it_to_domain_state() {
+    let mut inspector = ReplayInspector::new();
+    inspector.apply(&minimal_start_kyoku()).unwrap();
+    inspector
+        .apply_with_context(
+            &Event::Ryukyoku {
+                deltas: Some([0; 4]),
+            },
+            true,
+            Some("四家立直"),
+        )
+        .unwrap();
+    inspector.apply(&Event::EndKyoku).unwrap();
+
+    assert!(inspector.output().contains("Ryukyoku(reason=四家立直"));
     assert!(
         inspector
             .output()
-            .contains("result=Ryuukyoku scores=[25000 25000 25000 25000]")
+            .contains("result=Ryuukyoku reason=四家立直")
+    );
+    assert!(inspector.output().contains(
+        "kyoku_summary round=E1 result=Ryuukyoku reason=四家立直 settlement_deltas=[0 0 0 0]"
+    ));
+    assert_eq!(
+        inspector.state().unwrap().phase(),
+        RoundPhase::Ended(RoundResult::Ryukyoku)
     );
 }
 
