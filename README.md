@@ -76,6 +76,20 @@ RoundState / PlayerState / Hand
 
 真正的麻将状态和约束留在领域模型里，这样以后无论输入来自天凤、雀魂还是别的格式，上层分析代码都不需要跟着牌谱格式变化。
 
+可以用开发用的 `replay` 二进制检查一份本地 Tenhou 牌谱：
+
+```bash
+cargo run --bin replay -- fixtures/tenhou/ranked_game.json
+cargo run --bin replay -- --full-state fixtures/tenhou/rinshan.json
+```
+
+输入路径使用 `-` 时从标准输入读取。命令默认打印逐事件状态变化；回放失败时会显示事件索引、附近事件和最后一个有效局面。
+
+回放用的 Tenhou JSON 牌谱来自 `convlog` 仓库的 `convlog/tests/testdata`，本地副本放在
+`fixtures/tenhou/`。这些 fixture 被 Git 忽略，不属于项目源码；在新的工作区运行回放
+测试前，需要先从对应的 `convlog` checkout 复制这些 JSON 文件到该目录。当前目录中的
+牌谱覆盖双响、流局、抢杠、岭上摸牌、连续杠和复杂鸣牌等状态转移。
+
 ### Mahjong analysis
 
 在可靠的局面状态之上，会逐步实现确定性的麻将分析工具，例如：

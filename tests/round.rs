@@ -21,6 +21,10 @@ fn player(value: u8) -> PlayerIndex {
     PlayerIndex::new(value).expect("test player index must be valid")
 }
 
+fn hora_result(score_deltas: [i32; 4]) -> RoundResult {
+    RoundResult::Hora { score_deltas }
+}
+
 fn players() -> [PlayerState; 4] {
     array::from_fn(|index| {
         let hand = Hand::new(vec![tile(index as u8); 13], vec![]).expect("test hand must be valid");
@@ -112,8 +116,8 @@ fn round_phase_reports_a_player_only_when_the_variant_stores_one() {
         assert_eq!(phase.player(), Some(player));
     }
     assert_eq!(RoundPhase::Initial.player(), None);
-    assert_eq!(RoundPhase::AwaitingEnd(RoundResult::Hora).player(), None);
-    assert_eq!(RoundPhase::Ended(RoundResult::Hora).player(), None);
+    assert_eq!(RoundPhase::AwaitingEnd(hora_result([0; 4])).player(), None);
+    assert_eq!(RoundPhase::Ended(hora_result([0; 4])).player(), None);
 }
 
 #[test]
@@ -274,7 +278,10 @@ fn end_kyoku_confirms_hora_and_ryuukyoku_without_other_mutation() {
 
     let hora_settled = hora.clone();
     hora.end_kyoku().unwrap();
-    assert_eq!(hora.phase(), RoundPhase::Ended(RoundResult::Hora));
+    assert_eq!(
+        hora.phase(),
+        RoundPhase::Ended(hora_result([6_000, -2_000, -2_000, -2_000]))
+    );
     assert_eq!(hora.players(), hora_settled.players());
     assert_eq!(hora.honba(), hora_settled.honba());
     assert_eq!(hora.riichi_sticks(), hora_settled.riichi_sticks());
@@ -315,7 +322,7 @@ fn end_kyoku_rejects_invalid_phases_without_mutation() {
             player: player(0),
             source: DrawSource::Wall,
         },
-        RoundPhase::Ended(RoundResult::Hora),
+        RoundPhase::Ended(hora_result([0; 4])),
     ];
 
     for phase in invalid_phases {
@@ -358,15 +365,21 @@ fn terminal_round_phases_reject_draw_discard_and_dora_without_mutation() {
     );
     state.draw(player(0), tile(10)).unwrap();
     state.hora([6_000, -2_000, -2_000, -2_000]).unwrap();
-    assert_rejected(&mut state, RoundPhase::AwaitingEnd(RoundResult::Hora));
+    assert_rejected(
+        &mut state,
+        RoundPhase::AwaitingEnd(hora_result([6_000, -2_000, -2_000, -2_000])),
+    );
 
     state.end_kyoku().unwrap();
-    assert_rejected(&mut state, RoundPhase::Ended(RoundResult::Hora));
+    assert_rejected(
+        &mut state,
+        RoundPhase::Ended(hora_result([6_000, -2_000, -2_000, -2_000])),
+    );
 }
 
 #[test]
 fn ryuukyoku_rejects_an_ended_round_without_mutation() {
-    let phase = RoundPhase::Ended(RoundResult::Hora);
+    let phase = RoundPhase::Ended(hora_result([0; 4]));
     let mut state = RoundState::new(
         players(),
         RoundId::new(Wind::East, 1).unwrap(),
@@ -434,7 +447,10 @@ fn hora_after_draw_applies_all_score_deltas_and_waits_for_end_kyoku() {
     assert_eq!(state.player(player(1)).score(), 23_001);
     assert_eq!(state.player(player(2)).score(), 23_002);
     assert_eq!(state.player(player(3)).score(), 23_003);
-    assert_eq!(state.phase(), RoundPhase::AwaitingEnd(RoundResult::Hora));
+    assert_eq!(
+        state.phase(),
+        RoundPhase::AwaitingEnd(hora_result([6_000, -2_000, -2_000, -2_000]))
+    );
 }
 
 #[test]
@@ -453,7 +469,10 @@ fn hora_after_discard_waits_for_end_kyoku() {
 
     assert_eq!(state.player(player(0)).score(), 17_000);
     assert_eq!(state.player(player(1)).score(), 33_001);
-    assert_eq!(state.phase(), RoundPhase::AwaitingEnd(RoundResult::Hora));
+    assert_eq!(
+        state.phase(),
+        RoundPhase::AwaitingEnd(hora_result([-8_000, 8_000, 0, 0]))
+    );
 }
 
 #[test]
@@ -474,7 +493,10 @@ fn hora_accepts_aggregated_multi_ron_score_deltas() {
     assert_eq!(state.player(player(1)).score(), 33_001);
     assert_eq!(state.player(player(2)).score(), 29_002);
     assert_eq!(state.player(player(3)).score(), 1_003);
-    assert_eq!(state.phase(), RoundPhase::AwaitingEnd(RoundResult::Hora));
+    assert_eq!(
+        state.phase(),
+        RoundPhase::AwaitingEnd(hora_result([12_000, 8_000, 4_000, -24_000]))
+    );
 }
 
 #[test]
@@ -484,7 +506,7 @@ fn hora_rejects_invalid_phases_without_mutation() {
         RoundPhase::Initial,
         RoundPhase::AfterCall { player: player(1) },
         RoundPhase::AwaitingEnd(RoundResult::Ryukyoku),
-        RoundPhase::Ended(RoundResult::Hora),
+        RoundPhase::Ended(hora_result([0; 4])),
     ];
 
     for phase in invalid_phases {
@@ -552,13 +574,16 @@ fn hora_after_riichi_declaration_discard_does_not_accept_riichi() {
     assert_eq!(state.player(player(1)).score(), 35_001);
     assert_eq!(state.riichi_sticks(), 0);
     assert_eq!(state.honba(), 3);
-    assert_eq!(state.phase(), RoundPhase::AwaitingEnd(RoundResult::Hora));
+    assert_eq!(
+        state.phase(),
+        RoundPhase::AwaitingEnd(hora_result([-8_000, 10_000, 0, 0]))
+    );
 
     let ended = state.clone();
     assert_eq!(
         state.accept_riichi(player(0)),
         Err(RiichiError::InvalidPhase {
-            phase: RoundPhase::AwaitingEnd(RoundResult::Hora),
+            phase: RoundPhase::AwaitingEnd(hora_result([-8_000, 10_000, 0, 0])),
         })
     );
     assert_eq!(state, ended);
@@ -581,7 +606,10 @@ fn hora_after_kakan_declaration_supports_chankan() {
 
     state.hora([-8_000, 8_000, 0, 0]).unwrap();
 
-    assert_eq!(state.phase(), RoundPhase::AwaitingEnd(RoundResult::Hora));
+    assert_eq!(
+        state.phase(),
+        RoundPhase::AwaitingEnd(hora_result([-8_000, 8_000, 0, 0]))
+    );
 }
 
 #[test]
@@ -601,7 +629,10 @@ fn hora_after_ankan_declaration_supports_kokushi_chankan() {
 
     state.hora([-8_000, 8_000, 0, 0]).unwrap();
 
-    assert_eq!(state.phase(), RoundPhase::AwaitingEnd(RoundResult::Hora));
+    assert_eq!(
+        state.phase(),
+        RoundPhase::AwaitingEnd(hora_result([-8_000, 8_000, 0, 0]))
+    );
 }
 
 #[test]

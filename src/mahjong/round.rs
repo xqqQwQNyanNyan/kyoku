@@ -54,8 +54,8 @@ pub enum DrawSource {
 /// 一局结束的原因。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RoundResult {
-    /// 本局因和牌结束。
-    Hora,
+    /// 本局因和牌结束，并记录所有和牌事件的累计点差。
+    Hora { score_deltas: [i32; 4] },
     /// 本局因流局结束。
     Ryukyoku,
 }
@@ -89,7 +89,8 @@ pub enum RoundPhase {
         /// 完成的杠种类。
         kind: KanKind,
     },
-    /// 和牌或流局结算已经完成，等待 [`RoundState::end_kyoku`] 确认本局结束。
+    /// 和牌或流局结算已经完成，等待后续和牌事件或
+    /// [`RoundState::end_kyoku`] 确认本局结束。
     AwaitingEnd(RoundResult),
     /// 本局已经结束，并记录终局原因。
     Ended(RoundResult),
@@ -562,19 +563,44 @@ impl RoundState {
         Ok(())
     }
 
-    /// 应用一次完整的和牌结算，并等待 `end_kyoku` 确认本局结束。
+    /// 应用一次和牌结算，并等待 `end_kyoku` 确认本局结束。
+    ///
+    /// 双响或三响会产生连续的和牌事件；后续事件会在等待结束阶段继续
+    /// 累加结算点差。
     pub fn hora(&mut self, score_deltas: [i32; 4]) -> Result<(), HoraError> {
-        if !matches!(
+        let additional_hora = matches!(
             self.phase,
+            RoundPhase::AwaitingEnd(RoundResult::Hora { .. })
+        );
+        let accumulated_deltas = match self.phase {
             RoundPhase::AfterDraw { .. }
-                | RoundPhase::AfterDiscard { .. }
-                | RoundPhase::AfterKanDeclaration {
-                    kind: KanKind::Kakan | KanKind::Ankan,
-                    ..
+            | RoundPhase::AfterDiscard { .. }
+            | RoundPhase::AfterKanDeclaration {
+                kind: KanKind::Kakan | KanKind::Ankan,
+                ..
+            } => score_deltas,
+            RoundPhase::AwaitingEnd(RoundResult::Hora {
+                score_deltas: accumulated,
+            }) => {
+                let mut total = accumulated;
+                for (player, (total_delta, delta)) in total.iter_mut().zip(score_deltas).enumerate()
+                {
+                    *total_delta =
+                        total_delta
+                            .checked_add(delta)
+                            .ok_or_else(|| HoraError::Score {
+                                player: PlayerIndex::new(player as u8)
+                                    .expect("player array index is always valid"),
+                                error: ScoreMutationError::Overflow {
+                                    score: *total_delta,
+                                    delta,
+                                },
+                            })?;
                 }
-        ) {
-            return Err(HoraError::InvalidPhase { phase: self.phase });
-        }
+                total
+            }
+            _ => return Err(HoraError::InvalidPhase { phase: self.phase }),
+        };
 
         let mut players = self.players.clone();
         for (index, (player_state, delta)) in players.iter_mut().zip(score_deltas).enumerate() {
@@ -585,8 +611,12 @@ impl RoundState {
         }
 
         self.players = players;
-        self.riichi_sticks = 0;
-        self.phase = RoundPhase::AwaitingEnd(RoundResult::Hora);
+        if !additional_hora {
+            self.riichi_sticks = 0;
+        }
+        self.phase = RoundPhase::AwaitingEnd(RoundResult::Hora {
+            score_deltas: accumulated_deltas,
+        });
         Ok(())
     }
 

@@ -24,6 +24,10 @@ fn player(value: u8) -> PlayerIndex {
     PlayerIndex::new(value).expect("test player index must be valid")
 }
 
+fn hora_result(score_deltas: [i32; 4]) -> RoundResult {
+    RoundResult::Hora { score_deltas }
+}
+
 fn start_kyoku(kyoku: u8) -> Event {
     Event::StartKyoku {
         bakaze: mjai_tile(27),
@@ -192,12 +196,15 @@ fn hora_applies_deltas_through_the_domain_and_waits_for_end_kyoku() {
     assert_eq!(state.player(player(2)).score(), 24_000);
     assert_eq!(state.player(player(3)).score(), 23_000);
     assert_eq!(state.riichi_sticks(), 0);
-    assert_eq!(state.phase(), RoundPhase::AwaitingEnd(RoundResult::Hora));
+    assert_eq!(
+        state.phase(),
+        RoundPhase::AwaitingEnd(hora_result([6_000, -2_000, -2_000, -2_000]))
+    );
 
     replayer.apply(&Event::EndKyoku).unwrap();
     assert_eq!(
         replayer.state().unwrap().phase(),
-        RoundPhase::Ended(RoundResult::Hora)
+        RoundPhase::Ended(hora_result([6_000, -2_000, -2_000, -2_000]))
     );
 }
 
