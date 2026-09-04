@@ -2,7 +2,7 @@ use std::error::Error;
 use std::fmt;
 
 use super::hand::HandMutationError;
-use super::player::{DiscardCallError, PlayerState};
+use super::player::{DiscardCallError, PlayerRiichiError, PlayerState, RiichiState};
 use super::player_index::PlayerIndex;
 use super::tile::Tile;
 
@@ -101,6 +101,27 @@ pub enum DrawError {
     NoRemainingDraws,
     /// 玩家手牌无法接受这张牌。
     Hand(HandMutationError),
+}
+
+/// 立直事件无法应用到当前局面的原因。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RiichiError {
+    /// 当前阶段不接受该立直事件。
+    InvalidPhase { phase: RoundPhase },
+    /// 立直事件的玩家与当前阶段中的玩家不一致。
+    WrongActor {
+        expected: PlayerIndex,
+        actual: PlayerIndex,
+    },
+    /// 玩家尚未打出立直宣言牌。
+    DeclarationDiscardMissing { player: PlayerIndex },
+    /// 玩家状态不能完成请求的立直转换。
+    Player {
+        player: PlayerIndex,
+        error: PlayerRiichiError,
+    },
+    /// 场上的立直棒数量已经无法再增加。
+    TooManySticks,
 }
 
 /// 吃、碰或杠事件无法应用到当前局面的原因。
@@ -256,6 +277,55 @@ impl RoundState {
         self.dora_indicators.push(marker);
     }
 
+    /// 记录一名玩家的立直宣告，不改变点数、立直棒或当前阶段。
+    pub fn declare_riichi(&mut self, player: PlayerIndex) -> Result<(), RiichiError> {
+        let RoundPhase::AfterDraw {
+            player: expected, ..
+        } = self.phase
+        else {
+            return Err(RiichiError::InvalidPhase { phase: self.phase });
+        };
+        if player != expected {
+            return Err(RiichiError::WrongActor {
+                expected,
+                actual: player,
+            });
+        }
+        self.player_mut(player)
+            .declare_riichi()
+            .map_err(|error| RiichiError::Player { player, error })
+    }
+
+    /// 接受一名玩家此前的立直宣告，原子地更新点数和立直棒。
+    pub fn accept_riichi(&mut self, player: PlayerIndex) -> Result<(), RiichiError> {
+        let RoundPhase::AfterDiscard { player: expected } = self.phase else {
+            return Err(RiichiError::InvalidPhase { phase: self.phase });
+        };
+        if player != expected {
+            return Err(RiichiError::WrongActor {
+                expected,
+                actual: player,
+            });
+        }
+        if !self
+            .player(player)
+            .discards()
+            .last()
+            .is_some_and(|discard| discard.is_riichi())
+        {
+            return Err(RiichiError::DeclarationDiscardMissing { player });
+        }
+        let riichi_sticks = self
+            .riichi_sticks
+            .checked_add(1)
+            .ok_or(RiichiError::TooManySticks)?;
+        self.player_mut(player)
+            .accept_riichi()
+            .map_err(|error| RiichiError::Player { player, error })?;
+        self.riichi_sticks = riichi_sticks;
+        Ok(())
+    }
+
     /// 将一名玩家的打牌应用到当前局面。
     pub fn discard(
         &mut self,
@@ -263,7 +333,20 @@ impl RoundState {
         tile: Tile,
         tsumogiri: bool,
     ) -> Result<(), HandMutationError> {
-        self.player_mut(player).discard(tile, tsumogiri)?;
+        let player_state = self.player(player);
+        let is_riichi = matches!(
+            self.phase,
+            RoundPhase::AfterDraw {
+                player: phase_player,
+                ..
+            } if phase_player == player
+        ) && player_state.riichi() == RiichiState::Declared
+            && !player_state
+                .discards()
+                .iter()
+                .any(|discard| discard.is_riichi());
+        self.player_mut(player)
+            .discard_with_riichi(tile, tsumogiri, is_riichi)?;
         self.phase = RoundPhase::AfterDiscard { player };
         Ok(())
     }
@@ -497,6 +580,41 @@ impl Error for DrawError {
         match self {
             Self::NoRemainingDraws => None,
             Self::Hand(error) => Some(error),
+        }
+    }
+}
+
+impl fmt::Display for RiichiError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidPhase { phase } => {
+                write!(formatter, "cannot apply riichi event in phase {phase:?}")
+            }
+            Self::WrongActor { expected, actual } => write!(
+                formatter,
+                "riichi event belongs to player {}, but expected player {}",
+                actual.get_id(),
+                expected.get_id()
+            ),
+            Self::DeclarationDiscardMissing { player } => write!(
+                formatter,
+                "player {} has not made a riichi declaration discard",
+                player.get_id()
+            ),
+            Self::Player { error, .. } => error.fmt(formatter),
+            Self::TooManySticks => formatter.write_str("riichi stick count cannot be incremented"),
+        }
+    }
+}
+
+impl Error for RiichiError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Player { error, .. } => Some(error),
+            Self::InvalidPhase { .. }
+            | Self::WrongActor { .. }
+            | Self::DeclarationDiscardMissing { .. }
+            | Self::TooManySticks => None,
         }
     }
 }

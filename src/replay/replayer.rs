@@ -6,7 +6,7 @@ use convlog::Event;
 use crate::mahjong::hand::{Hand, HandMutationError};
 use crate::mahjong::player::PlayerState;
 use crate::mahjong::player_index::PlayerIndex;
-use crate::mahjong::round::{CallError, DrawError, RoundId, RoundState, Wind};
+use crate::mahjong::round::{CallError, DrawError, RiichiError, RoundId, RoundState, Wind};
 use crate::mahjong::tile::Tile;
 
 /// 按顺序消费 mjai 事件并重建当前局面状态。
@@ -41,6 +41,8 @@ pub enum ReplayError {
     NoRemainingDraws,
     /// 吃、碰或杠事件违反当前局面的领域规则。
     Call(CallError),
+    /// 立直事件违反当前局面的领域规则。
+    Riichi(RiichiError),
 }
 
 impl Replayer {
@@ -101,6 +103,8 @@ impl Replayer {
                 consumed,
             } => self.kakan(*actor, *pai, *consumed),
             Event::Dora { dora_marker } => self.reveal_dora(*dora_marker),
+            Event::Reach { actor } => self.declare_riichi(*actor),
+            Event::ReachAccepted { actor } => self.accept_riichi(*actor),
             _ => Err(ReplayError::UnsupportedEvent),
         }
     }
@@ -254,6 +258,24 @@ impl Replayer {
             .reveal_dora(marker);
         Ok(())
     }
+
+    fn declare_riichi(&mut self, actor: u8) -> Result<(), ReplayError> {
+        let actor = convert_player(actor)?;
+        self.state
+            .as_mut()
+            .ok_or(ReplayError::NoRound)?
+            .declare_riichi(actor)
+            .map_err(ReplayError::Riichi)
+    }
+
+    fn accept_riichi(&mut self, actor: u8) -> Result<(), ReplayError> {
+        let actor = convert_player(actor)?;
+        self.state
+            .as_mut()
+            .ok_or(ReplayError::NoRound)?
+            .accept_riichi(actor)
+            .map_err(ReplayError::Riichi)
+    }
 }
 
 impl fmt::Display for ReplayError {
@@ -290,6 +312,7 @@ impl fmt::Display for ReplayError {
             ),
             Self::NoRemainingDraws => formatter.write_str("no draws remain"),
             Self::Call(error) => error.fmt(formatter),
+            Self::Riichi(error) => error.fmt(formatter),
         }
     }
 }
@@ -298,6 +321,7 @@ impl Error for ReplayError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Call(error) => Some(error),
+            Self::Riichi(error) => Some(error),
             _ => None,
         }
     }

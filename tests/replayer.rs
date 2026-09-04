@@ -3,8 +3,9 @@ use std::array;
 use convlog::Event;
 use kyoku::mahjong::hand::HandMutationError;
 use kyoku::mahjong::meld::Meld;
+use kyoku::mahjong::player::RiichiState;
 use kyoku::mahjong::player_index::PlayerIndex;
-use kyoku::mahjong::round::{CallError, DrawSource, KanKind, RoundPhase, Wind};
+use kyoku::mahjong::round::{CallError, DrawSource, KanKind, RiichiError, RoundPhase, Wind};
 use kyoku::mahjong::tile::Tile;
 use kyoku::replay::replayer::{ReplayError, Replayer};
 
@@ -125,6 +126,103 @@ fn draw_and_discard_reconstruct_the_current_state() {
     let discard = after_discard.player(player(0)).discards()[0];
     assert_eq!(discard.tile(), tile(20));
     assert!(discard.is_tsumogiri());
+    assert!(!discard.is_riichi());
+}
+
+#[test]
+fn reach_events_replay_the_pending_discard_and_acceptance_separately() {
+    let mut replayer = Replayer::new();
+    replayer
+        .apply(&start_kyoku_with_hands([[9; 13]; 4]))
+        .unwrap();
+    replayer
+        .apply(&Event::Tsumo {
+            actor: 0,
+            pai: mjai_tile(20),
+        })
+        .unwrap();
+    let phase = replayer.state().unwrap().phase();
+
+    replayer.apply(&Event::Reach { actor: 0 }).unwrap();
+    let declared = replayer.state().unwrap();
+    assert_eq!(declared.player(player(0)).riichi(), RiichiState::Declared);
+    assert_eq!(declared.player(player(0)).score(), 25_000);
+    assert_eq!(declared.riichi_sticks(), 0);
+    assert_eq!(declared.phase(), phase);
+
+    replayer
+        .apply(&Event::Dahai {
+            actor: 0,
+            pai: mjai_tile(20),
+            tsumogiri: true,
+        })
+        .unwrap();
+    let discarded = replayer.state().unwrap();
+    assert!(discarded.player(player(0)).discards()[0].is_riichi());
+    assert_eq!(discarded.player(player(0)).riichi(), RiichiState::Declared);
+    assert_eq!(discarded.player(player(0)).score(), 25_000);
+    assert_eq!(discarded.riichi_sticks(), 0);
+
+    replayer.apply(&Event::ReachAccepted { actor: 0 }).unwrap();
+    let accepted = replayer.state().unwrap();
+    assert_eq!(accepted.player(player(0)).riichi(), RiichiState::Accepted);
+    assert_eq!(accepted.player(player(0)).score(), 24_000);
+    assert_eq!(accepted.riichi_sticks(), 1);
+}
+
+#[test]
+fn reach_discard_without_acceptance_keeps_the_payment_pending() {
+    let mut replayer = Replayer::new();
+    replayer
+        .apply(&start_kyoku_with_hands([[9; 13]; 4]))
+        .unwrap();
+    replayer
+        .apply(&Event::Tsumo {
+            actor: 0,
+            pai: mjai_tile(20),
+        })
+        .unwrap();
+    replayer.apply(&Event::Reach { actor: 0 }).unwrap();
+    replayer
+        .apply(&Event::Dahai {
+            actor: 0,
+            pai: mjai_tile(20),
+            tsumogiri: true,
+        })
+        .unwrap();
+
+    let state = replayer.state().unwrap();
+    assert!(state.player(player(0)).discards()[0].is_riichi());
+    assert_eq!(state.player(player(0)).riichi(), RiichiState::Declared);
+    assert_eq!(state.player(player(0)).score(), 25_000);
+    assert_eq!(state.riichi_sticks(), 0);
+}
+
+#[test]
+fn invalid_reach_transition_is_reported_by_the_domain() {
+    let mut replayer = Replayer::new();
+    replayer
+        .apply(&start_kyoku_with_hands([[9; 13]; 4]))
+        .unwrap();
+    replayer
+        .apply(&Event::Tsumo {
+            actor: 0,
+            pai: mjai_tile(20),
+        })
+        .unwrap();
+    replayer.apply(&Event::Reach { actor: 0 }).unwrap();
+    let original = replayer.state().unwrap().clone();
+
+    assert_eq!(
+        replayer.apply(&Event::ReachAccepted { actor: 0 }),
+        Err(ReplayError::Riichi(RiichiError::InvalidPhase {
+            phase: RoundPhase::AfterDraw {
+                player: player(0),
+                source: DrawSource::Wall,
+            },
+        }))
+    );
+    assert_eq!(replayer.state(), Some(&original));
 }
 
 #[test]
@@ -175,7 +273,7 @@ fn events_without_a_round_and_unsupported_events_are_reported() {
 
     replayer.apply(&start_kyoku(1)).unwrap();
     assert_eq!(
-        replayer.apply(&Event::Reach { actor: 0 }),
+        replayer.apply(&Event::None),
         Err(ReplayError::UnsupportedEvent)
     );
 }

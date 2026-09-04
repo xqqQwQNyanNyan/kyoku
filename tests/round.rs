@@ -3,10 +3,12 @@ use std::array;
 use kyoku::mahjong::hand::Hand;
 use kyoku::mahjong::hand::HandMutationError;
 use kyoku::mahjong::meld::Meld;
-use kyoku::mahjong::player::{Discard, DiscardCallError, PlayerState};
+use kyoku::mahjong::player::{
+    Discard, DiscardCallError, PlayerRiichiError, PlayerState, RiichiState,
+};
 use kyoku::mahjong::player_index::PlayerIndex;
 use kyoku::mahjong::round::{
-    CallError, DrawError, DrawSource, KanKind, RoundId, RoundPhase, RoundState, Wind,
+    CallError, DrawError, DrawSource, KanKind, RiichiError, RoundId, RoundPhase, RoundState, Wind,
 };
 use kyoku::mahjong::tile::Tile;
 
@@ -184,6 +186,157 @@ fn draw_with_an_empty_wall_leaves_the_round_unchanged() {
     let error = state.draw(player(0), tile(10)).unwrap_err();
 
     assert_eq!(error, DrawError::NoRemainingDraws);
+    assert_eq!(state, original);
+}
+
+#[test]
+fn riichi_declaration_and_acceptance_update_the_round_at_distinct_steps() {
+    let round = RoundId::new(Wind::East, 1).unwrap();
+    let mut state = RoundState::start(players(), round, 0, 2, tile(31));
+    state.draw(player(0), tile(10)).unwrap();
+    let phase = state.phase();
+
+    state.declare_riichi(player(0)).unwrap();
+    assert_eq!(state.player(player(0)).riichi(), RiichiState::Declared);
+    assert_eq!(state.player(player(0)).score(), 25_000);
+    assert_eq!(state.riichi_sticks(), 2);
+    assert_eq!(state.phase(), phase);
+
+    state.discard(player(0), tile(10), true).unwrap();
+    assert!(state.player(player(0)).discards()[0].is_riichi());
+    assert_eq!(state.player(player(0)).riichi(), RiichiState::Declared);
+    assert_eq!(state.player(player(0)).score(), 25_000);
+    assert_eq!(state.riichi_sticks(), 2);
+
+    let phase = state.phase();
+    state.accept_riichi(player(0)).unwrap();
+    assert_eq!(state.player(player(0)).riichi(), RiichiState::Accepted);
+    assert_eq!(state.player(player(0)).score(), 24_000);
+    assert_eq!(state.riichi_sticks(), 3);
+    assert_eq!(state.phase(), phase);
+}
+
+#[test]
+fn riichi_requires_1000_points_without_changing_the_round_on_failure() {
+    let mut round_players = players();
+    round_players[0] = PlayerState::new(Hand::new(vec![tile(0); 13], vec![]).unwrap(), 999, vec![]);
+    let mut state = RoundState::start(
+        round_players,
+        RoundId::new(Wind::East, 1).unwrap(),
+        0,
+        0,
+        tile(31),
+    );
+    state.draw(player(0), tile(10)).unwrap();
+    let original = state.clone();
+
+    assert_eq!(
+        state.declare_riichi(player(0)),
+        Err(RiichiError::Player {
+            player: player(0),
+            error: PlayerRiichiError::InsufficientPoints { score: 999 },
+        })
+    );
+    assert_eq!(state, original);
+}
+
+#[test]
+fn riichi_acceptance_requires_the_declaration_discard() {
+    let round = RoundId::new(Wind::East, 1).unwrap();
+    let mut state = RoundState::start(players(), round, 0, 0, tile(31));
+    state.draw(player(0), tile(10)).unwrap();
+    state.declare_riichi(player(0)).unwrap();
+    let declared = state.clone();
+
+    assert_eq!(
+        state.accept_riichi(player(0)),
+        Err(RiichiError::InvalidPhase {
+            phase: RoundPhase::AfterDraw {
+                player: player(0),
+                source: DrawSource::Wall,
+            },
+        })
+    );
+    assert_eq!(state, declared);
+
+    state.discard(player(0), tile(10), true).unwrap();
+    state.accept_riichi(player(0)).unwrap();
+    let accepted = state.clone();
+    assert_eq!(
+        state.accept_riichi(player(0)),
+        Err(RiichiError::Player {
+            player: player(0),
+            error: PlayerRiichiError::InvalidAcceptance {
+                state: RiichiState::Accepted,
+            },
+        })
+    );
+    assert_eq!(state, accepted);
+}
+
+#[test]
+fn riichi_declaration_discard_is_marked_only_once() {
+    let round = RoundId::new(Wind::East, 1).unwrap();
+    let mut state = RoundState::start(players(), round, 0, 0, tile(31));
+    state.draw(player(0), tile(10)).unwrap();
+    state.declare_riichi(player(0)).unwrap();
+    state.discard(player(0), tile(10), true).unwrap();
+
+    state.draw(player(0), tile(11)).unwrap();
+    state.discard(player(0), tile(11), true).unwrap();
+
+    let discards = state.player(player(0)).discards();
+    assert!(discards[0].is_riichi());
+    assert!(!discards[1].is_riichi());
+}
+
+#[test]
+fn called_riichi_declaration_discard_keeps_both_flags() {
+    let mut round_players = players();
+    round_players[2] = PlayerState::new(
+        Hand::new([vec![tile(10); 2], vec![tile(9); 11]].concat(), vec![]).unwrap(),
+        25_000,
+        vec![],
+    );
+    let mut state = RoundState::start(
+        round_players,
+        RoundId::new(Wind::East, 1).unwrap(),
+        0,
+        0,
+        tile(31),
+    );
+    state.draw(player(0), tile(10)).unwrap();
+    state.declare_riichi(player(0)).unwrap();
+    state.discard(player(0), tile(10), true).unwrap();
+    state.accept_riichi(player(0)).unwrap();
+
+    state
+        .pon(player(2), player(0), tile(10), [tile(10); 2])
+        .unwrap();
+
+    let declaration = state.player(player(0)).discards()[0];
+    assert!(declaration.is_riichi());
+    assert!(declaration.is_called());
+}
+
+#[test]
+fn failed_riichi_acceptance_does_not_partially_mutate_the_round() {
+    let mut state = RoundState::start(
+        players(),
+        RoundId::new(Wind::East, 1).unwrap(),
+        0,
+        u8::MAX,
+        tile(31),
+    );
+    state.draw(player(0), tile(10)).unwrap();
+    state.declare_riichi(player(0)).unwrap();
+    state.discard(player(0), tile(10), true).unwrap();
+    let original = state.clone();
+
+    assert_eq!(
+        state.accept_riichi(player(0)),
+        Err(RiichiError::TooManySticks)
+    );
     assert_eq!(state, original);
 }
 
