@@ -89,6 +89,8 @@ pub enum RoundPhase {
         /// 完成的杠种类。
         kind: KanKind,
     },
+    /// 和牌或流局结算已经完成，等待 [`RoundState::end_kyoku`] 确认本局结束。
+    AwaitingEnd(RoundResult),
     /// 本局已经结束，并记录终局原因。
     Ended(RoundResult),
 }
@@ -108,10 +110,35 @@ pub struct RoundState {
 /// 摸牌无法应用到当前局面的原因。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DrawError {
+    /// 当前阶段不接受摸牌。
+    InvalidPhase { phase: RoundPhase },
     /// 牌山中已经没有可摸牌。
     NoRemainingDraws,
     /// 玩家手牌无法接受这张牌。
     Hand(HandMutationError),
+}
+
+/// 打牌无法应用到当前局面的原因。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiscardError {
+    /// 当前阶段不接受打牌。
+    InvalidPhase { phase: RoundPhase },
+    /// 玩家的手牌无法完成打牌。
+    Hand(HandMutationError),
+}
+
+/// 宝牌指示牌事件无法应用到当前局面的原因。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DoraError {
+    /// 当前阶段不接受新的宝牌指示牌。
+    InvalidPhase { phase: RoundPhase },
+}
+
+/// 结束一局无法完成的原因。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EndKyokuError {
+    /// 当前阶段尚未完成和牌或流局结算。
+    InvalidPhase { phase: RoundPhase },
 }
 
 /// 和牌终局结算无法应用到当前局面的原因。
@@ -129,7 +156,7 @@ pub enum HoraError {
 /// 流局结算无法应用到当前局面的原因。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RyuukyokuError {
-    /// 本局已经结束。
+    /// 当前阶段不接受流局结算。
     InvalidPhase { phase: RoundPhase },
     /// 一名玩家的点数无法应用结算点差。
     Score {
@@ -234,8 +261,12 @@ impl RoundPhase {
             Self::AfterDraw { player, .. } => Some(player),
             Self::AfterKanDeclaration { player, .. } => Some(player),
             Self::AfterDiscard { player } | Self::AfterCall { player } => Some(player),
-            Self::Initial | Self::Ended(_) => None,
+            Self::Initial | Self::AwaitingEnd(_) | Self::Ended(_) => None,
         }
+    }
+
+    const fn is_terminal(self) -> bool {
+        matches!(self, Self::AwaitingEnd(_) | Self::Ended(_))
     }
 }
 
@@ -287,6 +318,9 @@ impl RoundState {
 
     /// 将一名玩家的摸牌应用到当前局面。
     pub fn draw(&mut self, actor: PlayerIndex, tile: Tile) -> Result<(), DrawError> {
+        if self.phase.is_terminal() {
+            return Err(DrawError::InvalidPhase { phase: self.phase });
+        }
         if self.remaining_draws == 0 {
             return Err(DrawError::NoRemainingDraws);
         }
@@ -308,8 +342,12 @@ impl RoundState {
     }
 
     /// 追加一张新翻开的宝牌指示牌，不改变当前阶段。
-    pub fn reveal_dora(&mut self, marker: Tile) {
+    pub fn reveal_dora(&mut self, marker: Tile) -> Result<(), DoraError> {
+        if self.phase.is_terminal() {
+            return Err(DoraError::InvalidPhase { phase: self.phase });
+        }
         self.dora_indicators.push(marker);
+        Ok(())
     }
 
     /// 记录一名玩家的立直宣告，不改变点数、立直棒或当前阶段。
@@ -367,7 +405,10 @@ impl RoundState {
         player: PlayerIndex,
         tile: Tile,
         tsumogiri: bool,
-    ) -> Result<(), HandMutationError> {
+    ) -> Result<(), DiscardError> {
+        if self.phase.is_terminal() {
+            return Err(DiscardError::InvalidPhase { phase: self.phase });
+        }
         let player_state = self.player(player);
         let is_riichi = matches!(
             self.phase,
@@ -381,7 +422,8 @@ impl RoundState {
                 .iter()
                 .any(|discard| discard.is_riichi());
         self.player_mut(player)
-            .discard_with_riichi(tile, tsumogiri, is_riichi)?;
+            .discard_with_riichi(tile, tsumogiri, is_riichi)
+            .map_err(DiscardError::Hand)?;
         self.phase = RoundPhase::AfterDiscard { player };
         Ok(())
     }
@@ -520,7 +562,7 @@ impl RoundState {
         Ok(())
     }
 
-    /// 应用一次完整的和牌终局结算，并结束本局。
+    /// 应用一次完整的和牌结算，并等待 `end_kyoku` 确认本局结束。
     pub fn hora(&mut self, score_deltas: [i32; 4]) -> Result<(), HoraError> {
         if !matches!(
             self.phase,
@@ -544,13 +586,13 @@ impl RoundState {
 
         self.players = players;
         self.riichi_sticks = 0;
-        self.phase = RoundPhase::Ended(RoundResult::Hora);
+        self.phase = RoundPhase::AwaitingEnd(RoundResult::Hora);
         Ok(())
     }
 
-    /// 应用一次流局结算，并结束本局。
+    /// 应用一次流局结算，并等待 `end_kyoku` 确认本局结束。
     pub fn ryuukyoku(&mut self, score_deltas: [i32; 4]) -> Result<(), RyuukyokuError> {
-        if matches!(self.phase, RoundPhase::Ended(_)) {
+        if self.phase.is_terminal() {
             return Err(RyuukyokuError::InvalidPhase { phase: self.phase });
         }
 
@@ -563,7 +605,20 @@ impl RoundState {
         }
 
         self.players = players;
-        self.phase = RoundPhase::Ended(RoundResult::Ryukyoku);
+        self.phase = RoundPhase::AwaitingEnd(RoundResult::Ryukyoku);
+        Ok(())
+    }
+
+    /// 确认已经完成结算的一局结束。
+    ///
+    /// 只有 [`RoundPhase::AwaitingEnd`] 可以完成这一转换。成功后阶段变为
+    /// [`RoundPhase::Ended`]，其中保留此前记录的 [`RoundResult`]。该操作不负责
+    /// 结算，也不会修改点数、手牌、牌河、宝牌指示牌或剩余摸牌数。
+    pub fn end_kyoku(&mut self) -> Result<(), EndKyokuError> {
+        let RoundPhase::AwaitingEnd(result) = self.phase else {
+            return Err(EndKyokuError::InvalidPhase { phase: self.phase });
+        };
+        self.phase = RoundPhase::Ended(result);
         Ok(())
     }
 
@@ -651,6 +706,9 @@ impl RoundState {
 impl fmt::Display for DrawError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidPhase { phase } => {
+                write!(formatter, "cannot draw in phase {phase:?}")
+            }
             Self::NoRemainingDraws => formatter.write_str("no draws remain"),
             Self::Hand(error) => error.fmt(formatter),
         }
@@ -660,11 +718,55 @@ impl fmt::Display for DrawError {
 impl Error for DrawError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::NoRemainingDraws => None,
+            Self::InvalidPhase { .. } | Self::NoRemainingDraws => None,
             Self::Hand(error) => Some(error),
         }
     }
 }
+
+impl fmt::Display for DiscardError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidPhase { phase } => {
+                write!(formatter, "cannot discard in phase {phase:?}")
+            }
+            Self::Hand(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl Error for DiscardError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::InvalidPhase { .. } => None,
+            Self::Hand(error) => Some(error),
+        }
+    }
+}
+
+impl fmt::Display for DoraError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidPhase { phase } => {
+                write!(formatter, "cannot reveal dora in phase {phase:?}")
+            }
+        }
+    }
+}
+
+impl Error for DoraError {}
+
+impl fmt::Display for EndKyokuError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidPhase { phase } => {
+                write!(formatter, "cannot end round in phase {phase:?}")
+            }
+        }
+    }
+}
+
+impl Error for EndKyokuError {}
 
 impl fmt::Display for HoraError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {

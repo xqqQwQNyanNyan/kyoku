@@ -6,7 +6,8 @@ use kyoku::mahjong::meld::Meld;
 use kyoku::mahjong::player::RiichiState;
 use kyoku::mahjong::player_index::PlayerIndex;
 use kyoku::mahjong::round::{
-    CallError, DrawSource, KanKind, RiichiError, RoundPhase, RoundResult, Wind,
+    CallError, DrawError, DrawSource, EndKyokuError, KanKind, RiichiError, RoundPhase, RoundResult,
+    Wind,
 };
 use kyoku::mahjong::tile::Tile;
 use kyoku::replay::replayer::{ReplayError, Replayer};
@@ -146,14 +147,23 @@ fn ryukyoku_applies_deltas_and_end_kyoku_confirms_the_ended_round() {
     assert_eq!(state.player(player(1)).score(), 27_000);
     assert_eq!(state.player(player(2)).score(), 25_000);
     assert_eq!(state.player(player(3)).score(), 24_000);
-    assert_eq!(state.phase(), RoundPhase::Ended(RoundResult::Ryukyoku));
+    assert_eq!(
+        state.phase(),
+        RoundPhase::AwaitingEnd(RoundResult::Ryukyoku)
+    );
     assert_eq!(state.honba(), 2);
     assert_eq!(state.riichi_sticks(), 1);
     assert_eq!(state.remaining_draws(), 70);
 
-    let ended = state.clone();
+    let settled = state.clone();
     replayer.apply(&Event::EndKyoku).unwrap();
-    assert_eq!(replayer.state(), Some(&ended));
+    let ended = replayer.state().unwrap();
+    assert_eq!(ended.phase(), RoundPhase::Ended(RoundResult::Ryukyoku));
+    assert_eq!(ended.players(), settled.players());
+    assert_eq!(ended.honba(), settled.honba());
+    assert_eq!(ended.riichi_sticks(), settled.riichi_sticks());
+    assert_eq!(ended.remaining_draws(), settled.remaining_draws());
+    assert_eq!(ended.dora_indicators(), settled.dora_indicators());
 }
 
 #[test]
@@ -169,9 +179,9 @@ fn ryukyoku_without_deltas_fails_without_mutation() {
     assert_eq!(replayer.state(), Some(&original));
     assert_eq!(
         replayer.apply(&Event::EndKyoku),
-        Err(ReplayError::RoundNotEnded {
-            phase: RoundPhase::Initial,
-        })
+        Err(ReplayError::EndKyoku(EndKyokuError::InvalidPhase {
+            phase: RoundPhase::Initial
+        }))
     );
     assert_eq!(replayer.state(), Some(&original));
 }
@@ -184,11 +194,38 @@ fn end_kyoku_rejects_a_round_that_has_not_ended() {
 
     assert_eq!(
         replayer.apply(&Event::EndKyoku),
-        Err(ReplayError::RoundNotEnded {
-            phase: RoundPhase::Initial,
-        })
+        Err(ReplayError::EndKyoku(EndKyokuError::InvalidPhase {
+            phase: RoundPhase::Initial
+        }))
     );
     assert_eq!(replayer.state(), Some(&original));
+}
+
+#[test]
+fn end_kyoku_is_not_idempotent_and_ended_round_rejects_game_events() {
+    let mut replayer = Replayer::new();
+    replayer.apply(&start_kyoku(1)).unwrap();
+    replayer
+        .apply(&Event::Ryukyoku {
+            deltas: Some([0; 4]),
+        })
+        .unwrap();
+    replayer.apply(&Event::EndKyoku).unwrap();
+    let phase = RoundPhase::Ended(RoundResult::Ryukyoku);
+    let ended = replayer.state().unwrap().clone();
+
+    assert_eq!(
+        replayer.apply(&Event::EndKyoku),
+        Err(ReplayError::EndKyoku(EndKyokuError::InvalidPhase { phase }))
+    );
+    assert_eq!(
+        replayer.apply(&Event::Tsumo {
+            actor: 0,
+            pai: mjai_tile(20),
+        }),
+        Err(ReplayError::Draw(DrawError::InvalidPhase { phase }))
+    );
+    assert_eq!(replayer.state(), Some(&ended));
 }
 
 #[test]

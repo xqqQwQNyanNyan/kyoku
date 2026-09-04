@@ -7,7 +7,8 @@ use crate::mahjong::hand::{Hand, HandMutationError};
 use crate::mahjong::player::PlayerState;
 use crate::mahjong::player_index::PlayerIndex;
 use crate::mahjong::round::{
-    CallError, DrawError, RiichiError, RoundId, RoundPhase, RoundState, RyuukyokuError, Wind,
+    CallError, DiscardError, DoraError, DrawError, EndKyokuError, RiichiError, RoundId, RoundState,
+    RyuukyokuError, Wind,
 };
 use crate::mahjong::tile::Tile;
 
@@ -41,6 +42,12 @@ pub enum ReplayError {
     TileNotInHand { player: PlayerIndex, tile: Tile },
     /// 牌山中已经没有可摸牌。
     NoRemainingDraws,
+    /// 摸牌事件违反当前局面的领域规则。
+    Draw(DrawError),
+    /// 打牌事件违反当前局面的领域规则。
+    Discard(DiscardError),
+    /// 宝牌指示牌事件违反当前局面的领域规则。
+    Dora(DoraError),
     /// 吃、碰或杠事件违反当前局面的领域规则。
     Call(CallError),
     /// 立直事件违反当前局面的领域规则。
@@ -49,8 +56,8 @@ pub enum ReplayError {
     MissingScoreDeltas,
     /// 流局结算违反当前局面的领域规则。
     Ryuukyoku(RyuukyokuError),
-    /// `end_kyoku` 到达时当前局尚未结束。
-    RoundNotEnded { phase: RoundPhase },
+    /// 结束一局事件违反当前局面的领域规则。
+    EndKyoku(EndKyokuError),
 }
 
 impl Replayer {
@@ -177,7 +184,7 @@ impl Replayer {
             .as_mut()
             .ok_or(ReplayError::NoRound)?
             .discard(actor, tile, tsumogiri)
-            .map_err(|error| translate_hand_error(actor, error))
+            .map_err(|error| translate_discard_error(actor, error))
     }
 
     fn chi(
@@ -265,8 +272,8 @@ impl Replayer {
         self.state
             .as_mut()
             .ok_or(ReplayError::NoRound)?
-            .reveal_dora(marker);
-        Ok(())
+            .reveal_dora(marker)
+            .map_err(ReplayError::Dora)
     }
 
     fn declare_riichi(&mut self, actor: u8) -> Result<(), ReplayError> {
@@ -296,13 +303,12 @@ impl Replayer {
             .map_err(ReplayError::Ryuukyoku)
     }
 
-    fn end_kyoku(&self) -> Result<(), ReplayError> {
-        let phase = self.state.as_ref().ok_or(ReplayError::NoRound)?.phase();
-        if matches!(phase, RoundPhase::Ended(_)) {
-            Ok(())
-        } else {
-            Err(ReplayError::RoundNotEnded { phase })
-        }
+    fn end_kyoku(&mut self) -> Result<(), ReplayError> {
+        self.state
+            .as_mut()
+            .ok_or(ReplayError::NoRound)?
+            .end_kyoku()
+            .map_err(ReplayError::EndKyoku)
     }
 }
 
@@ -339,18 +345,16 @@ impl fmt::Display for ReplayError {
                 tile.as_u8()
             ),
             Self::NoRemainingDraws => formatter.write_str("no draws remain"),
+            Self::Draw(error) => error.fmt(formatter),
+            Self::Discard(error) => error.fmt(formatter),
+            Self::Dora(error) => error.fmt(formatter),
             Self::Call(error) => error.fmt(formatter),
             Self::Riichi(error) => error.fmt(formatter),
             Self::MissingScoreDeltas => {
                 formatter.write_str("ryukyoku event is missing score deltas")
             }
             Self::Ryuukyoku(error) => error.fmt(formatter),
-            Self::RoundNotEnded { phase } => {
-                write!(
-                    formatter,
-                    "end_kyoku reached before round ended in phase {phase:?}"
-                )
-            }
+            Self::EndKyoku(error) => error.fmt(formatter),
         }
     }
 }
@@ -358,9 +362,13 @@ impl fmt::Display for ReplayError {
 impl Error for ReplayError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            Self::Draw(error) => Some(error),
+            Self::Discard(error) => Some(error),
+            Self::Dora(error) => Some(error),
             Self::Call(error) => Some(error),
             Self::Riichi(error) => Some(error),
             Self::Ryuukyoku(error) => Some(error),
+            Self::EndKyoku(error) => Some(error),
             _ => None,
         }
     }
@@ -453,7 +461,15 @@ fn translate_hand_error(player: PlayerIndex, error: HandMutationError) -> Replay
 
 fn translate_draw_error(player: PlayerIndex, error: DrawError) -> ReplayError {
     match error {
+        error @ DrawError::InvalidPhase { .. } => ReplayError::Draw(error),
         DrawError::NoRemainingDraws => ReplayError::NoRemainingDraws,
         DrawError::Hand(error) => translate_hand_error(player, error),
+    }
+}
+
+fn translate_discard_error(player: PlayerIndex, error: DiscardError) -> ReplayError {
+    match error {
+        error @ DiscardError::InvalidPhase { .. } => ReplayError::Discard(error),
+        DiscardError::Hand(error) => translate_hand_error(player, error),
     }
 }
