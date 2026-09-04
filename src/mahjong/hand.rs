@@ -21,6 +21,15 @@ pub struct InvalidHandSize {
     meld_count: usize,
 }
 
+/// 修改手牌时无法保持手牌不变量。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HandMutationError {
+    /// 修改后的等效张数无效。
+    InvalidSize(InvalidHandSize),
+    /// 暗牌中不存在要移除的牌。
+    TileNotFound { tile: Tile },
+}
+
 impl Hand {
     pub const MIN_TILE_COUNT: usize = 13;
     pub const MAX_TILE_COUNT: usize = 14;
@@ -30,16 +39,32 @@ impl Hand {
     ///
     /// 除等效张数外，不校验牌的副本数、面子内容或其他规则合法性。
     pub fn new(mut concealed: Vec<Tile>, melds: Vec<Meld>) -> Result<Self, InvalidHandSize> {
-        let effective_tile_count = concealed.len() + melds.len() * Self::TILES_PER_MELD;
-        if !(Self::MIN_TILE_COUNT..=Self::MAX_TILE_COUNT).contains(&effective_tile_count) {
-            return Err(InvalidHandSize {
-                concealed_count: concealed.len(),
-                meld_count: melds.len(),
-            });
-        }
+        validate_size(concealed.len(), melds.len())?;
 
         concealed.sort_unstable();
         Ok(Self { concealed, melds })
+    }
+
+    /// 将摸到的牌加入暗牌，并保持领域顺序。
+    pub fn draw(&mut self, tile: Tile) -> Result<(), HandMutationError> {
+        validate_size(self.concealed.len() + 1, self.melds.len())
+            .map_err(HandMutationError::InvalidSize)?;
+        self.concealed.push(tile);
+        self.concealed.sort_unstable();
+        Ok(())
+    }
+
+    /// 从暗牌中打出一张牌。
+    pub fn discard(&mut self, tile: Tile) -> Result<(), HandMutationError> {
+        validate_size(self.concealed.len() - 1, self.melds.len())
+            .map_err(HandMutationError::InvalidSize)?;
+        let position = self
+            .concealed
+            .iter()
+            .position(|held| *held == tile)
+            .ok_or(HandMutationError::TileNotFound { tile })?;
+        self.concealed.remove(position);
+        Ok(())
     }
 
     /// 返回排好序的暗牌。
@@ -88,3 +113,39 @@ impl fmt::Display for InvalidHandSize {
 }
 
 impl Error for InvalidHandSize {}
+
+impl fmt::Display for HandMutationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidSize(error) => error.fmt(formatter),
+            Self::TileNotFound { tile } => {
+                write!(
+                    formatter,
+                    "tile {} is not in the concealed hand",
+                    tile.as_u8()
+                )
+            }
+        }
+    }
+}
+
+impl Error for HandMutationError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::InvalidSize(error) => Some(error),
+            Self::TileNotFound { .. } => None,
+        }
+    }
+}
+
+fn validate_size(concealed_count: usize, meld_count: usize) -> Result<(), InvalidHandSize> {
+    let effective_tile_count = concealed_count + meld_count * Hand::TILES_PER_MELD;
+    if (Hand::MIN_TILE_COUNT..=Hand::MAX_TILE_COUNT).contains(&effective_tile_count) {
+        Ok(())
+    } else {
+        Err(InvalidHandSize {
+            concealed_count,
+            meld_count,
+        })
+    }
+}

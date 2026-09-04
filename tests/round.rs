@@ -3,7 +3,7 @@ use std::array;
 use kyoku::mahjong::hand::Hand;
 use kyoku::mahjong::player::PlayerState;
 use kyoku::mahjong::player_index::PlayerIndex;
-use kyoku::mahjong::round::{KanKind, RoundId, RoundPhase, RoundState, Wind};
+use kyoku::mahjong::round::{DrawError, KanKind, RoundId, RoundPhase, RoundState, Wind};
 use kyoku::mahjong::tile::Tile;
 
 fn tile(value: u8) -> Tile {
@@ -101,4 +101,47 @@ fn round_state_exposes_snapshot_fields() {
     assert_eq!(state.dora_indicators(), dora_indicators);
     assert_eq!(state.remaining_draws(), 36);
     assert_eq!(state.phase(), phase);
+}
+
+#[test]
+fn round_start_draw_and_discard_update_owned_state() {
+    let round = RoundId::new(Wind::East, 1).unwrap();
+    let mut state = RoundState::start(players(), round, 2, 1, tile(31));
+
+    assert_eq!(state.remaining_draws(), 70);
+    assert_eq!(state.phase(), RoundPhase::Initial);
+    assert_eq!(state.dora_indicators(), [tile(31)]);
+
+    state.draw(player(0), tile(10)).unwrap();
+    assert_eq!(state.remaining_draws(), 69);
+    assert_eq!(state.phase(), RoundPhase::AfterDraw { player: player(0) });
+    assert_eq!(state.player(player(0)).hand().effective_tile_count(), 14);
+
+    state.discard(player(0), tile(10), true).unwrap();
+    assert_eq!(
+        state.phase(),
+        RoundPhase::AfterDiscard { player: player(0) }
+    );
+    assert_eq!(state.player(player(0)).hand().effective_tile_count(), 13);
+    assert_eq!(state.player(player(0)).discards()[0].tile(), tile(10));
+}
+
+#[test]
+fn draw_with_an_empty_wall_leaves_the_round_unchanged() {
+    let round = RoundId::new(Wind::East, 1).unwrap();
+    let mut state = RoundState::new(
+        players(),
+        round,
+        0,
+        0,
+        vec![tile(31)],
+        0,
+        RoundPhase::Initial,
+    );
+    let original = state.clone();
+
+    let error = state.draw(player(0), tile(10)).unwrap_err();
+
+    assert_eq!(error, DrawError::NoRemainingDraws);
+    assert_eq!(state, original);
 }

@@ -1,7 +1,7 @@
 # 局状态设计
 
-`RoundId`、`RoundState` 和相关枚举定义在 `src/mahjong/round.rs`。这些类型只描述
-某个事件处理完毕后的静态快照；事件合法性校验和状态转移不属于本模块。
+`RoundId`、`RoundState` 和相关枚举定义在 `src/mahjong/round.rs`。`RoundState`
+保存并维护一局麻将的当前状态。
 
 ## 局标识
 
@@ -92,6 +92,21 @@ pub const fn RoundPhase::player(self) -> Option<PlayerIndex>
 数量和当前阶段。
 
 ```rust
+pub const RoundState::INITIAL_REMAINING_DRAWS: u8 = 70;
+
+pub fn RoundState::start(
+    players: [PlayerState; 4],
+    round: RoundId,
+    honba: u8,
+    riichi_sticks: u8,
+    dora_indicator: Tile,
+) -> RoundState
+```
+
+`start` 创建四人日麻的开局状态，设置第一张宝牌指示牌、70 次剩余摸牌和
+`RoundPhase::Initial`。
+
+```rust
 pub fn RoundState::new(
     players: [PlayerState; 4],
     round: RoundId,
@@ -103,8 +118,36 @@ pub fn RoundState::new(
 ) -> RoundState
 ```
 
-构造一个静态局面快照。它不校验各字段能否由同一段合法事件序列产生，这项工作由
-后续状态转移层负责。
+`new` 从完整字段构造局面，适合恢复已有状态；它不校验各字段能否由同一段合法事件
+序列产生。
+
+```rust
+pub fn RoundState::draw(
+    &mut self,
+    player: PlayerIndex,
+    tile: Tile,
+) -> Result<(), DrawError>
+
+pub fn RoundState::discard(
+    &mut self,
+    player: PlayerIndex,
+    tile: Tile,
+    tsumogiri: bool,
+) -> Result<(), HandMutationError>
+```
+
+`draw` 更新指定玩家的手牌、剩余摸牌数和局面阶段；剩余摸牌为零时返回
+`DrawError::NoRemainingDraws`，且不修改状态。`discard` 更新该玩家的手牌与牌河，
+并把阶段改为 `AfterDiscard`。当前方法面向有效事件流，不额外校验行动顺序。
+
+```rust
+pub enum DrawError {
+    NoRemainingDraws,
+    Hand(HandMutationError),
+}
+```
+
+`DrawError` 区分牌山耗尽与玩家手牌拒绝摸牌。
 
 ```rust
 pub const fn RoundState::players(&self) -> &[PlayerState; 4]

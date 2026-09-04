@@ -14,12 +14,25 @@ pub fn PlayerState::new(
     discards: Vec<Discard>,
 ) -> PlayerState
 
+pub fn PlayerState::draw(
+    &mut self,
+    tile: Tile,
+) -> Result<(), HandMutationError>
+
+pub fn PlayerState::discard(
+    &mut self,
+    tile: Tile,
+    tsumogiri: bool,
+) -> Result<(), HandMutationError>
+
 pub const fn PlayerState::hand(&self) -> &Hand
 pub const fn PlayerState::score(&self) -> i32
 pub fn PlayerState::discards(&self) -> &[Discard]
 ```
 
-点数使用 `i32`，允许表达负分。手牌与牌河只通过不可变引用暴露。
+`draw` 更新玩家手牌；`discard` 同时更新手牌并把弃牌追加到牌河。当前没有立直事件，
+因此新弃牌的立直标记为 `false`。点数使用 `i32`，允许表达负分。手牌与牌河不直接
+暴露可变引用。
 
 ## 弃牌记录
 

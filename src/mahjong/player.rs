@@ -1,4 +1,4 @@
-use super::hand::Hand;
+use super::hand::{Hand, HandMutationError};
 use super::tile::Tile;
 
 /// 一名玩家在当前局中的状态。
@@ -26,6 +26,19 @@ impl PlayerState {
             score,
             discards,
         }
+    }
+
+    /// 将玩家摸到的牌加入手牌。
+    pub fn draw(&mut self, tile: Tile) -> Result<(), HandMutationError> {
+        self.hand.draw(tile)
+    }
+
+    /// 从手牌打出一张牌，并将记录追加到牌河。
+    pub fn discard(&mut self, tile: Tile, tsumogiri: bool) -> Result<(), HandMutationError> {
+        self.hand.discard(tile)?;
+        self.discards
+            .push(Discard::new(tile, tsumogiri, false, false));
+        Ok(())
     }
 
     /// 返回玩家当前的手牌。

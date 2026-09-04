@@ -36,3 +36,17 @@ fn player_state_exposes_hand_score_and_discard_order() {
     assert_eq!(state.score(), -1_000);
     assert_eq!(state.discards(), [first, second]);
 }
+
+#[test]
+fn draw_and_discard_keep_the_hand_and_river_in_sync() {
+    let mut state = PlayerState::new(hand(), 25_000, vec![]);
+
+    state.draw(tile(1)).unwrap();
+    assert_eq!(state.hand().effective_tile_count(), 14);
+
+    state.discard(tile(1), true).unwrap();
+    assert_eq!(state.hand().effective_tile_count(), 13);
+    assert_eq!(state.discards().len(), 1);
+    assert_eq!(state.discards()[0].tile(), tile(1));
+    assert!(state.discards()[0].is_tsumogiri());
+}

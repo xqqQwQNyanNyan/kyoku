@@ -1,3 +1,7 @@
+use std::error::Error;
+use std::fmt;
+
+use super::hand::HandMutationError;
 use super::player::PlayerState;
 use super::player_index::PlayerIndex;
 use super::tile::Tile;
@@ -67,7 +71,7 @@ pub enum RoundPhase {
     Ended,
 }
 
-/// 某个事件处理完毕后，一局麻将的静态快照。
+/// 一局麻将的当前状态。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RoundState {
     players: [PlayerState; 4],
@@ -77,6 +81,15 @@ pub struct RoundState {
     dora_indicators: Vec<Tile>,
     remaining_draws: u8,
     phase: RoundPhase,
+}
+
+/// 摸牌无法应用到当前局面的原因。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DrawError {
+    /// 牌山中已经没有可摸牌。
+    NoRemainingDraws,
+    /// 玩家手牌无法接受这张牌。
+    Hand(HandMutationError),
 }
 
 impl RoundId {
@@ -127,10 +140,31 @@ impl RoundPhase {
 }
 
 impl RoundState {
-    /// 从四名玩家及当前局面信息构造静态快照。
+    /// 四人日麻开局时的可摸牌数量。
+    pub const INITIAL_REMAINING_DRAWS: u8 = 70;
+
+    /// 创建一局的初始状态。
+    pub fn start(
+        players: [PlayerState; 4],
+        round: RoundId,
+        honba: u8,
+        riichi_sticks: u8,
+        dora_indicator: Tile,
+    ) -> Self {
+        Self::new(
+            players,
+            round,
+            honba,
+            riichi_sticks,
+            vec![dora_indicator],
+            Self::INITIAL_REMAINING_DRAWS,
+            RoundPhase::Initial,
+        )
+    }
+
+    /// 从四名玩家及完整局面信息构造状态。
     ///
-    /// 该构造器不校验这些字段能否由同一段合法事件序列产生；这项工作属于状态
-    /// 转移层。
+    /// 该构造器不校验这些字段能否由同一段合法事件序列产生。
     pub fn new(
         players: [PlayerState; 4],
         round: RoundId,
@@ -151,6 +185,32 @@ impl RoundState {
         }
     }
 
+    /// 将一名玩家的摸牌应用到当前局面。
+    pub fn draw(&mut self, player: PlayerIndex, tile: Tile) -> Result<(), DrawError> {
+        if self.remaining_draws == 0 {
+            return Err(DrawError::NoRemainingDraws);
+        }
+
+        self.player_mut(player)
+            .draw(tile)
+            .map_err(DrawError::Hand)?;
+        self.remaining_draws -= 1;
+        self.phase = RoundPhase::AfterDraw { player };
+        Ok(())
+    }
+
+    /// 将一名玩家的打牌应用到当前局面。
+    pub fn discard(
+        &mut self,
+        player: PlayerIndex,
+        tile: Tile,
+        tsumogiri: bool,
+    ) -> Result<(), HandMutationError> {
+        self.player_mut(player).discard(tile, tsumogiri)?;
+        self.phase = RoundPhase::AfterDiscard { player };
+        Ok(())
+    }
+
     /// 返回按玩家索引排列的四名玩家状态。
     pub const fn players(&self) -> &[PlayerState; 4] {
         &self.players
@@ -159,6 +219,10 @@ impl RoundState {
     /// 返回指定玩家的状态。
     pub fn player(&self, player: PlayerIndex) -> &PlayerState {
         &self.players[usize::from(player.get_id())]
+    }
+
+    fn player_mut(&mut self, player: PlayerIndex) -> &mut PlayerState {
+        &mut self.players[usize::from(player.get_id())]
     }
 
     /// 返回当前局的标识。
@@ -189,5 +253,23 @@ impl RoundState {
     /// 返回当前阶段。
     pub const fn phase(&self) -> RoundPhase {
         self.phase
+    }
+}
+
+impl fmt::Display for DrawError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoRemainingDraws => formatter.write_str("no draws remain"),
+            Self::Hand(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl Error for DrawError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::NoRemainingDraws => None,
+            Self::Hand(error) => Some(error),
+        }
     }
 }
