@@ -11,22 +11,31 @@ use kyoku::replay::inspector::{ReplayInspector, format_event, format_phase, form
 const TENHOU_GAMES: &[(&str, &str)] = &[
     (
         "ranked_game",
-        include_str!("../fixtures/tenhou/ranked_game.json"),
+        include_str!("../../fixtures/tenhou/ranked_game.json"),
     ),
-    ("rinshan", include_str!("../fixtures/tenhou/rinshan.json")),
-    ("ryukyoku", include_str!("../fixtures/tenhou/ryukyoku.json")),
+    (
+        "rinshan",
+        include_str!("../../fixtures/tenhou/rinshan.json"),
+    ),
+    (
+        "ryukyoku",
+        include_str!("../../fixtures/tenhou/ryukyoku.json"),
+    ),
     (
         "four_reach",
-        include_str!("../fixtures/tenhou/four_reach.json"),
+        include_str!("../../fixtures/tenhou/four_reach.json"),
     ),
-    ("chankan", include_str!("../fixtures/tenhou/chankan.json")),
+    (
+        "chankan",
+        include_str!("../../fixtures/tenhou/chankan.json"),
+    ),
     (
         "complex_nakis",
-        include_str!("../fixtures/tenhou/complex_nakis.json"),
+        include_str!("../../fixtures/tenhou/complex_nakis.json"),
     ),
     (
         "kyushukyuhai",
-        include_str!("../fixtures/tenhou/kyushukyuhai.json"),
+        include_str!("../../fixtures/tenhou/kyushukyuhai.json"),
     ),
 ];
 
@@ -58,7 +67,7 @@ fn replays_checked_in_tenhou_games() {
 
 #[test]
 fn replays_double_ron_fixture_with_accumulated_hora_result() {
-    let log = Log::from_json_str(include_str!("../fixtures/tenhou/double_ron.json"))
+    let log = Log::from_json_str(include_str!("../../fixtures/tenhou/double_ron.json"))
         .expect("double-ron fixture must be valid Tenhou JSON");
     let events = tenhou_to_mjai(&log).expect("double-ron fixture must convert to MJAI");
     assert_eq!(
