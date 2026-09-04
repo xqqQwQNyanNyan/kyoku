@@ -33,6 +33,14 @@ pub enum HandMutationError {
     InvalidChi { tiles: [Tile; 3] },
     /// 三张牌不能组成合法的刻子。
     InvalidPon { tiles: [Tile; 3] },
+    /// 四张牌不能组成合法的大明杠。
+    InvalidDaiminkan { tiles: [Tile; 4] },
+    /// 四张牌不能组成合法的暗杠。
+    InvalidAnkan { tiles: [Tile; 4] },
+    /// 新增牌和原碰子不能组成合法的加杠。
+    InvalidKakan { tiles: [Tile; 4] },
+    /// 加杠事件指定的原碰子不存在。
+    PonNotFound { tiles: [Tile; 3] },
 }
 
 impl Hand {
@@ -118,6 +126,71 @@ impl Hand {
         )
     }
 
+    /// 使用三张暗牌和一张他家弃牌组成大明杠。
+    pub fn daiminkan(
+        &mut self,
+        called: Tile,
+        from: PlayerIndex,
+        consumed: [Tile; 3],
+    ) -> Result<(), HandMutationError> {
+        let mut tiles = [called, consumed[0], consumed[1], consumed[2]];
+        tiles.sort_unstable();
+        if !tiles.iter().all(|tile| tile.kind() == called.kind()) {
+            return Err(HandMutationError::InvalidDaiminkan { tiles });
+        }
+
+        self.add_meld(
+            consumed,
+            Meld::Daiminkan {
+                tiles,
+                called,
+                from,
+            },
+        )
+    }
+
+    /// 使用四张暗牌组成暗杠。
+    pub fn ankan(&mut self, consumed: [Tile; 4]) -> Result<(), HandMutationError> {
+        let mut tiles = consumed;
+        tiles.sort_unstable();
+        if !tiles.iter().all(|tile| tile.kind() == tiles[0].kind()) {
+            return Err(HandMutationError::InvalidAnkan { tiles });
+        }
+
+        self.add_meld(consumed, Meld::Ankan { tiles })
+    }
+
+    /// 用一张暗牌将已有碰子原地升级为加杠。
+    pub fn kakan(&mut self, added: Tile, mut consumed: [Tile; 3]) -> Result<(), HandMutationError> {
+        consumed.sort_unstable();
+        let mut tiles = [added, consumed[0], consumed[1], consumed[2]];
+        tiles.sort_unstable();
+        if !tiles.iter().all(|tile| tile.kind() == added.kind()) {
+            return Err(HandMutationError::InvalidKakan { tiles });
+        }
+
+        let meld_position = self
+            .melds
+            .iter()
+            .position(|meld| matches!(meld, Meld::Pon { tiles, .. } if *tiles == consumed))
+            .ok_or(HandMutationError::PonNotFound { tiles: consumed })?;
+        let Meld::Pon { called, from, .. } = self.melds[meld_position] else {
+            unreachable!("the matched meld is a pon")
+        };
+
+        let mut concealed = self.concealed.clone();
+        remove_tiles(&mut concealed, [added])?;
+        validate_size(concealed.len(), self.melds.len()).map_err(HandMutationError::InvalidSize)?;
+
+        self.concealed = concealed;
+        self.melds[meld_position] = Meld::Kakan {
+            tiles,
+            called,
+            from,
+        };
+        Ok(())
+    }
+
     /// 返回排好序的暗牌。
     pub fn concealed(&self) -> &[Tile] {
         &self.concealed
@@ -134,14 +207,16 @@ impl Hand {
     }
 
     fn add_open_meld(&mut self, consumed: [Tile; 2], meld: Meld) -> Result<(), HandMutationError> {
+        self.add_meld(consumed, meld)
+    }
+
+    fn add_meld<const N: usize>(
+        &mut self,
+        consumed: [Tile; N],
+        meld: Meld,
+    ) -> Result<(), HandMutationError> {
         let mut concealed = self.concealed.clone();
-        for tile in consumed {
-            let position = concealed
-                .iter()
-                .position(|held| *held == tile)
-                .ok_or(HandMutationError::TileNotFound { tile })?;
-            concealed.remove(position);
-        }
+        remove_tiles(&mut concealed, consumed)?;
         validate_size(concealed.len(), self.melds.len() + 1)
             .map_err(HandMutationError::InvalidSize)?;
 
@@ -207,6 +282,37 @@ impl fmt::Display for HandMutationError {
                 tiles[1].as_u8(),
                 tiles[2].as_u8()
             ),
+            Self::InvalidDaiminkan { tiles } => write!(
+                formatter,
+                "tiles {}, {}, {}, {} do not form a daiminkan",
+                tiles[0].as_u8(),
+                tiles[1].as_u8(),
+                tiles[2].as_u8(),
+                tiles[3].as_u8()
+            ),
+            Self::InvalidAnkan { tiles } => write!(
+                formatter,
+                "tiles {}, {}, {}, {} do not form an ankan",
+                tiles[0].as_u8(),
+                tiles[1].as_u8(),
+                tiles[2].as_u8(),
+                tiles[3].as_u8()
+            ),
+            Self::InvalidKakan { tiles } => write!(
+                formatter,
+                "tiles {}, {}, {}, {} do not form a kakan",
+                tiles[0].as_u8(),
+                tiles[1].as_u8(),
+                tiles[2].as_u8(),
+                tiles[3].as_u8()
+            ),
+            Self::PonNotFound { tiles } => write!(
+                formatter,
+                "pon {}, {}, {} was not found for kakan",
+                tiles[0].as_u8(),
+                tiles[1].as_u8(),
+                tiles[2].as_u8()
+            ),
         }
     }
 }
@@ -215,9 +321,29 @@ impl Error for HandMutationError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::InvalidSize(error) => Some(error),
-            Self::TileNotFound { .. } | Self::InvalidChi { .. } | Self::InvalidPon { .. } => None,
+            Self::TileNotFound { .. }
+            | Self::InvalidChi { .. }
+            | Self::InvalidPon { .. }
+            | Self::InvalidDaiminkan { .. }
+            | Self::InvalidAnkan { .. }
+            | Self::InvalidKakan { .. }
+            | Self::PonNotFound { .. } => None,
         }
     }
+}
+
+fn remove_tiles<const N: usize>(
+    concealed: &mut Vec<Tile>,
+    tiles: [Tile; N],
+) -> Result<(), HandMutationError> {
+    for tile in tiles {
+        let position = concealed
+            .iter()
+            .position(|held| *held == tile)
+            .ok_or(HandMutationError::TileNotFound { tile })?;
+        concealed.remove(position);
+    }
+    Ok(())
 }
 
 fn is_chi(tiles: [Tile; 3]) -> bool {

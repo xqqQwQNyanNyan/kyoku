@@ -311,3 +311,121 @@ fn caller_hand_failure_rolls_back_the_entire_call() {
     );
     assert_eq!(state, original);
 }
+
+#[test]
+fn daiminkan_updates_the_discard_hand_and_phase_atomically() {
+    let mut state = call_state();
+    state = RoundState::new(
+        {
+            let mut players = state.players().clone();
+            players[2] = PlayerState::new(
+                Hand::new([vec![tile(2); 3], vec![tile(9); 10]].concat(), vec![]).unwrap(),
+                25_000,
+                vec![],
+            );
+            players
+        },
+        state.round(),
+        state.honba(),
+        state.riichi_sticks(),
+        state.dora_indicators().to_vec(),
+        state.remaining_draws(),
+        state.phase(),
+    );
+
+    state
+        .daiminkan(player(2), player(0), tile(2), [tile(2); 3])
+        .unwrap();
+
+    assert!(state.player(player(0)).discards()[0].is_called());
+    assert!(matches!(
+        state.player(player(2)).hand().melds(),
+        [Meld::Daiminkan { from, .. }] if *from == player(0)
+    ));
+    assert_eq!(
+        state.phase(),
+        RoundPhase::AfterKanDeclaration {
+            player: player(2),
+            kind: KanKind::Daiminkan,
+        }
+    );
+}
+
+#[test]
+fn ankan_and_kakan_require_the_actor_to_have_just_drawn() {
+    let mut ankan_players = players();
+    ankan_players[1] = PlayerState::new(
+        Hand::new([vec![tile(31); 4], vec![tile(9); 10]].concat(), vec![]).unwrap(),
+        25_000,
+        vec![],
+    );
+    let mut ankan = RoundState::new(
+        ankan_players,
+        RoundId::new(Wind::East, 1).unwrap(),
+        0,
+        0,
+        vec![tile(30)],
+        50,
+        RoundPhase::AfterDraw { player: player(1) },
+    );
+    ankan.ankan(player(1), [tile(31); 4]).unwrap();
+    assert_eq!(
+        ankan.phase(),
+        RoundPhase::AfterKanDeclaration {
+            player: player(1),
+            kind: KanKind::Ankan,
+        }
+    );
+
+    let pon = Meld::Pon {
+        tiles: [tile(4); 3],
+        called: tile(4),
+        from: player(0),
+    };
+    let mut kakan_players = players();
+    kakan_players[2] = PlayerState::new(
+        Hand::new([vec![tile(4)], vec![tile(9); 10]].concat(), vec![pon]).unwrap(),
+        25_000,
+        vec![],
+    );
+    let mut kakan = RoundState::new(
+        kakan_players,
+        RoundId::new(Wind::East, 1).unwrap(),
+        0,
+        0,
+        vec![tile(30)],
+        50,
+        RoundPhase::AfterDraw { player: player(2) },
+    );
+    kakan.kakan(player(2), tile(4), [tile(4); 3]).unwrap();
+    assert!(matches!(
+        kakan.player(player(2)).hand().melds(),
+        [Meld::Kakan { from, .. }] if *from == player(0)
+    ));
+    assert_eq!(
+        kakan.phase(),
+        RoundPhase::AfterKanDeclaration {
+            player: player(2),
+            kind: KanKind::Kakan,
+        }
+    );
+
+    let mut wrong_actor = RoundState::new(
+        players(),
+        RoundId::new(Wind::East, 1).unwrap(),
+        0,
+        0,
+        vec![tile(30)],
+        50,
+        RoundPhase::AfterDraw { player: player(0) },
+    );
+    let original = wrong_actor.clone();
+    assert_eq!(
+        wrong_actor.ankan(player(1), [tile(1); 4]),
+        Err(CallError::WrongActor {
+            expected: player(0),
+            actual: player(1),
+        })
+    );
+    assert_eq!(wrong_actor, original);
+}

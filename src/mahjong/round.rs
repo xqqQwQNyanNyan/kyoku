@@ -92,10 +92,10 @@ pub enum DrawError {
     Hand(HandMutationError),
 }
 
-/// 吃碰事件无法应用到当前局面的原因。
+/// 吃、碰或杠事件无法应用到当前局面的原因。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CallError {
-    /// 当前阶段不接受吃碰事件。
+    /// 当前阶段不接受该鸣牌事件。
     InvalidPhase { phase: RoundPhase },
     /// 鸣牌者与弃牌者相同。
     ActorIsTarget { player: PlayerIndex },
@@ -106,6 +106,11 @@ pub enum CallError {
     },
     /// 吃牌者不是弃牌者的下家。
     InvalidChiActor {
+        expected: PlayerIndex,
+        actual: PlayerIndex,
+    },
+    /// 暗杠或加杠者不是刚刚摸牌的玩家。
+    WrongActor {
         expected: PlayerIndex,
         actual: PlayerIndex,
     },
@@ -305,6 +310,75 @@ impl RoundState {
         Ok(())
     }
 
+    /// 应用一次大明杠，并原子地更新手牌、牌河和局面阶段。
+    pub fn daiminkan(
+        &mut self,
+        actor: PlayerIndex,
+        target: PlayerIndex,
+        called: Tile,
+        consumed: [Tile; 3],
+    ) -> Result<(), CallError> {
+        self.validate_call_context(actor, target)?;
+
+        let mut players = self.players.clone();
+        players[usize::from(target.get_id())]
+            .mark_last_discard_called(called)
+            .map_err(|error| CallError::Discard {
+                player: target,
+                error,
+            })?;
+        players[usize::from(actor.get_id())]
+            .daiminkan(called, target, consumed)
+            .map_err(|error| CallError::Hand {
+                player: actor,
+                error,
+            })?;
+
+        self.players = players;
+        self.phase = RoundPhase::AfterKanDeclaration {
+            player: actor,
+            kind: KanKind::Daiminkan,
+        };
+        Ok(())
+    }
+
+    /// 应用一次暗杠，并进入杠声明后的阶段。
+    pub fn ankan(&mut self, actor: PlayerIndex, consumed: [Tile; 4]) -> Result<(), CallError> {
+        self.validate_self_kan_context(actor)?;
+        self.player_mut(actor)
+            .ankan(consumed)
+            .map_err(|error| CallError::Hand {
+                player: actor,
+                error,
+            })?;
+        self.phase = RoundPhase::AfterKanDeclaration {
+            player: actor,
+            kind: KanKind::Ankan,
+        };
+        Ok(())
+    }
+
+    /// 应用一次加杠，将已有碰子原地升级并进入杠声明后的阶段。
+    pub fn kakan(
+        &mut self,
+        actor: PlayerIndex,
+        added: Tile,
+        consumed: [Tile; 3],
+    ) -> Result<(), CallError> {
+        self.validate_self_kan_context(actor)?;
+        self.player_mut(actor)
+            .kakan(added, consumed)
+            .map_err(|error| CallError::Hand {
+                player: actor,
+                error,
+            })?;
+        self.phase = RoundPhase::AfterKanDeclaration {
+            player: actor,
+            kind: KanKind::Kakan,
+        };
+        Ok(())
+    }
+
     /// 返回按玩家索引排列的四名玩家状态。
     pub const fn players(&self) -> &[PlayerState; 4] {
         &self.players
@@ -334,6 +408,19 @@ impl RoundState {
             return Err(CallError::WrongTarget {
                 expected,
                 actual: target,
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_self_kan_context(&self, actor: PlayerIndex) -> Result<(), CallError> {
+        let RoundPhase::AfterDraw { player: expected } = self.phase else {
+            return Err(CallError::InvalidPhase { phase: self.phase });
+        };
+        if actor != expected {
+            return Err(CallError::WrongActor {
+                expected,
+                actual: actor,
             });
         }
         Ok(())
@@ -408,6 +495,12 @@ impl fmt::Display for CallError {
             Self::InvalidChiActor { expected, actual } => write!(
                 formatter,
                 "player {} cannot chi; expected player {}",
+                actual.get_id(),
+                expected.get_id()
+            ),
+            Self::WrongActor { expected, actual } => write!(
+                formatter,
+                "player {} cannot declare this kan; expected player {}",
                 actual.get_id(),
                 expected.get_id()
             ),

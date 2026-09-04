@@ -39,7 +39,7 @@ pub enum ReplayError {
     TileNotInHand { player: PlayerIndex, tile: Tile },
     /// 牌山中已经没有可摸牌。
     NoRemainingDraws,
-    /// 吃碰事件违反当前局面的领域规则。
+    /// 吃、碰或杠事件违反当前局面的领域规则。
     Call(CallError),
 }
 
@@ -88,6 +88,18 @@ impl Replayer {
                 pai,
                 consumed,
             } => self.pon(*actor, *target, *pai, *consumed),
+            Event::Daiminkan {
+                actor,
+                target,
+                pai,
+                consumed,
+            } => self.daiminkan(*actor, *target, *pai, *consumed),
+            Event::Ankan { actor, consumed } => self.ankan(*actor, *consumed),
+            Event::Kakan {
+                actor,
+                pai,
+                consumed,
+            } => self.kakan(*actor, *pai, *consumed),
             _ => Err(ReplayError::UnsupportedEvent),
         }
     }
@@ -188,6 +200,50 @@ impl Replayer {
             .pon(actor, target, called, consumed)
             .map_err(ReplayError::Call)
     }
+
+    fn daiminkan(
+        &mut self,
+        actor: u8,
+        target: u8,
+        pai: convlog::Tile,
+        consumed: [convlog::Tile; 3],
+    ) -> Result<(), ReplayError> {
+        let actor = convert_player(actor)?;
+        let target = convert_player(target)?;
+        let called = convert_tile(pai)?;
+        let consumed = convert_three_tiles(consumed)?;
+        self.state
+            .as_mut()
+            .ok_or(ReplayError::NoRound)?
+            .daiminkan(actor, target, called, consumed)
+            .map_err(ReplayError::Call)
+    }
+
+    fn ankan(&mut self, actor: u8, consumed: [convlog::Tile; 4]) -> Result<(), ReplayError> {
+        let actor = convert_player(actor)?;
+        let consumed = convert_four_tiles(consumed)?;
+        self.state
+            .as_mut()
+            .ok_or(ReplayError::NoRound)?
+            .ankan(actor, consumed)
+            .map_err(ReplayError::Call)
+    }
+
+    fn kakan(
+        &mut self,
+        actor: u8,
+        pai: convlog::Tile,
+        consumed: [convlog::Tile; 3],
+    ) -> Result<(), ReplayError> {
+        let actor = convert_player(actor)?;
+        let added = convert_tile(pai)?;
+        let consumed = convert_three_tiles(consumed)?;
+        self.state
+            .as_mut()
+            .ok_or(ReplayError::NoRound)?
+            .kakan(actor, added, consumed)
+            .map_err(ReplayError::Call)
+    }
 }
 
 impl fmt::Display for ReplayError {
@@ -277,6 +333,23 @@ fn convert_consumed(tiles: [convlog::Tile; 2]) -> Result<[Tile; 2], ReplayError>
     Ok([convert_tile(tiles[0])?, convert_tile(tiles[1])?])
 }
 
+fn convert_three_tiles(tiles: [convlog::Tile; 3]) -> Result<[Tile; 3], ReplayError> {
+    Ok([
+        convert_tile(tiles[0])?,
+        convert_tile(tiles[1])?,
+        convert_tile(tiles[2])?,
+    ])
+}
+
+fn convert_four_tiles(tiles: [convlog::Tile; 4]) -> Result<[Tile; 4], ReplayError> {
+    Ok([
+        convert_tile(tiles[0])?,
+        convert_tile(tiles[1])?,
+        convert_tile(tiles[2])?,
+        convert_tile(tiles[3])?,
+    ])
+}
+
 fn convert_wind(tile: convlog::Tile) -> Result<Wind, ReplayError> {
     match tile.as_u8() {
         27 => Ok(Wind::East),
@@ -294,7 +367,12 @@ fn translate_hand_error(player: PlayerIndex, error: HandMutationError) -> Replay
             effective_tile_count: error.effective_tile_count(),
         },
         HandMutationError::TileNotFound { tile } => ReplayError::TileNotInHand { player, tile },
-        error @ (HandMutationError::InvalidChi { .. } | HandMutationError::InvalidPon { .. }) => {
+        error @ (HandMutationError::InvalidChi { .. }
+        | HandMutationError::InvalidPon { .. }
+        | HandMutationError::InvalidDaiminkan { .. }
+        | HandMutationError::InvalidAnkan { .. }
+        | HandMutationError::InvalidKakan { .. }
+        | HandMutationError::PonNotFound { .. }) => {
             ReplayError::Call(CallError::Hand { player, error })
         }
     }

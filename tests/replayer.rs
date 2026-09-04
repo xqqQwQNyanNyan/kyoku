@@ -4,7 +4,7 @@ use convlog::Event;
 use kyoku::mahjong::hand::HandMutationError;
 use kyoku::mahjong::meld::Meld;
 use kyoku::mahjong::player_index::PlayerIndex;
-use kyoku::mahjong::round::{CallError, RoundPhase, Wind};
+use kyoku::mahjong::round::{CallError, KanKind, RoundPhase, Wind};
 use kyoku::mahjong::tile::Tile;
 use kyoku::replay::replayer::{ReplayError, Replayer};
 
@@ -289,4 +289,110 @@ fn chi_from_the_wrong_player_is_rejected() {
         }))
     );
     assert_eq!(replayer.state(), Some(&original));
+}
+
+#[test]
+fn daiminkan_and_ankan_events_are_replayed_through_domain_calls() {
+    let mut daiminkan_hand = [9; 13];
+    daiminkan_hand[..3].fill(2);
+    let mut daiminkan = replayer_waiting_for_call(2, daiminkan_hand);
+    daiminkan
+        .apply(&Event::Daiminkan {
+            actor: 2,
+            target: 0,
+            pai: mjai_tile(2),
+            consumed: [mjai_tile(2); 3],
+        })
+        .unwrap();
+    let state = daiminkan.state().unwrap();
+    assert!(state.player(player(0)).discards()[0].is_called());
+    assert!(matches!(
+        state.player(player(2)).hand().melds(),
+        [Meld::Daiminkan { from, .. }] if *from == player(0)
+    ));
+    assert_eq!(
+        state.phase(),
+        RoundPhase::AfterKanDeclaration {
+            player: player(2),
+            kind: KanKind::Daiminkan,
+        }
+    );
+
+    let mut hands = [[9; 13]; 4];
+    hands[1][..3].fill(31);
+    let mut ankan = Replayer::new();
+    ankan.apply(&start_kyoku_with_hands(hands)).unwrap();
+    ankan
+        .apply(&Event::Tsumo {
+            actor: 1,
+            pai: mjai_tile(31),
+        })
+        .unwrap();
+    ankan
+        .apply(&Event::Ankan {
+            actor: 1,
+            consumed: [mjai_tile(31); 4],
+        })
+        .unwrap();
+    assert!(matches!(
+        ankan.state().unwrap().player(player(1)).hand().melds(),
+        [Meld::Ankan { .. }]
+    ));
+    assert_eq!(
+        ankan.state().unwrap().phase(),
+        RoundPhase::AfterKanDeclaration {
+            player: player(1),
+            kind: KanKind::Ankan,
+        }
+    );
+}
+
+#[test]
+fn kakan_event_upgrades_the_existing_pon_in_place() {
+    let mut pon_hand = [9; 13];
+    pon_hand[..2].fill(2);
+    let mut replayer = replayer_waiting_for_call(2, pon_hand);
+    replayer
+        .apply(&Event::Pon {
+            actor: 2,
+            target: 0,
+            pai: mjai_tile(2),
+            consumed: [mjai_tile(2); 2],
+        })
+        .unwrap();
+    replayer
+        .apply(&Event::Dahai {
+            actor: 2,
+            pai: mjai_tile(9),
+            tsumogiri: false,
+        })
+        .unwrap();
+    replayer
+        .apply(&Event::Tsumo {
+            actor: 2,
+            pai: mjai_tile(2),
+        })
+        .unwrap();
+    replayer
+        .apply(&Event::Kakan {
+            actor: 2,
+            pai: mjai_tile(2),
+            consumed: [mjai_tile(2); 3],
+        })
+        .unwrap();
+
+    let state = replayer.state().unwrap();
+    assert_eq!(state.player(player(2)).hand().melds().len(), 1);
+    assert!(matches!(
+        state.player(player(2)).hand().melds(),
+        [Meld::Kakan { called, from, .. }]
+            if *called == tile(2) && *from == player(0)
+    ));
+    assert_eq!(
+        state.phase(),
+        RoundPhase::AfterKanDeclaration {
+            player: player(2),
+            kind: KanKind::Kakan,
+        }
+    );
 }

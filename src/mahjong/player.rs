@@ -76,6 +76,26 @@ impl PlayerState {
         self.hand.pon(called, from, consumed)
     }
 
+    /// 使用三张暗牌完成大明杠。
+    pub fn daiminkan(
+        &mut self,
+        called: Tile,
+        from: PlayerIndex,
+        consumed: [Tile; 3],
+    ) -> Result<(), HandMutationError> {
+        self.hand.daiminkan(called, from, consumed)
+    }
+
+    /// 使用四张暗牌完成暗杠。
+    pub fn ankan(&mut self, consumed: [Tile; 4]) -> Result<(), HandMutationError> {
+        self.hand.ankan(consumed)
+    }
+
+    /// 用一张暗牌升级已有碰子。
+    pub fn kakan(&mut self, added: Tile, consumed: [Tile; 3]) -> Result<(), HandMutationError> {
+        self.hand.kakan(added, consumed)
+    }
+
     /// 将牌河最后一张牌标记为已被鸣走。
     pub fn mark_last_discard_called(&mut self, called: Tile) -> Result<(), DiscardCallError> {
         let discard = self

@@ -209,3 +209,108 @@ fn invalid_calls_leave_the_hand_unchanged() {
     );
     assert_eq!(hand, original);
 }
+
+#[test]
+fn daiminkan_and_ankan_consume_four_matching_tiles() {
+    let mut daiminkan = Hand::new(
+        [vec![tile(34), tile(4), tile(4)], vec![tile(9); 10]].concat(),
+        vec![],
+    )
+    .unwrap();
+    daiminkan
+        .daiminkan(tile(4), player(3), [tile(4), tile(34), tile(4)])
+        .unwrap();
+    assert_eq!(daiminkan.concealed(), vec![tile(9); 10]);
+    assert_eq!(
+        daiminkan.melds(),
+        [Meld::Daiminkan {
+            tiles: [tile(34), tile(4), tile(4), tile(4)],
+            called: tile(4),
+            from: player(3),
+        }]
+    );
+    assert_eq!(daiminkan.effective_tile_count(), 13);
+
+    let mut ankan = Hand::new([vec![tile(31); 4], vec![tile(9); 10]].concat(), vec![]).unwrap();
+    ankan
+        .ankan([tile(31), tile(31), tile(31), tile(31)])
+        .unwrap();
+    assert_eq!(ankan.concealed(), vec![tile(9); 10]);
+    assert_eq!(
+        ankan.melds(),
+        [Meld::Ankan {
+            tiles: [tile(31); 4]
+        }]
+    );
+    assert_eq!(ankan.effective_tile_count(), 13);
+}
+
+#[test]
+fn kakan_replaces_the_matching_pon_and_preserves_its_metadata() {
+    let chi = Meld::Chi {
+        tiles: [tile(0), tile(1), tile(2)],
+        called: tile(2),
+        from: player(3),
+    };
+    let original_pon = Meld::Pon {
+        tiles: [tile(34), tile(4), tile(4)],
+        called: tile(34),
+        from: player(1),
+    };
+    let mut hand = Hand::new(
+        [vec![tile(4)], vec![tile(9); 7]].concat(),
+        vec![chi, original_pon],
+    )
+    .unwrap();
+
+    hand.kakan(tile(4), [tile(4), tile(34), tile(4)]).unwrap();
+
+    assert_eq!(hand.concealed(), vec![tile(9); 7]);
+    assert_eq!(
+        hand.melds(),
+        [
+            chi,
+            Meld::Kakan {
+                tiles: [tile(34), tile(4), tile(4), tile(4)],
+                called: tile(34),
+                from: player(1),
+            },
+        ]
+    );
+    assert_eq!(hand.melds().len(), 2);
+    assert_eq!(hand.effective_tile_count(), 13);
+}
+
+#[test]
+fn invalid_kans_leave_the_hand_unchanged() {
+    let mut daiminkan = Hand::new([vec![tile(4); 3], vec![tile(9); 10]].concat(), vec![]).unwrap();
+    let original = daiminkan.clone();
+    assert!(matches!(
+        daiminkan.daiminkan(tile(5), player(0), [tile(4); 3]),
+        Err(HandMutationError::InvalidDaiminkan { .. })
+    ));
+    assert_eq!(daiminkan, original);
+
+    let mut ankan = Hand::new([vec![tile(31); 3], vec![tile(9); 11]].concat(), vec![]).unwrap();
+    let original = ankan.clone();
+    assert_eq!(
+        ankan.ankan([tile(31); 4]),
+        Err(HandMutationError::TileNotFound { tile: tile(31) })
+    );
+    assert_eq!(ankan, original);
+
+    let pon = Meld::Pon {
+        tiles: [tile(34), tile(4), tile(4)],
+        called: tile(34),
+        from: player(1),
+    };
+    let mut kakan = Hand::new([vec![tile(4)], vec![tile(9); 10]].concat(), vec![pon]).unwrap();
+    let original = kakan.clone();
+    assert_eq!(
+        kakan.kakan(tile(4), [tile(4); 3]),
+        Err(HandMutationError::PonNotFound {
+            tiles: [tile(4); 3]
+        })
+    );
+    assert_eq!(kakan, original);
+}

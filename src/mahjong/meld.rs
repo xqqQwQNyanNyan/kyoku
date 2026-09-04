@@ -4,7 +4,7 @@ use super::tile::Tile;
 /// 玩家已经组成的面子。
 ///
 /// 所有变体的 `tiles` 均约定按 [`Tile`] 的领域顺序排列。公开的牌局状态变更应
-/// 通过 [`super::hand::Hand`] 完成，由它校验吃碰牌形并维护手牌不变量。
+/// 通过 [`super::hand::Hand`] 完成，由它校验吃碰杠牌形并维护手牌不变量。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Meld {
     Chi {
