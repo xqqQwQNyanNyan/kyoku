@@ -1,6 +1,9 @@
 [package]
-name = "mahjong-assistant"
+name = "kyoku"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+convlog = { git = "https://github.com/Equim-chan/mjai-reviewer.git" }
+serde_json = "1"
+ureq = "3"
