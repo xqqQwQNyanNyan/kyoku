@@ -5,7 +5,9 @@ use kyoku::mahjong::hand::HandMutationError;
 use kyoku::mahjong::meld::Meld;
 use kyoku::mahjong::player::RiichiState;
 use kyoku::mahjong::player_index::PlayerIndex;
-use kyoku::mahjong::round::{CallError, DrawSource, KanKind, RiichiError, RoundPhase, Wind};
+use kyoku::mahjong::round::{
+    CallError, DrawSource, KanKind, RiichiError, RoundPhase, RoundResult, Wind,
+};
 use kyoku::mahjong::tile::Tile;
 use kyoku::replay::replayer::{ReplayError, Replayer};
 
@@ -127,6 +129,66 @@ fn draw_and_discard_reconstruct_the_current_state() {
     assert_eq!(discard.tile(), tile(20));
     assert!(discard.is_tsumogiri());
     assert!(!discard.is_riichi());
+}
+
+#[test]
+fn ryukyoku_applies_deltas_and_end_kyoku_confirms_the_ended_round() {
+    let mut replayer = Replayer::new();
+    replayer.apply(&start_kyoku(1)).unwrap();
+    replayer
+        .apply(&Event::Ryukyoku {
+            deltas: Some([-1_000, 3_000, -1_000, -1_000]),
+        })
+        .unwrap();
+
+    let state = replayer.state().unwrap();
+    assert_eq!(state.player(player(0)).score(), 24_000);
+    assert_eq!(state.player(player(1)).score(), 27_000);
+    assert_eq!(state.player(player(2)).score(), 25_000);
+    assert_eq!(state.player(player(3)).score(), 24_000);
+    assert_eq!(state.phase(), RoundPhase::Ended(RoundResult::Ryukyoku));
+    assert_eq!(state.honba(), 2);
+    assert_eq!(state.riichi_sticks(), 1);
+    assert_eq!(state.remaining_draws(), 70);
+
+    let ended = state.clone();
+    replayer.apply(&Event::EndKyoku).unwrap();
+    assert_eq!(replayer.state(), Some(&ended));
+}
+
+#[test]
+fn ryukyoku_without_deltas_fails_without_mutation() {
+    let mut replayer = Replayer::new();
+    replayer.apply(&start_kyoku(1)).unwrap();
+    let original = replayer.state().unwrap().clone();
+
+    assert_eq!(
+        replayer.apply(&Event::Ryukyoku { deltas: None }),
+        Err(ReplayError::MissingScoreDeltas)
+    );
+    assert_eq!(replayer.state(), Some(&original));
+    assert_eq!(
+        replayer.apply(&Event::EndKyoku),
+        Err(ReplayError::RoundNotEnded {
+            phase: RoundPhase::Initial,
+        })
+    );
+    assert_eq!(replayer.state(), Some(&original));
+}
+
+#[test]
+fn end_kyoku_rejects_a_round_that_has_not_ended() {
+    let mut replayer = Replayer::new();
+    replayer.apply(&start_kyoku(1)).unwrap();
+    let original = replayer.state().unwrap().clone();
+
+    assert_eq!(
+        replayer.apply(&Event::EndKyoku),
+        Err(ReplayError::RoundNotEnded {
+            phase: RoundPhase::Initial,
+        })
+    );
+    assert_eq!(replayer.state(), Some(&original));
 }
 
 #[test]

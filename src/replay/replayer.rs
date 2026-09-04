@@ -6,7 +6,9 @@ use convlog::Event;
 use crate::mahjong::hand::{Hand, HandMutationError};
 use crate::mahjong::player::PlayerState;
 use crate::mahjong::player_index::PlayerIndex;
-use crate::mahjong::round::{CallError, DrawError, RiichiError, RoundId, RoundState, Wind};
+use crate::mahjong::round::{
+    CallError, DrawError, RiichiError, RoundId, RoundPhase, RoundState, RyuukyokuError, Wind,
+};
 use crate::mahjong::tile::Tile;
 
 /// 按顺序消费 mjai 事件并重建当前局面状态。
@@ -43,6 +45,12 @@ pub enum ReplayError {
     Call(CallError),
     /// 立直事件违反当前局面的领域规则。
     Riichi(RiichiError),
+    /// `ryukyoku` 事件没有提供确定性重建点数所需的点差。
+    MissingScoreDeltas,
+    /// 流局结算违反当前局面的领域规则。
+    Ryuukyoku(RyuukyokuError),
+    /// `end_kyoku` 到达时当前局尚未结束。
+    RoundNotEnded { phase: RoundPhase },
 }
 
 impl Replayer {
@@ -105,6 +113,8 @@ impl Replayer {
             Event::Dora { dora_marker } => self.reveal_dora(*dora_marker),
             Event::Reach { actor } => self.declare_riichi(*actor),
             Event::ReachAccepted { actor } => self.accept_riichi(*actor),
+            Event::Ryukyoku { deltas } => self.ryuukyoku(*deltas),
+            Event::EndKyoku => self.end_kyoku(),
             _ => Err(ReplayError::UnsupportedEvent),
         }
     }
@@ -276,6 +286,24 @@ impl Replayer {
             .accept_riichi(actor)
             .map_err(ReplayError::Riichi)
     }
+
+    fn ryuukyoku(&mut self, deltas: Option<[i32; 4]>) -> Result<(), ReplayError> {
+        let score_deltas = deltas.ok_or(ReplayError::MissingScoreDeltas)?;
+        self.state
+            .as_mut()
+            .ok_or(ReplayError::NoRound)?
+            .ryuukyoku(score_deltas)
+            .map_err(ReplayError::Ryuukyoku)
+    }
+
+    fn end_kyoku(&self) -> Result<(), ReplayError> {
+        let phase = self.state.as_ref().ok_or(ReplayError::NoRound)?.phase();
+        if matches!(phase, RoundPhase::Ended(_)) {
+            Ok(())
+        } else {
+            Err(ReplayError::RoundNotEnded { phase })
+        }
+    }
 }
 
 impl fmt::Display for ReplayError {
@@ -313,6 +341,16 @@ impl fmt::Display for ReplayError {
             Self::NoRemainingDraws => formatter.write_str("no draws remain"),
             Self::Call(error) => error.fmt(formatter),
             Self::Riichi(error) => error.fmt(formatter),
+            Self::MissingScoreDeltas => {
+                formatter.write_str("ryukyoku event is missing score deltas")
+            }
+            Self::Ryuukyoku(error) => error.fmt(formatter),
+            Self::RoundNotEnded { phase } => {
+                write!(
+                    formatter,
+                    "end_kyoku reached before round ended in phase {phase:?}"
+                )
+            }
         }
     }
 }
@@ -322,6 +360,7 @@ impl Error for ReplayError {
         match self {
             Self::Call(error) => Some(error),
             Self::Riichi(error) => Some(error),
+            Self::Ryuukyoku(error) => Some(error),
             _ => None,
         }
     }

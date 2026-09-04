@@ -9,7 +9,7 @@ use kyoku::mahjong::player::{
 use kyoku::mahjong::player_index::PlayerIndex;
 use kyoku::mahjong::round::{
     CallError, DrawError, DrawSource, HoraError, KanKind, RiichiError, RoundId, RoundPhase,
-    RoundResult, RoundState, Wind,
+    RoundResult, RoundState, RyuukyokuError, Wind,
 };
 use kyoku::mahjong::tile::Tile;
 
@@ -168,6 +168,139 @@ fn round_start_draw_and_discard_update_owned_state() {
     );
     assert_eq!(state.player(player(0)).hand().effective_tile_count(), 13);
     assert_eq!(state.player(player(0)).discards()[0].tile(), tile(10));
+}
+
+#[test]
+fn ryuukyoku_applies_score_deltas_and_preserves_non_phase_round_state() {
+    let phase = RoundPhase::AfterDiscard { player: player(2) };
+    let mut state = RoundState::new(
+        players(),
+        RoundId::new(Wind::South, 2).unwrap(),
+        3,
+        2,
+        vec![tile(31), tile(4)],
+        17,
+        phase,
+    );
+    let original = state.clone();
+
+    state.ryuukyoku([-1_000, 3_000, -1_000, -1_000]).unwrap();
+
+    assert_eq!(state.player(player(0)).score(), 24_000);
+    assert_eq!(state.player(player(1)).score(), 28_001);
+    assert_eq!(state.player(player(2)).score(), 24_002);
+    assert_eq!(state.player(player(3)).score(), 24_003);
+    assert_eq!(state.phase(), RoundPhase::Ended(RoundResult::Ryukyoku));
+    assert_eq!(state.honba(), original.honba());
+    assert_eq!(state.riichi_sticks(), original.riichi_sticks());
+    assert_eq!(state.remaining_draws(), original.remaining_draws());
+    assert_eq!(state.dora_indicators(), original.dora_indicators());
+    for index in 0..4 {
+        let player = player(index);
+        assert_eq!(state.player(player).hand(), original.player(player).hand());
+        assert_eq!(
+            state.player(player).discards(),
+            original.player(player).discards()
+        );
+        assert_eq!(
+            state.player(player).riichi(),
+            original.player(player).riichi()
+        );
+    }
+}
+
+#[test]
+fn zero_delta_ryuukyoku_only_ends_the_round() {
+    let mut state = RoundState::start(
+        players(),
+        RoundId::new(Wind::East, 1).unwrap(),
+        1,
+        2,
+        tile(31),
+    );
+    let original = state.clone();
+
+    state.ryuukyoku([0; 4]).unwrap();
+
+    assert_eq!(state.players(), original.players());
+    assert_eq!(state.honba(), original.honba());
+    assert_eq!(state.riichi_sticks(), original.riichi_sticks());
+    assert_eq!(state.remaining_draws(), original.remaining_draws());
+    assert_eq!(state.dora_indicators(), original.dora_indicators());
+    assert_eq!(state.phase(), RoundPhase::Ended(RoundResult::Ryukyoku));
+}
+
+#[test]
+fn ryuukyoku_immediately_ends_the_round() {
+    let phase = RoundPhase::AfterDraw {
+        player: player(0),
+        source: DrawSource::Wall,
+    };
+    let mut state = RoundState::new(
+        players(),
+        RoundId::new(Wind::East, 1).unwrap(),
+        0,
+        0,
+        vec![tile(31)],
+        20,
+        phase,
+    );
+
+    state.ryuukyoku([0; 4]).unwrap();
+    assert_eq!(state.phase(), RoundPhase::Ended(RoundResult::Ryukyoku));
+}
+
+#[test]
+fn ryuukyoku_rejects_an_ended_round_without_mutation() {
+    let phase = RoundPhase::Ended(RoundResult::Hora);
+    let mut state = RoundState::new(
+        players(),
+        RoundId::new(Wind::East, 1).unwrap(),
+        0,
+        1,
+        vec![tile(31)],
+        20,
+        phase,
+    );
+    let original = state.clone();
+
+    assert_eq!(
+        state.ryuukyoku([-1_000, 3_000, -1_000, -1_000]),
+        Err(RyuukyokuError::InvalidPhase { phase })
+    );
+    assert_eq!(state, original);
+}
+
+#[test]
+fn failed_ryuukyoku_score_update_does_not_partially_mutate_the_round() {
+    let mut round_players = players();
+    round_players[3] = PlayerState::new(
+        Hand::new(vec![tile(3); 13], vec![]).unwrap(),
+        i32::MAX,
+        vec![],
+    );
+    let mut state = RoundState::new(
+        round_players,
+        RoundId::new(Wind::East, 1).unwrap(),
+        2,
+        1,
+        vec![tile(31)],
+        20,
+        RoundPhase::AfterDiscard { player: player(0) },
+    );
+    let original = state.clone();
+
+    assert_eq!(
+        state.ryuukyoku([1_000, 1_000, 1_000, 1]),
+        Err(RyuukyokuError::Score {
+            player: player(3),
+            error: ScoreMutationError::Overflow {
+                score: i32::MAX,
+                delta: 1,
+            },
+        })
+    );
+    assert_eq!(state, original);
 }
 
 #[test]
