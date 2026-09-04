@@ -7,8 +7,8 @@ use crate::mahjong::hand::{Hand, HandMutationError};
 use crate::mahjong::player::PlayerState;
 use crate::mahjong::player_index::PlayerIndex;
 use crate::mahjong::round::{
-    CallError, DiscardError, DoraError, DrawError, EndKyokuError, RiichiError, RoundId, RoundState,
-    RyuukyokuError, Wind,
+    CallError, DiscardError, DoraError, DrawError, EndKyokuError, HoraError, RiichiError, RoundId,
+    RoundState, RyuukyokuError, Wind,
 };
 use crate::mahjong::tile::Tile;
 
@@ -52,8 +52,10 @@ pub enum ReplayError {
     Call(CallError),
     /// 立直事件违反当前局面的领域规则。
     Riichi(RiichiError),
-    /// `ryukyoku` 事件没有提供确定性重建点数所需的点差。
+    /// 结算事件没有提供确定性重建点数所需的点差。
     MissingScoreDeltas,
+    /// 和牌结算违反当前局面的领域规则。
+    Hora(HoraError),
     /// 流局结算违反当前局面的领域规则。
     Ryuukyoku(RyuukyokuError),
     /// 结束一局事件违反当前局面的领域规则。
@@ -69,6 +71,7 @@ impl Replayer {
     /// 将一个 mjai 事件应用到当前状态。
     pub fn apply(&mut self, event: &Event) -> Result<(), ReplayError> {
         match event {
+            Event::StartGame { .. } | Event::EndGame => Ok(()),
             Event::StartKyoku {
                 bakaze,
                 dora_marker,
@@ -120,6 +123,7 @@ impl Replayer {
             Event::Dora { dora_marker } => self.reveal_dora(*dora_marker),
             Event::Reach { actor } => self.declare_riichi(*actor),
             Event::ReachAccepted { actor } => self.accept_riichi(*actor),
+            Event::Hora { deltas, .. } => self.hora(*deltas),
             Event::Ryukyoku { deltas } => self.ryuukyoku(*deltas),
             Event::EndKyoku => self.end_kyoku(),
             _ => Err(ReplayError::UnsupportedEvent),
@@ -303,6 +307,15 @@ impl Replayer {
             .map_err(ReplayError::Ryuukyoku)
     }
 
+    fn hora(&mut self, deltas: Option<[i32; 4]>) -> Result<(), ReplayError> {
+        let score_deltas = deltas.ok_or(ReplayError::MissingScoreDeltas)?;
+        self.state
+            .as_mut()
+            .ok_or(ReplayError::NoRound)?
+            .hora(score_deltas)
+            .map_err(ReplayError::Hora)
+    }
+
     fn end_kyoku(&mut self) -> Result<(), ReplayError> {
         self.state
             .as_mut()
@@ -351,8 +364,9 @@ impl fmt::Display for ReplayError {
             Self::Call(error) => error.fmt(formatter),
             Self::Riichi(error) => error.fmt(formatter),
             Self::MissingScoreDeltas => {
-                formatter.write_str("ryukyoku event is missing score deltas")
+                formatter.write_str("settlement event is missing score deltas")
             }
+            Self::Hora(error) => error.fmt(formatter),
             Self::Ryuukyoku(error) => error.fmt(formatter),
             Self::EndKyoku(error) => error.fmt(formatter),
         }
@@ -367,6 +381,7 @@ impl Error for ReplayError {
             Self::Dora(error) => Some(error),
             Self::Call(error) => Some(error),
             Self::Riichi(error) => Some(error),
+            Self::Hora(error) => Some(error),
             Self::Ryuukyoku(error) => Some(error),
             Self::EndKyoku(error) => Some(error),
             _ => None,

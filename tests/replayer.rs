@@ -167,6 +167,58 @@ fn ryukyoku_applies_deltas_and_end_kyoku_confirms_the_ended_round() {
 }
 
 #[test]
+fn hora_applies_deltas_through_the_domain_and_waits_for_end_kyoku() {
+    let mut replayer = Replayer::new();
+    replayer.apply(&start_kyoku(1)).unwrap();
+    replayer
+        .apply(&Event::Tsumo {
+            actor: 0,
+            pai: mjai_tile(20),
+        })
+        .unwrap();
+
+    replayer
+        .apply(&Event::Hora {
+            actor: 0,
+            target: 0,
+            deltas: Some([6_000, -2_000, -2_000, -2_000]),
+            ura_markers: None,
+        })
+        .unwrap();
+
+    let state = replayer.state().unwrap();
+    assert_eq!(state.player(player(0)).score(), 31_000);
+    assert_eq!(state.player(player(1)).score(), 22_000);
+    assert_eq!(state.player(player(2)).score(), 24_000);
+    assert_eq!(state.player(player(3)).score(), 23_000);
+    assert_eq!(state.riichi_sticks(), 0);
+    assert_eq!(state.phase(), RoundPhase::AwaitingEnd(RoundResult::Hora));
+
+    replayer.apply(&Event::EndKyoku).unwrap();
+    assert_eq!(
+        replayer.state().unwrap().phase(),
+        RoundPhase::Ended(RoundResult::Hora)
+    );
+}
+
+#[test]
+fn start_game_and_end_game_are_accepted_without_round_state() {
+    let mut replayer = Replayer::new();
+
+    replayer
+        .apply(&Event::StartGame {
+            names: array::from_fn(|index| format!("player-{index}")),
+            kyoku_first: 0,
+            aka_flag: true,
+        })
+        .unwrap();
+    assert_eq!(replayer.state(), None);
+
+    replayer.apply(&Event::EndGame).unwrap();
+    assert_eq!(replayer.state(), None);
+}
+
+#[test]
 fn ryukyoku_without_deltas_fails_without_mutation() {
     let mut replayer = Replayer::new();
     replayer.apply(&start_kyoku(1)).unwrap();
