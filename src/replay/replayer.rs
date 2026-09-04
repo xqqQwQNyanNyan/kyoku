@@ -9,7 +9,7 @@ use crate::mahjong::player_index::PlayerIndex;
 use crate::mahjong::round::{DrawError, RoundId, RoundState, Wind};
 use crate::mahjong::tile::Tile;
 
-/// 按顺序消费 mjai 事件并维护当前局面状态的状态机。
+/// 按顺序消费 mjai 事件并重建当前局面状态。
 #[derive(Debug, Default)]
 pub struct Replayer {
     state: Option<RoundState>,
