@@ -4,11 +4,12 @@ use kyoku::mahjong::hand::Hand;
 use kyoku::mahjong::hand::HandMutationError;
 use kyoku::mahjong::meld::Meld;
 use kyoku::mahjong::player::{
-    Discard, DiscardCallError, PlayerRiichiError, PlayerState, RiichiState,
+    Discard, DiscardCallError, PlayerRiichiError, PlayerState, RiichiState, ScoreMutationError,
 };
 use kyoku::mahjong::player_index::PlayerIndex;
 use kyoku::mahjong::round::{
-    CallError, DrawError, DrawSource, KanKind, RiichiError, RoundId, RoundPhase, RoundState, Wind,
+    CallError, DrawError, DrawSource, HoraError, KanKind, RiichiError, RoundId, RoundPhase,
+    RoundResult, RoundState, Wind,
 };
 use kyoku::mahjong::tile::Tile;
 
@@ -111,7 +112,7 @@ fn round_phase_reports_a_player_only_when_the_variant_stores_one() {
         assert_eq!(phase.player(), Some(player));
     }
     assert_eq!(RoundPhase::Initial.player(), None);
-    assert_eq!(RoundPhase::Ended.player(), None);
+    assert_eq!(RoundPhase::Ended(RoundResult::Hora).player(), None);
 }
 
 #[test]
@@ -167,6 +168,219 @@ fn round_start_draw_and_discard_update_owned_state() {
     );
     assert_eq!(state.player(player(0)).hand().effective_tile_count(), 13);
     assert_eq!(state.player(player(0)).discards()[0].tile(), tile(10));
+}
+
+#[test]
+fn hora_after_draw_applies_all_score_deltas_and_ends_the_round() {
+    let mut state = RoundState::start(
+        players(),
+        RoundId::new(Wind::East, 1).unwrap(),
+        0,
+        0,
+        tile(31),
+    );
+    state.draw(player(0), tile(10)).unwrap();
+
+    state.hora([6_000, -2_000, -2_000, -2_000]).unwrap();
+
+    assert_eq!(state.player(player(0)).score(), 31_000);
+    assert_eq!(state.player(player(1)).score(), 23_001);
+    assert_eq!(state.player(player(2)).score(), 23_002);
+    assert_eq!(state.player(player(3)).score(), 23_003);
+    assert_eq!(state.phase(), RoundPhase::Ended(RoundResult::Hora));
+}
+
+#[test]
+fn hora_after_discard_ends_the_round() {
+    let mut state = RoundState::start(
+        players(),
+        RoundId::new(Wind::East, 1).unwrap(),
+        0,
+        0,
+        tile(31),
+    );
+    state.draw(player(0), tile(10)).unwrap();
+    state.discard(player(0), tile(10), true).unwrap();
+
+    state.hora([-8_000, 8_000, 0, 0]).unwrap();
+
+    assert_eq!(state.player(player(0)).score(), 17_000);
+    assert_eq!(state.player(player(1)).score(), 33_001);
+    assert_eq!(state.phase(), RoundPhase::Ended(RoundResult::Hora));
+}
+
+#[test]
+fn hora_accepts_aggregated_multi_ron_score_deltas() {
+    let mut state = RoundState::new(
+        players(),
+        RoundId::new(Wind::East, 1).unwrap(),
+        0,
+        0,
+        vec![tile(31)],
+        30,
+        RoundPhase::AfterDiscard { player: player(3) },
+    );
+
+    state.hora([12_000, 8_000, 4_000, -24_000]).unwrap();
+
+    assert_eq!(state.player(player(0)).score(), 37_000);
+    assert_eq!(state.player(player(1)).score(), 33_001);
+    assert_eq!(state.player(player(2)).score(), 29_002);
+    assert_eq!(state.player(player(3)).score(), 1_003);
+    assert_eq!(state.phase(), RoundPhase::Ended(RoundResult::Hora));
+}
+
+#[test]
+fn hora_rejects_invalid_phases_without_mutation() {
+    let round = RoundId::new(Wind::East, 1).unwrap();
+    let invalid_phases = [
+        RoundPhase::Initial,
+        RoundPhase::AfterCall { player: player(1) },
+        RoundPhase::Ended(RoundResult::Hora),
+    ];
+
+    for phase in invalid_phases {
+        let mut state = RoundState::new(players(), round, 0, 0, vec![tile(31)], 30, phase);
+        let original = state.clone();
+
+        assert_eq!(
+            state.hora([3_000, -1_000, -1_000, -1_000]),
+            Err(HoraError::InvalidPhase { phase })
+        );
+        assert_eq!(state, original);
+    }
+}
+
+#[test]
+fn failed_hora_score_update_does_not_partially_mutate_the_round() {
+    let mut round_players = players();
+    round_players[3] = PlayerState::new(
+        Hand::new(vec![tile(3); 13], vec![]).unwrap(),
+        i32::MAX,
+        vec![],
+    );
+    let mut state = RoundState::new(
+        round_players,
+        RoundId::new(Wind::East, 1).unwrap(),
+        0,
+        2,
+        vec![tile(31)],
+        30,
+        RoundPhase::AfterDiscard { player: player(0) },
+    );
+    let original = state.clone();
+
+    assert_eq!(
+        state.hora([1_000, 1_000, 1_000, 1]),
+        Err(HoraError::Score {
+            player: player(3),
+            error: ScoreMutationError::Overflow {
+                score: i32::MAX,
+                delta: 1,
+            },
+        })
+    );
+    assert_eq!(state, original);
+    assert_eq!(state.riichi_sticks(), 2);
+}
+
+#[test]
+fn hora_after_riichi_declaration_discard_does_not_accept_riichi() {
+    let mut state = RoundState::start(
+        players(),
+        RoundId::new(Wind::East, 1).unwrap(),
+        3,
+        2,
+        tile(31),
+    );
+    state.draw(player(0), tile(10)).unwrap();
+    state.declare_riichi(player(0)).unwrap();
+    state.discard(player(0), tile(10), true).unwrap();
+
+    state.hora([-8_000, 10_000, 0, 0]).unwrap();
+
+    assert_eq!(state.player(player(0)).riichi(), RiichiState::Declared);
+    assert_eq!(state.player(player(0)).score(), 17_000);
+    assert_eq!(state.player(player(1)).score(), 35_001);
+    assert_eq!(state.riichi_sticks(), 0);
+    assert_eq!(state.honba(), 3);
+    assert_eq!(state.phase(), RoundPhase::Ended(RoundResult::Hora));
+
+    let ended = state.clone();
+    assert_eq!(
+        state.accept_riichi(player(0)),
+        Err(RiichiError::InvalidPhase {
+            phase: RoundPhase::Ended(RoundResult::Hora),
+        })
+    );
+    assert_eq!(state, ended);
+}
+
+#[test]
+fn hora_after_kakan_declaration_supports_chankan() {
+    let mut state = RoundState::new(
+        players(),
+        RoundId::new(Wind::East, 1).unwrap(),
+        0,
+        0,
+        vec![tile(31)],
+        30,
+        RoundPhase::AfterKanDeclaration {
+            player: player(0),
+            kind: KanKind::Kakan,
+        },
+    );
+
+    state.hora([-8_000, 8_000, 0, 0]).unwrap();
+
+    assert_eq!(state.phase(), RoundPhase::Ended(RoundResult::Hora));
+}
+
+#[test]
+fn hora_after_ankan_declaration_supports_kokushi_chankan() {
+    let mut state = RoundState::new(
+        players(),
+        RoundId::new(Wind::East, 1).unwrap(),
+        0,
+        0,
+        vec![tile(31)],
+        30,
+        RoundPhase::AfterKanDeclaration {
+            player: player(0),
+            kind: KanKind::Ankan,
+        },
+    );
+
+    state.hora([-8_000, 8_000, 0, 0]).unwrap();
+
+    assert_eq!(state.phase(), RoundPhase::Ended(RoundResult::Hora));
+}
+
+#[test]
+fn hora_after_daiminkan_declaration_is_rejected_without_mutation() {
+    let phase = RoundPhase::AfterKanDeclaration {
+        player: player(0),
+        kind: KanKind::Daiminkan,
+    };
+    let mut state = RoundState::new(
+        players(),
+        RoundId::new(Wind::East, 1).unwrap(),
+        0,
+        2,
+        vec![tile(31)],
+        30,
+        phase,
+    );
+    let original = state.clone();
+
+    assert_eq!(
+        state.hora([-8_000, 10_000, 0, 0]),
+        Err(HoraError::InvalidPhase { phase })
+    );
+    assert_eq!(state, original);
+    assert_eq!(state.player(player(0)).score(), 25_000);
+    assert_eq!(state.phase(), phase);
+    assert_eq!(state.riichi_sticks(), 2);
 }
 
 #[test]

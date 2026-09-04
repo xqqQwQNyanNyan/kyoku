@@ -2,7 +2,9 @@ use std::error::Error;
 use std::fmt;
 
 use super::hand::HandMutationError;
-use super::player::{DiscardCallError, PlayerRiichiError, PlayerState, RiichiState};
+use super::player::{
+    DiscardCallError, PlayerRiichiError, PlayerState, RiichiState, ScoreMutationError,
+};
 use super::player_index::PlayerIndex;
 use super::tile::Tile;
 
@@ -49,6 +51,15 @@ pub enum DrawSource {
     Rinshan,
 }
 
+/// 一局结束的原因。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RoundResult {
+    /// 本局因和牌结束。
+    Hora,
+    /// 本局因流局结束。
+    Ryukyoku,
+}
+
 /// 当前一局所处的阶段。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RoundPhase {
@@ -78,8 +89,8 @@ pub enum RoundPhase {
         /// 完成的杠种类。
         kind: KanKind,
     },
-    /// 本局已经结束。
-    Ended,
+    /// 本局已经结束，并记录终局原因。
+    Ended(RoundResult),
 }
 
 /// 一局麻将的当前状态。
@@ -101,6 +112,18 @@ pub enum DrawError {
     NoRemainingDraws,
     /// 玩家手牌无法接受这张牌。
     Hand(HandMutationError),
+}
+
+/// 和牌终局结算无法应用到当前局面的原因。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HoraError {
+    /// 当前阶段不接受和牌终局结算。
+    InvalidPhase { phase: RoundPhase },
+    /// 一名玩家的点数无法应用结算点差。
+    Score {
+        player: PlayerIndex,
+        error: ScoreMutationError,
+    },
 }
 
 /// 立直事件无法应用到当前局面的原因。
@@ -199,7 +222,7 @@ impl RoundPhase {
             Self::AfterDraw { player, .. } => Some(player),
             Self::AfterKanDeclaration { player, .. } => Some(player),
             Self::AfterDiscard { player } | Self::AfterCall { player } => Some(player),
-            Self::Initial | Self::Ended => None,
+            Self::Initial | Self::Ended(_) => None,
         }
     }
 }
@@ -485,6 +508,34 @@ impl RoundState {
         Ok(())
     }
 
+    /// 应用一次完整的和牌终局结算，并结束本局。
+    pub fn hora(&mut self, score_deltas: [i32; 4]) -> Result<(), HoraError> {
+        if !matches!(
+            self.phase,
+            RoundPhase::AfterDraw { .. }
+                | RoundPhase::AfterDiscard { .. }
+                | RoundPhase::AfterKanDeclaration {
+                    kind: KanKind::Kakan | KanKind::Ankan,
+                    ..
+                }
+        ) {
+            return Err(HoraError::InvalidPhase { phase: self.phase });
+        }
+
+        let mut players = self.players.clone();
+        for (index, (player_state, delta)) in players.iter_mut().zip(score_deltas).enumerate() {
+            let player = PlayerIndex::new(index as u8).expect("player array index is always valid");
+            player_state
+                .apply_score_delta(delta)
+                .map_err(|error| HoraError::Score { player, error })?;
+        }
+
+        self.players = players;
+        self.riichi_sticks = 0;
+        self.phase = RoundPhase::Ended(RoundResult::Hora);
+        Ok(())
+    }
+
     /// 返回按玩家索引排列的四名玩家状态。
     pub const fn players(&self) -> &[PlayerState; 4] {
         &self.players
@@ -580,6 +631,26 @@ impl Error for DrawError {
         match self {
             Self::NoRemainingDraws => None,
             Self::Hand(error) => Some(error),
+        }
+    }
+}
+
+impl fmt::Display for HoraError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidPhase { phase } => {
+                write!(formatter, "cannot apply hora in phase {phase:?}")
+            }
+            Self::Score { error, .. } => error.fmt(formatter),
+        }
+    }
+}
+
+impl Error for HoraError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Score { error, .. } => Some(error),
+            Self::InvalidPhase { .. } => None,
         }
     }
 }

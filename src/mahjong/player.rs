@@ -39,6 +39,13 @@ pub enum PlayerRiichiError {
     ScoreUnderflow { score: i32 },
 }
 
+/// 修改玩家点数时无法保持点数表示有效的原因。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScoreMutationError {
+    /// 当前点数与变化量相加后超出 `i32` 的表示范围。
+    Overflow { score: i32, delta: i32 },
+}
+
 /// 玩家打出的一张牌及其当前状态。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Discard {
@@ -95,6 +102,19 @@ impl PlayerState {
 
         self.score = score;
         self.riichi = RiichiState::Accepted;
+        Ok(())
+    }
+
+    /// 将已经确定的结算点差应用到玩家点数。
+    pub fn apply_score_delta(&mut self, delta: i32) -> Result<(), ScoreMutationError> {
+        let score = self
+            .score
+            .checked_add(delta)
+            .ok_or(ScoreMutationError::Overflow {
+                score: self.score,
+                delta,
+            })?;
+        self.score = score;
         Ok(())
     }
 
@@ -277,3 +297,18 @@ impl fmt::Display for PlayerRiichiError {
 }
 
 impl Error for PlayerRiichiError {}
+
+impl fmt::Display for ScoreMutationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Overflow { score, delta } => {
+                write!(
+                    formatter,
+                    "applying score delta {delta} to {score} would overflow"
+                )
+            }
+        }
+    }
+}
+
+impl Error for ScoreMutationError {}
