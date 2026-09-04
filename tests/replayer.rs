@@ -4,7 +4,7 @@ use convlog::Event;
 use kyoku::mahjong::hand::HandMutationError;
 use kyoku::mahjong::meld::Meld;
 use kyoku::mahjong::player_index::PlayerIndex;
-use kyoku::mahjong::round::{CallError, KanKind, RoundPhase, Wind};
+use kyoku::mahjong::round::{CallError, DrawSource, KanKind, RoundPhase, Wind};
 use kyoku::mahjong::tile::Tile;
 use kyoku::replay::replayer::{ReplayError, Replayer};
 
@@ -101,7 +101,10 @@ fn draw_and_discard_reconstruct_the_current_state() {
     let after_draw = replayer.state().unwrap();
     assert_eq!(
         after_draw.phase(),
-        RoundPhase::AfterDraw { player: player(0) }
+        RoundPhase::AfterDraw {
+            player: player(0),
+            source: DrawSource::Wall,
+        }
     );
     assert_eq!(after_draw.remaining_draws(), 69);
     assert_eq!(after_draw.player(player(0)).hand().concealed().len(), 14);
@@ -122,6 +125,31 @@ fn draw_and_discard_reconstruct_the_current_state() {
     let discard = after_discard.player(player(0)).discards()[0];
     assert_eq!(discard.tile(), tile(20));
     assert!(discard.is_tsumogiri());
+}
+
+#[test]
+fn dora_event_appends_an_indicator_without_changing_the_phase() {
+    let mut replayer = Replayer::new();
+    replayer.apply(&start_kyoku(1)).unwrap();
+    replayer
+        .apply(&Event::Tsumo {
+            actor: 0,
+            pai: mjai_tile(20),
+        })
+        .unwrap();
+    let phase = replayer.state().unwrap().phase();
+
+    replayer
+        .apply(&Event::Dora {
+            dora_marker: mjai_tile(30),
+        })
+        .unwrap();
+
+    assert_eq!(
+        replayer.state().unwrap().dora_indicators(),
+        [tile(31), tile(30)]
+    );
+    assert_eq!(replayer.state().unwrap().phase(), phase);
 }
 
 #[test]
@@ -317,6 +345,19 @@ fn daiminkan_and_ankan_events_are_replayed_through_domain_calls() {
             kind: KanKind::Daiminkan,
         }
     );
+    daiminkan
+        .apply(&Event::Tsumo {
+            actor: 2,
+            pai: mjai_tile(7),
+        })
+        .unwrap();
+    assert_eq!(
+        daiminkan.state().unwrap().phase(),
+        RoundPhase::AfterDraw {
+            player: player(2),
+            source: DrawSource::Rinshan,
+        }
+    );
 
     let mut hands = [[9; 13]; 4];
     hands[1][..3].fill(31);
@@ -343,6 +384,31 @@ fn daiminkan_and_ankan_events_are_replayed_through_domain_calls() {
         RoundPhase::AfterKanDeclaration {
             player: player(1),
             kind: KanKind::Ankan,
+        }
+    );
+    ankan
+        .apply(&Event::Dora {
+            dora_marker: mjai_tile(30),
+        })
+        .unwrap();
+    assert!(matches!(
+        ankan.state().unwrap().phase(),
+        RoundPhase::AfterKanDeclaration {
+            player: phase_player,
+            kind: KanKind::Ankan,
+        } if phase_player == player(1)
+    ));
+    ankan
+        .apply(&Event::Tsumo {
+            actor: 1,
+            pai: mjai_tile(8),
+        })
+        .unwrap();
+    assert_eq!(
+        ankan.state().unwrap().phase(),
+        RoundPhase::AfterDraw {
+            player: player(1),
+            source: DrawSource::Rinshan,
         }
     );
 }
@@ -393,6 +459,24 @@ fn kakan_event_upgrades_the_existing_pon_in_place() {
         RoundPhase::AfterKanDeclaration {
             player: player(2),
             kind: KanKind::Kakan,
+        }
+    );
+    replayer
+        .apply(&Event::Tsumo {
+            actor: 2,
+            pai: mjai_tile(7),
+        })
+        .unwrap();
+    replayer
+        .apply(&Event::Dora {
+            dora_marker: mjai_tile(30),
+        })
+        .unwrap();
+    assert_eq!(
+        replayer.state().unwrap().phase(),
+        RoundPhase::AfterDraw {
+            player: player(2),
+            source: DrawSource::Rinshan,
         }
     );
 }

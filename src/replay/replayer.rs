@@ -100,6 +100,7 @@ impl Replayer {
                 pai,
                 consumed,
             } => self.kakan(*actor, *pai, *consumed),
+            Event::Dora { dora_marker } => self.reveal_dora(*dora_marker),
             _ => Err(ReplayError::UnsupportedEvent),
         }
     }
@@ -243,6 +244,15 @@ impl Replayer {
             .ok_or(ReplayError::NoRound)?
             .kakan(actor, added, consumed)
             .map_err(ReplayError::Call)
+    }
+
+    fn reveal_dora(&mut self, marker: convlog::Tile) -> Result<(), ReplayError> {
+        let marker = convert_tile(marker)?;
+        self.state
+            .as_mut()
+            .ok_or(ReplayError::NoRound)?
+            .reveal_dora(marker);
+        Ok(())
     }
 }
 

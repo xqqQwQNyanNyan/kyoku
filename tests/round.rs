@@ -5,7 +5,9 @@ use kyoku::mahjong::hand::HandMutationError;
 use kyoku::mahjong::meld::Meld;
 use kyoku::mahjong::player::{Discard, DiscardCallError, PlayerState};
 use kyoku::mahjong::player_index::PlayerIndex;
-use kyoku::mahjong::round::{CallError, DrawError, KanKind, RoundId, RoundPhase, RoundState, Wind};
+use kyoku::mahjong::round::{
+    CallError, DrawError, DrawSource, KanKind, RoundId, RoundPhase, RoundState, Wind,
+};
 use kyoku::mahjong::tile::Tile;
 
 fn tile(value: u8) -> Tile {
@@ -83,7 +85,10 @@ fn round_id_exposes_wind_and_derives_dealer_from_number() {
 fn round_phase_reports_a_player_only_when_the_variant_stores_one() {
     let player = player(2);
     let phases = [
-        RoundPhase::AfterDraw { player },
+        RoundPhase::AfterDraw {
+            player,
+            source: DrawSource::Wall,
+        },
         RoundPhase::AfterDiscard { player },
         RoundPhase::AfterCall { player },
         RoundPhase::AfterKanDeclaration {
@@ -144,7 +149,13 @@ fn round_start_draw_and_discard_update_owned_state() {
 
     state.draw(player(0), tile(10)).unwrap();
     assert_eq!(state.remaining_draws(), 69);
-    assert_eq!(state.phase(), RoundPhase::AfterDraw { player: player(0) });
+    assert_eq!(
+        state.phase(),
+        RoundPhase::AfterDraw {
+            player: player(0),
+            source: DrawSource::Wall,
+        }
+    );
     assert_eq!(state.player(player(0)).hand().effective_tile_count(), 14);
 
     state.discard(player(0), tile(10), true).unwrap();
@@ -349,6 +360,19 @@ fn daiminkan_updates_the_discard_hand_and_phase_atomically() {
             kind: KanKind::Daiminkan,
         }
     );
+
+    state.draw(player(2), tile(7)).unwrap();
+    assert_eq!(
+        state.phase(),
+        RoundPhase::AfterDraw {
+            player: player(2),
+            source: DrawSource::Rinshan,
+        }
+    );
+    let phase = state.phase();
+    state.reveal_dora(tile(30));
+    assert_eq!(state.dora_indicators(), [tile(31), tile(30)]);
+    assert_eq!(state.phase(), phase);
 }
 
 #[test]
@@ -366,7 +390,10 @@ fn ankan_and_kakan_require_the_actor_to_have_just_drawn() {
         0,
         vec![tile(30)],
         50,
-        RoundPhase::AfterDraw { player: player(1) },
+        RoundPhase::AfterDraw {
+            player: player(1),
+            source: DrawSource::Wall,
+        },
     );
     ankan.ankan(player(1), [tile(31); 4]).unwrap();
     assert_eq!(
@@ -374,6 +401,22 @@ fn ankan_and_kakan_require_the_actor_to_have_just_drawn() {
         RoundPhase::AfterKanDeclaration {
             player: player(1),
             kind: KanKind::Ankan,
+        }
+    );
+    ankan.reveal_dora(tile(29));
+    assert_eq!(
+        ankan.phase(),
+        RoundPhase::AfterKanDeclaration {
+            player: player(1),
+            kind: KanKind::Ankan,
+        }
+    );
+    ankan.draw(player(1), tile(8)).unwrap();
+    assert_eq!(
+        ankan.phase(),
+        RoundPhase::AfterDraw {
+            player: player(1),
+            source: DrawSource::Rinshan,
         }
     );
 
@@ -395,7 +438,10 @@ fn ankan_and_kakan_require_the_actor_to_have_just_drawn() {
         0,
         vec![tile(30)],
         50,
-        RoundPhase::AfterDraw { player: player(2) },
+        RoundPhase::AfterDraw {
+            player: player(2),
+            source: DrawSource::Wall,
+        },
     );
     kakan.kakan(player(2), tile(4), [tile(4); 3]).unwrap();
     assert!(matches!(
@@ -409,6 +455,17 @@ fn ankan_and_kakan_require_the_actor_to_have_just_drawn() {
             kind: KanKind::Kakan,
         }
     );
+    kakan.draw(player(2), tile(8)).unwrap();
+    assert_eq!(
+        kakan.phase(),
+        RoundPhase::AfterDraw {
+            player: player(2),
+            source: DrawSource::Rinshan,
+        }
+    );
+    let phase = kakan.phase();
+    kakan.reveal_dora(tile(29));
+    assert_eq!(kakan.phase(), phase);
 
     let mut wrong_actor = RoundState::new(
         players(),
@@ -417,7 +474,10 @@ fn ankan_and_kakan_require_the_actor_to_have_just_drawn() {
         0,
         vec![tile(30)],
         50,
-        RoundPhase::AfterDraw { player: player(0) },
+        RoundPhase::AfterDraw {
+            player: player(0),
+            source: DrawSource::Wall,
+        },
     );
     let original = wrong_actor.clone();
     assert_eq!(
@@ -428,4 +488,98 @@ fn ankan_and_kakan_require_the_actor_to_have_just_drawn() {
         })
     );
     assert_eq!(wrong_actor, original);
+}
+
+#[test]
+fn consecutive_kans_allow_interleaved_dora_events_and_rinshan_draws() {
+    let actor = player(2);
+    let target = player(0);
+    let first_kakan_pon = Meld::Pon {
+        tiles: [tile(4); 3],
+        called: tile(4),
+        from: player(1),
+    };
+    let second_kakan_pon = Meld::Pon {
+        tiles: [tile(13); 3],
+        called: tile(13),
+        from: player(3),
+    };
+    let mut round_players = players();
+    round_players[usize::from(target.get_id())] = PlayerState::new(
+        Hand::new(vec![tile(9); 13], vec![]).unwrap(),
+        25_000,
+        vec![Discard::new(tile(22), false, false, false)],
+    );
+    round_players[usize::from(actor.get_id())] = PlayerState::new(
+        Hand::new(
+            [vec![tile(22); 3], vec![tile(31); 4]].concat(),
+            vec![first_kakan_pon, second_kakan_pon],
+        )
+        .unwrap(),
+        25_000,
+        vec![],
+    );
+    let mut state = RoundState::new(
+        round_players,
+        RoundId::new(Wind::East, 1).unwrap(),
+        0,
+        0,
+        vec![tile(27)],
+        50,
+        RoundPhase::AfterDiscard { player: target },
+    );
+
+    state
+        .daiminkan(actor, target, tile(22), [tile(22); 3])
+        .unwrap();
+    state.draw(actor, tile(4)).unwrap();
+    assert_eq!(
+        state.phase(),
+        RoundPhase::AfterDraw {
+            player: actor,
+            source: DrawSource::Rinshan,
+        }
+    );
+
+    state.kakan(actor, tile(4), [tile(4); 3]).unwrap();
+    assert_eq!(
+        state.phase(),
+        RoundPhase::AfterKanDeclaration {
+            player: actor,
+            kind: KanKind::Kakan,
+        }
+    );
+    state.reveal_dora(tile(28));
+    state.draw(actor, tile(13)).unwrap();
+    state.reveal_dora(tile(29));
+
+    state.ankan(actor, [tile(31); 4]).unwrap();
+    state.reveal_dora(tile(30));
+    assert_eq!(
+        state.phase(),
+        RoundPhase::AfterKanDeclaration {
+            player: actor,
+            kind: KanKind::Ankan,
+        }
+    );
+    state.draw(actor, tile(7)).unwrap();
+
+    state.kakan(actor, tile(13), [tile(13); 3]).unwrap();
+    state.draw(actor, tile(8)).unwrap();
+    state.reveal_dora(tile(31));
+    assert_eq!(
+        state.phase(),
+        RoundPhase::AfterDraw {
+            player: actor,
+            source: DrawSource::Rinshan,
+        }
+    );
+    assert_eq!(
+        state.dora_indicators(),
+        [tile(27), tile(28), tile(29), tile(30), tile(31)]
+    );
+
+    state.discard(actor, tile(8), true).unwrap();
+    assert_eq!(state.phase(), RoundPhase::AfterDiscard { player: actor });
+    assert_eq!(state.player(actor).hand().melds().len(), 4);
 }

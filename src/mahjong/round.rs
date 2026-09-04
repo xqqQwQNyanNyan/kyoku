@@ -40,6 +40,15 @@ pub enum KanKind {
     Kakan,
 }
 
+/// 玩家当前手中最后一张摸牌的来源。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DrawSource {
+    /// 从通常牌山摸牌。
+    Wall,
+    /// 杠后从岭上摸牌。
+    Rinshan,
+}
+
 /// 当前一局所处的阶段。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RoundPhase {
@@ -49,6 +58,8 @@ pub enum RoundPhase {
     AfterDraw {
         /// 摸牌的玩家。
         player: PlayerIndex,
+        /// 这张摸牌的来源。
+        source: DrawSource,
     },
     /// 某玩家打牌后，等待其他玩家进行荣和、吃、碰或杠等响应。
     AfterDiscard {
@@ -60,11 +71,11 @@ pub enum RoundPhase {
         /// 完成吃或碰的玩家。
         player: PlayerIndex,
     },
-    /// 某玩家宣告杠后，等待抢杠响应或后续杠处理。
+    /// 某玩家完成杠后，等待岭上摸牌或抢杠等后续事件。
     AfterKanDeclaration {
-        /// 宣告杠的玩家。
+        /// 完成杠的玩家。
         player: PlayerIndex,
-        /// 宣告的杠种类。
+        /// 完成的杠种类。
         kind: KanKind,
     },
     /// 本局已经结束。
@@ -164,10 +175,9 @@ impl RoundPhase {
     /// 返回阶段中记录的玩家；开局及本局结束时返回 `None`。
     pub const fn player(self) -> Option<PlayerIndex> {
         match self {
-            Self::AfterDraw { player }
-            | Self::AfterDiscard { player }
-            | Self::AfterCall { player }
-            | Self::AfterKanDeclaration { player, .. } => Some(player),
+            Self::AfterDraw { player, .. } => Some(player),
+            Self::AfterKanDeclaration { player, .. } => Some(player),
+            Self::AfterDiscard { player } | Self::AfterCall { player } => Some(player),
             Self::Initial | Self::Ended => None,
         }
     }
@@ -220,17 +230,30 @@ impl RoundState {
     }
 
     /// 将一名玩家的摸牌应用到当前局面。
-    pub fn draw(&mut self, player: PlayerIndex, tile: Tile) -> Result<(), DrawError> {
+    pub fn draw(&mut self, actor: PlayerIndex, tile: Tile) -> Result<(), DrawError> {
         if self.remaining_draws == 0 {
             return Err(DrawError::NoRemainingDraws);
         }
 
-        self.player_mut(player)
-            .draw(tile)
-            .map_err(DrawError::Hand)?;
+        let source = match self.phase {
+            RoundPhase::AfterKanDeclaration {
+                player: kan_actor, ..
+            } if kan_actor == actor => DrawSource::Rinshan,
+            _ => DrawSource::Wall,
+        };
+
+        self.player_mut(actor).draw(tile).map_err(DrawError::Hand)?;
         self.remaining_draws -= 1;
-        self.phase = RoundPhase::AfterDraw { player };
+        self.phase = RoundPhase::AfterDraw {
+            player: actor,
+            source,
+        };
         Ok(())
+    }
+
+    /// 追加一张新翻开的宝牌指示牌，不改变当前阶段。
+    pub fn reveal_dora(&mut self, marker: Tile) {
+        self.dora_indicators.push(marker);
     }
 
     /// 将一名玩家的打牌应用到当前局面。
@@ -414,7 +437,10 @@ impl RoundState {
     }
 
     fn validate_self_kan_context(&self, actor: PlayerIndex) -> Result<(), CallError> {
-        let RoundPhase::AfterDraw { player: expected } = self.phase else {
+        let RoundPhase::AfterDraw {
+            player: expected, ..
+        } = self.phase
+        else {
             return Err(CallError::InvalidPhase { phase: self.phase });
         };
         if actor != expected {
