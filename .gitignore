@@ -21,3 +21,6 @@ Icon?
 .VolumeIcon.icns
 .com.apple.timemachine.donotpresent
 .apdisk
+
+/tmp/
+/doc/
