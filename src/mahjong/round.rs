@@ -2,7 +2,7 @@ use std::error::Error;
 use std::fmt;
 
 use super::hand::HandMutationError;
-use super::player::PlayerState;
+use super::player::{DiscardCallError, PlayerState};
 use super::player_index::PlayerIndex;
 use super::tile::Tile;
 
@@ -90,6 +90,35 @@ pub enum DrawError {
     NoRemainingDraws,
     /// 玩家手牌无法接受这张牌。
     Hand(HandMutationError),
+}
+
+/// 吃碰事件无法应用到当前局面的原因。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CallError {
+    /// 当前阶段不接受吃碰事件。
+    InvalidPhase { phase: RoundPhase },
+    /// 鸣牌者与弃牌者相同。
+    ActorIsTarget { player: PlayerIndex },
+    /// 事件的来源玩家不是当前最后一次弃牌的玩家。
+    WrongTarget {
+        expected: PlayerIndex,
+        actual: PlayerIndex,
+    },
+    /// 吃牌者不是弃牌者的下家。
+    InvalidChiActor {
+        expected: PlayerIndex,
+        actual: PlayerIndex,
+    },
+    /// 鸣牌者的手牌无法完成该操作。
+    Hand {
+        player: PlayerIndex,
+        error: HandMutationError,
+    },
+    /// 来源玩家的牌河与事件不一致。
+    Discard {
+        player: PlayerIndex,
+        error: DiscardCallError,
+    },
 }
 
 impl RoundId {
@@ -211,6 +240,71 @@ impl RoundState {
         Ok(())
     }
 
+    /// 应用一次吃牌，并原子地更新手牌、牌河和局面阶段。
+    pub fn chi(
+        &mut self,
+        actor: PlayerIndex,
+        target: PlayerIndex,
+        called: Tile,
+        consumed: [Tile; 2],
+    ) -> Result<(), CallError> {
+        self.validate_call_context(actor, target)?;
+        let expected = next_player(target);
+        if actor != expected {
+            return Err(CallError::InvalidChiActor {
+                expected,
+                actual: actor,
+            });
+        }
+
+        let mut players = self.players.clone();
+        players[usize::from(target.get_id())]
+            .mark_last_discard_called(called)
+            .map_err(|error| CallError::Discard {
+                player: target,
+                error,
+            })?;
+        players[usize::from(actor.get_id())]
+            .chi(called, target, consumed)
+            .map_err(|error| CallError::Hand {
+                player: actor,
+                error,
+            })?;
+
+        self.players = players;
+        self.phase = RoundPhase::AfterCall { player: actor };
+        Ok(())
+    }
+
+    /// 应用一次碰牌，并原子地更新手牌、牌河和局面阶段。
+    pub fn pon(
+        &mut self,
+        actor: PlayerIndex,
+        target: PlayerIndex,
+        called: Tile,
+        consumed: [Tile; 2],
+    ) -> Result<(), CallError> {
+        self.validate_call_context(actor, target)?;
+
+        let mut players = self.players.clone();
+        players[usize::from(target.get_id())]
+            .mark_last_discard_called(called)
+            .map_err(|error| CallError::Discard {
+                player: target,
+                error,
+            })?;
+        players[usize::from(actor.get_id())]
+            .pon(called, target, consumed)
+            .map_err(|error| CallError::Hand {
+                player: actor,
+                error,
+            })?;
+
+        self.players = players;
+        self.phase = RoundPhase::AfterCall { player: actor };
+        Ok(())
+    }
+
     /// 返回按玩家索引排列的四名玩家状态。
     pub const fn players(&self) -> &[PlayerState; 4] {
         &self.players
@@ -223,6 +317,26 @@ impl RoundState {
 
     fn player_mut(&mut self, player: PlayerIndex) -> &mut PlayerState {
         &mut self.players[usize::from(player.get_id())]
+    }
+
+    fn validate_call_context(
+        &self,
+        actor: PlayerIndex,
+        target: PlayerIndex,
+    ) -> Result<(), CallError> {
+        let RoundPhase::AfterDiscard { player: expected } = self.phase else {
+            return Err(CallError::InvalidPhase { phase: self.phase });
+        };
+        if actor == target {
+            return Err(CallError::ActorIsTarget { player: actor });
+        }
+        if target != expected {
+            return Err(CallError::WrongTarget {
+                expected,
+                actual: target,
+            });
+        }
+        Ok(())
     }
 
     /// 返回当前局的标识。
@@ -272,4 +386,47 @@ impl Error for DrawError {
             Self::Hand(error) => Some(error),
         }
     }
+}
+
+impl fmt::Display for CallError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidPhase { phase } => write!(formatter, "cannot call in phase {phase:?}"),
+            Self::ActorIsTarget { player } => {
+                write!(
+                    formatter,
+                    "player {} cannot call their own discard",
+                    player.get_id()
+                )
+            }
+            Self::WrongTarget { expected, actual } => write!(
+                formatter,
+                "call targets player {}, but the latest discard belongs to player {}",
+                actual.get_id(),
+                expected.get_id()
+            ),
+            Self::InvalidChiActor { expected, actual } => write!(
+                formatter,
+                "player {} cannot chi; expected player {}",
+                actual.get_id(),
+                expected.get_id()
+            ),
+            Self::Hand { error, .. } => error.fmt(formatter),
+            Self::Discard { error, .. } => error.fmt(formatter),
+        }
+    }
+}
+
+impl Error for CallError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Hand { error, .. } => Some(error),
+            Self::Discard { error, .. } => Some(error),
+            _ => None,
+        }
+    }
+}
+
+fn next_player(player: PlayerIndex) -> PlayerIndex {
+    PlayerIndex::new((player.get_id() + 1) % 4).expect("next player is always valid")
 }

@@ -1,8 +1,10 @@
 use std::array;
 
 use convlog::Event;
+use kyoku::mahjong::hand::HandMutationError;
+use kyoku::mahjong::meld::Meld;
 use kyoku::mahjong::player_index::PlayerIndex;
-use kyoku::mahjong::round::{RoundPhase, Wind};
+use kyoku::mahjong::round::{CallError, RoundPhase, Wind};
 use kyoku::mahjong::tile::Tile;
 use kyoku::replay::replayer::{ReplayError, Replayer};
 
@@ -31,6 +33,40 @@ fn start_kyoku(kyoku: u8) -> Event {
             array::from_fn(|index| mjai_tile(((player * 13 + index) % 34) as u8))
         }),
     }
+}
+
+fn start_kyoku_with_hands(tehais: [[u8; 13]; 4]) -> Event {
+    Event::StartKyoku {
+        bakaze: mjai_tile(27),
+        dora_marker: mjai_tile(31),
+        kyoku: 1,
+        honba: 0,
+        kyotaku: 0,
+        oya: 0,
+        scores: [25_000; 4],
+        tehais: tehais.map(|hand| hand.map(mjai_tile)),
+    }
+}
+
+fn replayer_waiting_for_call(caller: u8, caller_hand: [u8; 13]) -> Replayer {
+    let mut hands = [[9; 13]; 4];
+    hands[usize::from(caller)] = caller_hand;
+    let mut replayer = Replayer::new();
+    replayer.apply(&start_kyoku_with_hands(hands)).unwrap();
+    replayer
+        .apply(&Event::Tsumo {
+            actor: 0,
+            pai: mjai_tile(2),
+        })
+        .unwrap();
+    replayer
+        .apply(&Event::Dahai {
+            actor: 0,
+            pai: mjai_tile(2),
+            tsumogiri: true,
+        })
+        .unwrap();
+    replayer
 }
 
 #[test]
@@ -154,4 +190,103 @@ fn empty_wall_error_is_translated_from_the_domain() {
             .effective_tile_count(),
         13
     );
+}
+
+#[test]
+fn chi_and_pon_events_are_replayed_through_domain_calls() {
+    let mut chi_hand = [9; 13];
+    chi_hand[0] = 0;
+    chi_hand[1] = 1;
+    let mut chi_replayer = replayer_waiting_for_call(1, chi_hand);
+    chi_replayer
+        .apply(&Event::Chi {
+            actor: 1,
+            target: 0,
+            pai: mjai_tile(2),
+            consumed: [mjai_tile(0), mjai_tile(1)],
+        })
+        .unwrap();
+    let chi_state = chi_replayer.state().unwrap();
+    assert_eq!(
+        chi_state.phase(),
+        RoundPhase::AfterCall { player: player(1) }
+    );
+    assert!(chi_state.player(player(0)).discards()[0].is_called());
+    assert!(matches!(
+        chi_state.player(player(1)).hand().melds(),
+        [Meld::Chi { from, .. }] if *from == player(0)
+    ));
+
+    let mut pon_hand = [9; 13];
+    pon_hand[0] = 2;
+    pon_hand[1] = 2;
+    let mut pon_replayer = replayer_waiting_for_call(2, pon_hand);
+    pon_replayer
+        .apply(&Event::Pon {
+            actor: 2,
+            target: 0,
+            pai: mjai_tile(2),
+            consumed: [mjai_tile(2), mjai_tile(2)],
+        })
+        .unwrap();
+    let pon_state = pon_replayer.state().unwrap();
+    assert_eq!(
+        pon_state.phase(),
+        RoundPhase::AfterCall { player: player(2) }
+    );
+    assert!(pon_state.player(player(0)).discards()[0].is_called());
+    assert!(matches!(
+        pon_state.player(player(2)).hand().melds(),
+        [Meld::Pon { from, .. }] if *from == player(0)
+    ));
+}
+
+#[test]
+fn invalid_call_event_is_reported_and_keeps_the_replay_snapshot() {
+    let mut caller_hand = [9; 13];
+    caller_hand[0] = 2;
+    let mut replayer = replayer_waiting_for_call(2, caller_hand);
+    let original = replayer.state().unwrap().clone();
+
+    let error = replayer
+        .apply(&Event::Pon {
+            actor: 2,
+            target: 0,
+            pai: mjai_tile(2),
+            consumed: [mjai_tile(2), mjai_tile(2)],
+        })
+        .unwrap_err();
+
+    assert_eq!(
+        error,
+        ReplayError::Call(CallError::Hand {
+            player: player(2),
+            error: HandMutationError::TileNotFound { tile: tile(2) },
+        })
+    );
+    assert_eq!(replayer.state(), Some(&original));
+    assert!(!replayer.state().unwrap().player(player(0)).discards()[0].is_called());
+}
+
+#[test]
+fn chi_from_the_wrong_player_is_rejected() {
+    let mut caller_hand = [9; 13];
+    caller_hand[0] = 0;
+    caller_hand[1] = 1;
+    let mut replayer = replayer_waiting_for_call(2, caller_hand);
+    let original = replayer.state().unwrap().clone();
+
+    assert_eq!(
+        replayer.apply(&Event::Chi {
+            actor: 2,
+            target: 0,
+            pai: mjai_tile(2),
+            consumed: [mjai_tile(0), mjai_tile(1)],
+        }),
+        Err(ReplayError::Call(CallError::InvalidChiActor {
+            expected: player(1),
+            actual: player(2),
+        }))
+    );
+    assert_eq!(replayer.state(), Some(&original));
 }

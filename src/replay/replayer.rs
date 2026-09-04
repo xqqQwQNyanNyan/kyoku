@@ -6,7 +6,7 @@ use convlog::Event;
 use crate::mahjong::hand::{Hand, HandMutationError};
 use crate::mahjong::player::PlayerState;
 use crate::mahjong::player_index::PlayerIndex;
-use crate::mahjong::round::{DrawError, RoundId, RoundState, Wind};
+use crate::mahjong::round::{CallError, DrawError, RoundId, RoundState, Wind};
 use crate::mahjong::tile::Tile;
 
 /// 按顺序消费 mjai 事件并重建当前局面状态。
@@ -39,6 +39,8 @@ pub enum ReplayError {
     TileNotInHand { player: PlayerIndex, tile: Tile },
     /// 牌山中已经没有可摸牌。
     NoRemainingDraws,
+    /// 吃碰事件违反当前局面的领域规则。
+    Call(CallError),
 }
 
 impl Replayer {
@@ -74,6 +76,18 @@ impl Replayer {
                 pai,
                 tsumogiri,
             } => self.discard(*actor, *pai, *tsumogiri),
+            Event::Chi {
+                actor,
+                target,
+                pai,
+                consumed,
+            } => self.chi(*actor, *target, *pai, *consumed),
+            Event::Pon {
+                actor,
+                target,
+                pai,
+                consumed,
+            } => self.pon(*actor, *target, *pai, *consumed),
             _ => Err(ReplayError::UnsupportedEvent),
         }
     }
@@ -138,6 +152,42 @@ impl Replayer {
             .discard(actor, tile, tsumogiri)
             .map_err(|error| translate_hand_error(actor, error))
     }
+
+    fn chi(
+        &mut self,
+        actor: u8,
+        target: u8,
+        pai: convlog::Tile,
+        consumed: [convlog::Tile; 2],
+    ) -> Result<(), ReplayError> {
+        let actor = convert_player(actor)?;
+        let target = convert_player(target)?;
+        let called = convert_tile(pai)?;
+        let consumed = convert_consumed(consumed)?;
+        self.state
+            .as_mut()
+            .ok_or(ReplayError::NoRound)?
+            .chi(actor, target, called, consumed)
+            .map_err(ReplayError::Call)
+    }
+
+    fn pon(
+        &mut self,
+        actor: u8,
+        target: u8,
+        pai: convlog::Tile,
+        consumed: [convlog::Tile; 2],
+    ) -> Result<(), ReplayError> {
+        let actor = convert_player(actor)?;
+        let target = convert_player(target)?;
+        let called = convert_tile(pai)?;
+        let consumed = convert_consumed(consumed)?;
+        self.state
+            .as_mut()
+            .ok_or(ReplayError::NoRound)?
+            .pon(actor, target, called, consumed)
+            .map_err(ReplayError::Call)
+    }
 }
 
 impl fmt::Display for ReplayError {
@@ -173,11 +223,19 @@ impl fmt::Display for ReplayError {
                 tile.as_u8()
             ),
             Self::NoRemainingDraws => formatter.write_str("no draws remain"),
+            Self::Call(error) => error.fmt(formatter),
         }
     }
 }
 
-impl Error for ReplayError {}
+impl Error for ReplayError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Call(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 fn player_from_initial_hand(
     index: u8,
@@ -215,6 +273,10 @@ fn convert_tile(tile: convlog::Tile) -> Result<Tile, ReplayError> {
     })
 }
 
+fn convert_consumed(tiles: [convlog::Tile; 2]) -> Result<[Tile; 2], ReplayError> {
+    Ok([convert_tile(tiles[0])?, convert_tile(tiles[1])?])
+}
+
 fn convert_wind(tile: convlog::Tile) -> Result<Wind, ReplayError> {
     match tile.as_u8() {
         27 => Ok(Wind::East),
@@ -232,6 +294,9 @@ fn translate_hand_error(player: PlayerIndex, error: HandMutationError) -> Replay
             effective_tile_count: error.effective_tile_count(),
         },
         HandMutationError::TileNotFound { tile } => ReplayError::TileNotInHand { player, tile },
+        error @ (HandMutationError::InvalidChi { .. } | HandMutationError::InvalidPon { .. }) => {
+            ReplayError::Call(CallError::Hand { player, error })
+        }
     }
 }
 

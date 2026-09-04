@@ -2,6 +2,7 @@ use std::error::Error;
 use std::fmt;
 
 use super::meld::Meld;
+use super::player_index::PlayerIndex;
 use super::tile::Tile;
 
 /// 一名玩家当前持有的手牌。
@@ -28,6 +29,10 @@ pub enum HandMutationError {
     InvalidSize(InvalidHandSize),
     /// 暗牌中不存在要移除的牌。
     TileNotFound { tile: Tile },
+    /// 三张牌不能组成合法的顺子。
+    InvalidChi { tiles: [Tile; 3] },
+    /// 三张牌不能组成合法的刻子。
+    InvalidPon { tiles: [Tile; 3] },
 }
 
 impl Hand {
@@ -67,6 +72,52 @@ impl Hand {
         Ok(())
     }
 
+    /// 使用两张暗牌和一张他家弃牌组成顺子。
+    pub fn chi(
+        &mut self,
+        called: Tile,
+        from: PlayerIndex,
+        consumed: [Tile; 2],
+    ) -> Result<(), HandMutationError> {
+        let mut tiles = [called, consumed[0], consumed[1]];
+        tiles.sort_unstable();
+        if !is_chi(tiles) {
+            return Err(HandMutationError::InvalidChi { tiles });
+        }
+
+        self.add_open_meld(
+            consumed,
+            Meld::Chi {
+                tiles,
+                called,
+                from,
+            },
+        )
+    }
+
+    /// 使用两张暗牌和一张他家弃牌组成刻子。
+    pub fn pon(
+        &mut self,
+        called: Tile,
+        from: PlayerIndex,
+        consumed: [Tile; 2],
+    ) -> Result<(), HandMutationError> {
+        let mut tiles = [called, consumed[0], consumed[1]];
+        tiles.sort_unstable();
+        if !tiles.iter().all(|tile| tile.kind() == called.kind()) {
+            return Err(HandMutationError::InvalidPon { tiles });
+        }
+
+        self.add_open_meld(
+            consumed,
+            Meld::Pon {
+                tiles,
+                called,
+                from,
+            },
+        )
+    }
+
     /// 返回排好序的暗牌。
     pub fn concealed(&self) -> &[Tile] {
         &self.concealed
@@ -80,6 +131,23 @@ impl Hand {
     /// 返回手牌的等效张数；每个面子按三张计算。
     pub fn effective_tile_count(&self) -> usize {
         self.concealed.len() + self.melds.len() * Self::TILES_PER_MELD
+    }
+
+    fn add_open_meld(&mut self, consumed: [Tile; 2], meld: Meld) -> Result<(), HandMutationError> {
+        let mut concealed = self.concealed.clone();
+        for tile in consumed {
+            let position = concealed
+                .iter()
+                .position(|held| *held == tile)
+                .ok_or(HandMutationError::TileNotFound { tile })?;
+            concealed.remove(position);
+        }
+        validate_size(concealed.len(), self.melds.len() + 1)
+            .map_err(HandMutationError::InvalidSize)?;
+
+        self.concealed = concealed;
+        self.melds.push(meld);
+        Ok(())
     }
 }
 
@@ -125,6 +193,20 @@ impl fmt::Display for HandMutationError {
                     tile.as_u8()
                 )
             }
+            Self::InvalidChi { tiles } => write!(
+                formatter,
+                "tiles {}, {}, {} do not form a chi",
+                tiles[0].as_u8(),
+                tiles[1].as_u8(),
+                tiles[2].as_u8()
+            ),
+            Self::InvalidPon { tiles } => write!(
+                formatter,
+                "tiles {}, {}, {} do not form a pon",
+                tiles[0].as_u8(),
+                tiles[1].as_u8(),
+                tiles[2].as_u8()
+            ),
         }
     }
 }
@@ -133,9 +215,14 @@ impl Error for HandMutationError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::InvalidSize(error) => Some(error),
-            Self::TileNotFound { .. } => None,
+            Self::TileNotFound { .. } | Self::InvalidChi { .. } | Self::InvalidPon { .. } => None,
         }
     }
+}
+
+fn is_chi(tiles: [Tile; 3]) -> bool {
+    let [first, second, third] = tiles.map(|tile| tile.kind().as_u8());
+    first < 27 && first / 9 == third / 9 && second == first + 1 && third == second + 1
 }
 
 fn validate_size(concealed_count: usize, meld_count: usize) -> Result<(), InvalidHandSize> {

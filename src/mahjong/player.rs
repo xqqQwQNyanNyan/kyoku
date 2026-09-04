@@ -1,4 +1,8 @@
+use std::error::Error;
+use std::fmt;
+
 use super::hand::{Hand, HandMutationError};
+use super::player_index::PlayerIndex;
 use super::tile::Tile;
 
 /// 一名玩家在当前局中的状态。
@@ -16,6 +20,17 @@ pub struct Discard {
     tsumogiri: bool,
     riichi: bool,
     called: bool,
+}
+
+/// 将他家弃牌标记为已鸣牌时无法满足牌河不变量。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiscardCallError {
+    /// 牌河中没有可鸣的弃牌。
+    NoDiscard,
+    /// 事件声明的牌与牌河最后一张牌不一致。
+    TileMismatch { discarded: Tile, called: Tile },
+    /// 牌河最后一张牌已经被鸣走。
+    AlreadyCalled { tile: Tile },
 }
 
 impl PlayerState {
@@ -38,6 +53,46 @@ impl PlayerState {
         self.hand.discard(tile)?;
         self.discards
             .push(Discard::new(tile, tsumogiri, false, false));
+        Ok(())
+    }
+
+    /// 使用两张暗牌完成吃牌。
+    pub fn chi(
+        &mut self,
+        called: Tile,
+        from: PlayerIndex,
+        consumed: [Tile; 2],
+    ) -> Result<(), HandMutationError> {
+        self.hand.chi(called, from, consumed)
+    }
+
+    /// 使用两张暗牌完成碰牌。
+    pub fn pon(
+        &mut self,
+        called: Tile,
+        from: PlayerIndex,
+        consumed: [Tile; 2],
+    ) -> Result<(), HandMutationError> {
+        self.hand.pon(called, from, consumed)
+    }
+
+    /// 将牌河最后一张牌标记为已被鸣走。
+    pub fn mark_last_discard_called(&mut self, called: Tile) -> Result<(), DiscardCallError> {
+        let discard = self
+            .discards
+            .last_mut()
+            .ok_or(DiscardCallError::NoDiscard)?;
+        if discard.tile != called {
+            return Err(DiscardCallError::TileMismatch {
+                discarded: discard.tile,
+                called,
+            });
+        }
+        if discard.called {
+            return Err(DiscardCallError::AlreadyCalled { tile: called });
+        }
+
+        discard.called = true;
         Ok(())
     }
 
@@ -88,3 +143,26 @@ impl Discard {
         self.called
     }
 }
+
+impl fmt::Display for DiscardCallError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoDiscard => formatter.write_str("the target player has no discard to call"),
+            Self::TileMismatch { discarded, called } => write!(
+                formatter,
+                "called tile {} does not match latest discard {}",
+                called.as_u8(),
+                discarded.as_u8()
+            ),
+            Self::AlreadyCalled { tile } => {
+                write!(
+                    formatter,
+                    "discarded tile {} was already called",
+                    tile.as_u8()
+                )
+            }
+        }
+    }
+}
+
+impl Error for DiscardCallError {}

@@ -146,3 +146,66 @@ fn mutations_preserve_size_and_tile_membership_invariants() {
     assert_eq!(error, HandMutationError::TileNotFound { tile: tile(1) });
     assert_eq!(fourteen.concealed(), vec![tile(0); 14]);
 }
+
+#[test]
+fn chi_and_pon_consume_concealed_tiles_and_append_sorted_melds() {
+    let mut chi_hand =
+        Hand::new([vec![tile(0), tile(1)], vec![tile(9); 11]].concat(), vec![]).unwrap();
+    chi_hand
+        .chi(tile(2), player(0), [tile(1), tile(0)])
+        .unwrap();
+    assert_eq!(chi_hand.concealed(), vec![tile(9); 11]);
+    assert_eq!(
+        chi_hand.melds(),
+        [Meld::Chi {
+            tiles: [tile(0), tile(1), tile(2)],
+            called: tile(2),
+            from: player(0),
+        }]
+    );
+
+    let mut pon_hand = Hand::new(
+        [vec![tile(34), tile(4)], vec![tile(9); 11]].concat(),
+        vec![],
+    )
+    .unwrap();
+    pon_hand
+        .pon(tile(4), player(3), [tile(4), tile(34)])
+        .unwrap();
+    assert_eq!(
+        pon_hand.melds(),
+        [Meld::Pon {
+            tiles: [tile(34), tile(4), tile(4)],
+            called: tile(4),
+            from: player(3),
+        }]
+    );
+}
+
+#[test]
+fn invalid_calls_leave_the_hand_unchanged() {
+    let mut hand = Hand::new(
+        [vec![tile(0), tile(1), tile(2)], vec![tile(9); 10]].concat(),
+        vec![],
+    )
+    .unwrap();
+    let original = hand.clone();
+
+    assert!(matches!(
+        hand.chi(tile(8), player(0), [tile(0), tile(1)]),
+        Err(HandMutationError::InvalidChi { .. })
+    ));
+    assert_eq!(hand, original);
+
+    assert!(matches!(
+        hand.pon(tile(2), player(0), [tile(2), tile(1)]),
+        Err(HandMutationError::InvalidPon { .. })
+    ));
+    assert_eq!(hand, original);
+
+    assert_eq!(
+        hand.pon(tile(2), player(0), [tile(2), tile(2)]),
+        Err(HandMutationError::TileNotFound { tile: tile(2) })
+    );
+    assert_eq!(hand, original);
+}

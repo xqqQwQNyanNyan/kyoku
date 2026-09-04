@@ -1,9 +1,11 @@
 use std::array;
 
 use kyoku::mahjong::hand::Hand;
-use kyoku::mahjong::player::PlayerState;
+use kyoku::mahjong::hand::HandMutationError;
+use kyoku::mahjong::meld::Meld;
+use kyoku::mahjong::player::{Discard, DiscardCallError, PlayerState};
 use kyoku::mahjong::player_index::PlayerIndex;
-use kyoku::mahjong::round::{DrawError, KanKind, RoundId, RoundPhase, RoundState, Wind};
+use kyoku::mahjong::round::{CallError, DrawError, KanKind, RoundId, RoundPhase, RoundState, Wind};
 use kyoku::mahjong::tile::Tile;
 
 fn tile(value: u8) -> Tile {
@@ -19,6 +21,34 @@ fn players() -> [PlayerState; 4] {
         let hand = Hand::new(vec![tile(index as u8); 13], vec![]).expect("test hand must be valid");
         PlayerState::new(hand, 25_000 + index as i32, vec![])
     })
+}
+
+fn call_state() -> RoundState {
+    let mut players = players();
+    players[0] = PlayerState::new(
+        Hand::new(vec![tile(9); 13], vec![]).unwrap(),
+        25_000,
+        vec![Discard::new(tile(2), false, false, false)],
+    );
+    players[1] = PlayerState::new(
+        Hand::new([vec![tile(0), tile(1)], vec![tile(9); 11]].concat(), vec![]).unwrap(),
+        25_000,
+        vec![],
+    );
+    players[2] = PlayerState::new(
+        Hand::new([vec![tile(2)], vec![tile(9); 12]].concat(), vec![]).unwrap(),
+        25_000,
+        vec![],
+    );
+    RoundState::new(
+        players,
+        RoundId::new(Wind::East, 1).unwrap(),
+        0,
+        0,
+        vec![tile(31)],
+        69,
+        RoundPhase::AfterDiscard { player: player(0) },
+    )
 }
 
 #[test]
@@ -143,5 +173,141 @@ fn draw_with_an_empty_wall_leaves_the_round_unchanged() {
     let error = state.draw(player(0), tile(10)).unwrap_err();
 
     assert_eq!(error, DrawError::NoRemainingDraws);
+    assert_eq!(state, original);
+}
+
+#[test]
+fn chi_updates_the_caller_river_and_phase_together() {
+    let mut state = call_state();
+
+    state
+        .chi(player(1), player(0), tile(2), [tile(0), tile(1)])
+        .unwrap();
+
+    assert_eq!(state.phase(), RoundPhase::AfterCall { player: player(1) });
+    assert!(state.player(player(0)).discards()[0].is_called());
+    assert_eq!(
+        state.player(player(1)).hand().concealed(),
+        vec![tile(9); 11]
+    );
+    assert_eq!(
+        state.player(player(1)).hand().melds(),
+        [Meld::Chi {
+            tiles: [tile(0), tile(1), tile(2)],
+            called: tile(2),
+            from: player(0),
+        }]
+    );
+}
+
+#[test]
+fn pon_is_available_to_any_other_player() {
+    let mut state = call_state();
+    state = RoundState::new(
+        {
+            let mut players = state.players().clone();
+            players[2] = PlayerState::new(
+                Hand::new([vec![tile(2), tile(2)], vec![tile(9); 11]].concat(), vec![]).unwrap(),
+                25_000,
+                vec![],
+            );
+            players
+        },
+        state.round(),
+        state.honba(),
+        state.riichi_sticks(),
+        state.dora_indicators().to_vec(),
+        state.remaining_draws(),
+        state.phase(),
+    );
+
+    state
+        .pon(player(2), player(0), tile(2), [tile(2), tile(2)])
+        .unwrap();
+
+    assert_eq!(state.phase(), RoundPhase::AfterCall { player: player(2) });
+    assert!(state.player(player(0)).discards()[0].is_called());
+    assert!(matches!(
+        state.player(player(2)).hand().melds(),
+        [Meld::Pon { from, .. }] if *from == player(0)
+    ));
+}
+
+#[test]
+fn invalid_call_contexts_are_rejected_without_mutation() {
+    let mut invalid_phase = call_state();
+    invalid_phase = RoundState::new(
+        invalid_phase.players().clone(),
+        invalid_phase.round(),
+        invalid_phase.honba(),
+        invalid_phase.riichi_sticks(),
+        invalid_phase.dora_indicators().to_vec(),
+        invalid_phase.remaining_draws(),
+        RoundPhase::AfterCall { player: player(1) },
+    );
+    let original = invalid_phase.clone();
+    assert_eq!(
+        invalid_phase.pon(player(2), player(0), tile(2), [tile(2), tile(2)]),
+        Err(CallError::InvalidPhase {
+            phase: RoundPhase::AfterCall { player: player(1) },
+        })
+    );
+    assert_eq!(invalid_phase, original);
+
+    let cases = [
+        (
+            call_state().chi(player(2), player(0), tile(2), [tile(0), tile(1)]),
+            CallError::InvalidChiActor {
+                expected: player(1),
+                actual: player(2),
+            },
+        ),
+        (
+            call_state().pon(player(2), player(3), tile(2), [tile(2), tile(2)]),
+            CallError::WrongTarget {
+                expected: player(0),
+                actual: player(3),
+            },
+        ),
+    ];
+
+    for (result, expected) in cases {
+        assert_eq!(result, Err(expected));
+    }
+
+    let mut state = call_state();
+    let original = state.clone();
+    let error = state
+        .pon(player(2), player(0), tile(3), [tile(3), tile(3)])
+        .unwrap_err();
+    assert_eq!(
+        error,
+        CallError::Discard {
+            player: player(0),
+            error: DiscardCallError::TileMismatch {
+                discarded: tile(2),
+                called: tile(3),
+            },
+        }
+    );
+    assert_eq!(state, original);
+}
+
+#[test]
+fn caller_hand_failure_rolls_back_the_entire_call() {
+    let mut state = call_state();
+    let original = state.clone();
+
+    let error = state
+        .pon(player(2), player(0), tile(2), [tile(2), tile(2)])
+        .unwrap_err();
+
+    assert_eq!(
+        error,
+        CallError::Hand {
+            player: player(2),
+            error: HandMutationError::TileNotFound { tile: tile(2) },
+        }
+    );
     assert_eq!(state, original);
 }
