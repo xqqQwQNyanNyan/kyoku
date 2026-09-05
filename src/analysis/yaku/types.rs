@@ -6,7 +6,7 @@ use crate::mahjong::tile::TileKind;
 /// 通行四人日麻的役种，包含常见双倍役满形及流局满贯。
 ///
 /// 不包含地方役、宝牌或累计役满；定义役种不代表已支持其向听计算或和牌判断。
-/// 双倍役满形是否按双倍计分由规则决定。
+/// 双倍役满形是否按双倍计分由规则决定；当前计分均按一倍，复合役满累加。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Yaku {
     /// 七对子。
