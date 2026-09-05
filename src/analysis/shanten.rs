@@ -255,6 +255,21 @@ pub fn shanten(counts: &[u8; TILE_KIND_COUNT]) -> i8 {
         .min(kokushi_shanten(counts))
 }
 
+/// 返回完整领域手牌的最小向听数，并把已有副露计作固定面子。
+pub(super) fn hand_shanten(hand: &Hand) -> i8 {
+    let counts = concealed_counts(hand);
+    let ordinary = ordinary_shanten_with_constraint(&counts, hand.melds(), &standard_constraint())
+        .unwrap_or_else(|| unreachable!("a valid hand can always use the standard constraint"));
+
+    if hand.melds().is_empty() {
+        ordinary
+            .min(chiitoitsu_shanten(&counts))
+            .min(kokushi_shanten(&counts))
+    } else {
+        ordinary
+    }
+}
+
 pub(super) fn concealed_counts(hand: &Hand) -> [u8; TILE_KIND_COUNT] {
     let mut counts = [0; TILE_KIND_COUNT];
     for tile in hand.concealed() {
