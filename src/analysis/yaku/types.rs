@@ -1,6 +1,8 @@
 use std::error::Error;
 use std::fmt;
 
+use crate::mahjong::tile::TileKind;
+
 /// 通行四人日麻的役种，包含常见双倍役满形及流局满贯。
 ///
 /// 不包含地方役、宝牌或累计役满；定义役种不代表已支持其向听计算或和牌判断。
@@ -122,3 +124,64 @@ impl fmt::Display for YakuDistanceError {
 }
 
 impl Error for YakuDistanceError {}
+
+/// 役种检测无法执行的原因。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum YakuDetectionError {
+    /// 上下文的和牌张与生成解释时使用的和牌张不一致。
+    ContextWinningTileMismatch {
+        interpretation_tile: TileKind,
+        context_tile: TileKind,
+    },
+    /// 副露手不能成立立直。
+    RiichiRequiresClosedHand,
+    /// 首次摸牌和牌前不能已有副露或杠。
+    FirstDrawRequiresInitialHand,
+    /// 首次摸牌和牌时不可能已经立直。
+    FirstDrawWithRiichi,
+    /// 岭上和牌要求和牌者手中已有杠。
+    RinshanRequiresKan,
+    /// 自己开杠后，一发已经中断。
+    IppatsuWithRinshan,
+    /// 当前规则口径不支持抢暗杠。
+    RobbingAnkanUnsupported,
+    /// 他家碰子已经占三张，抢加杠者不能原先还持有同种牌。
+    RobbedKanTileAlreadyHeld { winning_tile: TileKind },
+}
+
+impl fmt::Display for YakuDetectionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ContextWinningTileMismatch {
+                interpretation_tile,
+                context_tile,
+            } => write!(
+                formatter,
+                "context winning tile {} does not match interpretation winning tile {}",
+                context_tile.as_u8(),
+                interpretation_tile.as_u8()
+            ),
+            Self::RiichiRequiresClosedHand => formatter.write_str("riichi requires a closed hand"),
+            Self::FirstDrawRequiresInitialHand => {
+                formatter.write_str("first draw cannot follow a call or kan")
+            }
+            Self::FirstDrawWithRiichi => {
+                formatter.write_str("riichi cannot precede the first draw")
+            }
+            Self::RinshanRequiresKan => {
+                formatter.write_str("rinshan requires a kan in the winning hand")
+            }
+            Self::IppatsuWithRinshan => formatter.write_str("ippatsu cannot combine with rinshan"),
+            Self::RobbingAnkanUnsupported => {
+                formatter.write_str("robbing a concealed kan is not supported")
+            }
+            Self::RobbedKanTileAlreadyHeld { winning_tile } => write!(
+                formatter,
+                "winning hand already held robbed kan tile {}",
+                winning_tile.as_u8()
+            ),
+        }
+    }
+}
+
+impl Error for YakuDetectionError {}
