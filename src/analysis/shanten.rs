@@ -20,7 +20,7 @@ pub(super) enum Suit {
     Souzu,
 }
 
-/// 普通型目标牌形中已经选择的一个组成部分。
+/// 普通型向听计算中使用的一个组成部分。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Component {
     Sequence { suit: Suit, start: u8 },

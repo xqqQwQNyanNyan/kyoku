@@ -1,3 +1,4 @@
+pub mod agari;
 pub mod shanten;
 pub mod tile_efficiency;
 mod yaku;
