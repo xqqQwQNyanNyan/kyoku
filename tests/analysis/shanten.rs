@@ -978,3 +978,524 @@ fn unified_shanten_prefers_kokushi() {
     assert!(kokushi_shanten(&hand) < standard_shanten(&hand));
     assert!(kokushi_shanten(&hand) < chiitoitsu_shanten(&hand));
 }
+
+#[test]
+fn tanyao_covers_ordinary_chiitoitsu_and_rejects_terminals() {
+    // 234m 345m 456p 678s 55p。
+    let complete = counts(&[
+        (1, 1),
+        (2, 2),
+        (3, 2),
+        (4, 1),
+        (12, 1),
+        (13, 3),
+        (14, 1),
+        (23, 1),
+        (24, 1),
+        (25, 1),
+    ]);
+    let ready = counts(&[
+        (1, 1),
+        (2, 2),
+        (3, 2),
+        (4, 1),
+        (12, 1),
+        (13, 3),
+        (14, 1),
+        (23, 1),
+        (24, 1),
+    ]);
+    let with_terminals = counts(&[
+        (0, 1),
+        (1, 1),
+        (2, 1),
+        (3, 1),
+        (4, 1),
+        (5, 1),
+        (13, 2),
+        (15, 1),
+        (16, 1),
+        (17, 1),
+        (19, 1),
+        (20, 1),
+        (21, 1),
+    ]);
+    let chiitoitsu = counts(&[(1, 2), (3, 2), (5, 2), (7, 2), (10, 2), (13, 2), (16, 2)]);
+
+    assert_eq!(
+        yaku_shanten(&hand_from_counts(&complete), Yaku::Tanyao),
+        Some(-1)
+    );
+    assert_eq!(
+        yaku_shanten(&hand_from_counts(&ready), Yaku::Tanyao),
+        Some(0)
+    );
+    assert!(yaku_shanten(&hand_from_counts(&with_terminals), Yaku::Tanyao) > Some(-1));
+    assert_eq!(
+        yaku_shanten(&hand_from_counts(&chiitoitsu), Yaku::Tanyao),
+        Some(-1)
+    );
+}
+
+#[test]
+fn honitsu_requires_both_suited_tiles_and_honors_in_both_families() {
+    // 123m 456m 789m 东东东 南南。
+    let complete = counts(&[
+        (0, 1),
+        (1, 1),
+        (2, 1),
+        (3, 1),
+        (4, 1),
+        (5, 1),
+        (6, 1),
+        (7, 1),
+        (8, 1),
+        (27, 3),
+        (28, 2),
+    ]);
+    let ready = counts(&[
+        (0, 1),
+        (1, 1),
+        (2, 1),
+        (3, 1),
+        (4, 1),
+        (5, 1),
+        (6, 1),
+        (7, 1),
+        (8, 1),
+        (27, 3),
+        (28, 1),
+    ]);
+    let chinitsu = counts(&[
+        (0, 2),
+        (1, 2),
+        (2, 2),
+        (3, 1),
+        (4, 3),
+        (5, 1),
+        (6, 1),
+        (7, 1),
+        (8, 1),
+    ]);
+    let tsuuiisou = counts(&[(27, 3), (28, 3), (29, 3), (30, 3), (31, 2)]);
+    let chiitoitsu = counts(&[(0, 2), (2, 2), (5, 2), (27, 2), (29, 2), (31, 2), (33, 2)]);
+
+    assert_eq!(
+        yaku_shanten(&hand_from_counts(&complete), Yaku::Honitsu),
+        Some(-1)
+    );
+    assert_eq!(
+        yaku_shanten(&hand_from_counts(&ready), Yaku::Honitsu),
+        Some(0)
+    );
+    assert!(yaku_shanten(&hand_from_counts(&chinitsu), Yaku::Honitsu) > Some(-1));
+    assert!(yaku_shanten(&hand_from_counts(&tsuuiisou), Yaku::Honitsu) > Some(-1));
+    assert_eq!(
+        yaku_shanten(&hand_from_counts(&chiitoitsu), Yaku::Honitsu),
+        Some(-1)
+    );
+
+    let honor_chiitoitsu = counts(&[
+        (27, 2),
+        (28, 2),
+        (29, 2),
+        (30, 2),
+        (31, 2),
+        (32, 2),
+        (33, 2),
+    ]);
+    assert!(yaku_shanten(&hand_from_counts(&honor_chiitoitsu), Yaku::Honitsu) > Some(-1));
+}
+
+#[test]
+fn honroutou_covers_ordinary_chiitoitsu_and_rejects_sequences() {
+    let complete = counts(&[(0, 3), (8, 3), (9, 3), (27, 3), (31, 2)]);
+    let ready = counts(&[(0, 3), (8, 3), (9, 3), (27, 3), (31, 1)]);
+    let with_sequence = counts(&[(0, 1), (1, 1), (2, 1), (8, 3), (9, 3), (27, 3), (31, 2)]);
+    let chiitoitsu = counts(&[(0, 2), (8, 2), (9, 2), (17, 2), (27, 2), (31, 2), (33, 2)]);
+
+    assert_eq!(
+        yaku_shanten(&hand_from_counts(&complete), Yaku::Honroutou),
+        Some(-1)
+    );
+    assert_eq!(
+        yaku_shanten(&hand_from_counts(&ready), Yaku::Honroutou),
+        Some(0)
+    );
+    assert!(yaku_shanten(&hand_from_counts(&with_sequence), Yaku::Honroutou) > Some(-1));
+    assert_eq!(
+        yaku_shanten(&hand_from_counts(&chiitoitsu), Yaku::Honroutou),
+        Some(-1)
+    );
+}
+
+#[test]
+fn chanta_requires_terminal_or_honor_components_a_sequence_and_an_honor() {
+    let complete = counts(&[
+        (0, 1),
+        (1, 1),
+        (2, 1),
+        (6, 1),
+        (7, 1),
+        (8, 1),
+        (9, 3),
+        (26, 2),
+        (27, 3),
+    ]);
+    let ready = counts(&[
+        (0, 1),
+        (1, 1),
+        (2, 1),
+        (6, 1),
+        (7, 1),
+        (8, 1),
+        (9, 3),
+        (26, 1),
+        (27, 3),
+    ]);
+    let junchan = counts(&[
+        (0, 1),
+        (1, 1),
+        (2, 1),
+        (6, 1),
+        (7, 1),
+        (8, 1),
+        (9, 3),
+        (18, 2),
+        (26, 3),
+    ]);
+
+    assert_eq!(
+        yaku_shanten(&hand_from_counts(&complete), Yaku::Chanta),
+        Some(-1)
+    );
+    assert_eq!(
+        yaku_shanten(&hand_from_counts(&ready), Yaku::Chanta),
+        Some(0)
+    );
+    assert!(yaku_shanten(&hand_from_counts(&junchan), Yaku::Chanta) > Some(-1));
+}
+
+#[test]
+fn junchan_requires_terminal_components_a_sequence_and_no_honors() {
+    let complete = counts(&[
+        (0, 1),
+        (1, 1),
+        (2, 1),
+        (6, 1),
+        (7, 1),
+        (8, 1),
+        (9, 3),
+        (18, 2),
+        (26, 3),
+    ]);
+    let ready = counts(&[
+        (0, 1),
+        (1, 1),
+        (2, 1),
+        (6, 1),
+        (7, 1),
+        (8, 1),
+        (9, 3),
+        (18, 1),
+        (26, 3),
+    ]);
+    let chanta = counts(&[
+        (0, 1),
+        (1, 1),
+        (2, 1),
+        (6, 1),
+        (7, 1),
+        (8, 1),
+        (9, 3),
+        (26, 2),
+        (27, 3),
+    ]);
+
+    assert_eq!(
+        yaku_shanten(&hand_from_counts(&complete), Yaku::Junchan),
+        Some(-1)
+    );
+    assert_eq!(
+        yaku_shanten(&hand_from_counts(&ready), Yaku::Junchan),
+        Some(0)
+    );
+    assert!(yaku_shanten(&hand_from_counts(&chanta), Yaku::Junchan) > Some(-1));
+}
+
+#[test]
+fn sanshoku_doujun_requires_the_same_sequence_in_all_three_suits() {
+    let complete = counts(&[
+        (0, 1),
+        (1, 1),
+        (2, 1),
+        (9, 1),
+        (10, 1),
+        (11, 1),
+        (18, 1),
+        (19, 1),
+        (20, 1),
+        (27, 3),
+        (28, 2),
+    ]);
+    let ready = counts(&[
+        (0, 1),
+        (1, 1),
+        (2, 1),
+        (9, 1),
+        (10, 1),
+        (11, 1),
+        (18, 1),
+        (19, 1),
+        (27, 3),
+        (28, 2),
+    ]);
+    let different_start = counts(&[
+        (0, 1),
+        (1, 1),
+        (2, 1),
+        (9, 1),
+        (10, 1),
+        (11, 1),
+        (19, 1),
+        (20, 1),
+        (21, 1),
+        (27, 3),
+        (28, 2),
+    ]);
+
+    assert_eq!(
+        yaku_shanten(&hand_from_counts(&complete), Yaku::SanshokuDoujun),
+        Some(-1)
+    );
+    assert_eq!(
+        yaku_shanten(&hand_from_counts(&ready), Yaku::SanshokuDoujun),
+        Some(0)
+    );
+    assert!(yaku_shanten(&hand_from_counts(&different_start), Yaku::SanshokuDoujun) > Some(-1));
+}
+
+#[test]
+fn sanshoku_doukou_requires_the_same_triplet_in_all_three_suits() {
+    let complete = counts(&[(0, 3), (3, 1), (4, 1), (5, 1), (9, 3), (18, 3), (27, 2)]);
+    let ready = counts(&[(0, 3), (3, 1), (4, 1), (5, 1), (9, 3), (18, 2), (27, 2)]);
+    let different_rank = counts(&[(0, 3), (3, 1), (4, 1), (5, 1), (9, 3), (19, 3), (27, 2)]);
+
+    assert_eq!(
+        yaku_shanten(&hand_from_counts(&complete), Yaku::SanshokuDoukou),
+        Some(-1)
+    );
+    assert_eq!(
+        yaku_shanten(&hand_from_counts(&ready), Yaku::SanshokuDoukou),
+        Some(0)
+    );
+    assert!(yaku_shanten(&hand_from_counts(&different_rank), Yaku::SanshokuDoukou) > Some(-1));
+}
+
+#[test]
+fn ryanpeikou_counts_two_pairs_of_sequences_and_requires_menzen() {
+    let complete = counts(&[(0, 2), (1, 2), (2, 2), (12, 2), (13, 2), (14, 2), (27, 2)]);
+    let ready = counts(&[(0, 2), (1, 2), (2, 2), (12, 2), (13, 2), (14, 1), (27, 2)]);
+    let only_one_pair = counts(&[
+        (0, 2),
+        (1, 2),
+        (2, 2),
+        (12, 1),
+        (13, 1),
+        (14, 1),
+        (24, 1),
+        (25, 1),
+        (26, 1),
+        (27, 2),
+    ]);
+    let four_identical = counts(&[(0, 4), (1, 4), (2, 4), (27, 2)]);
+
+    assert_eq!(
+        yaku_shanten(&hand_from_counts(&complete), Yaku::Ryanpeikou),
+        Some(-1)
+    );
+    assert_eq!(
+        yaku_shanten(&hand_from_counts(&ready), Yaku::Ryanpeikou),
+        Some(0)
+    );
+    assert!(yaku_shanten(&hand_from_counts(&only_one_pair), Yaku::Ryanpeikou) > Some(-1));
+    assert_eq!(
+        yaku_shanten(&hand_from_counts(&four_identical), Yaku::Ryanpeikou),
+        Some(-1)
+    );
+
+    let open_concealed = counts(&[(0, 2), (1, 2), (2, 2), (12, 1), (13, 1), (14, 1), (27, 2)]);
+    let open = hand_with_melds(&open_concealed, vec![chi([24, 25, 26])]);
+    assert_eq!(yaku_shanten(&open, Yaku::Ryanpeikou), None);
+}
+
+#[test]
+fn shousangen_requires_a_dragon_pair_and_the_other_two_triplets() {
+    let complete = counts(&[
+        (0, 1),
+        (1, 1),
+        (2, 1),
+        (12, 1),
+        (13, 1),
+        (14, 1),
+        (31, 2),
+        (32, 3),
+        (33, 3),
+    ]);
+    let ready = counts(&[
+        (0, 1),
+        (1, 1),
+        (2, 1),
+        (12, 1),
+        (13, 1),
+        (14, 1),
+        (31, 2),
+        (32, 3),
+        (33, 2),
+    ]);
+    let daisangen = counts(&[(0, 1), (1, 1), (2, 1), (27, 2), (31, 3), (32, 3), (33, 3)]);
+
+    assert_eq!(
+        yaku_shanten(&hand_from_counts(&complete), Yaku::Shousangen),
+        Some(-1)
+    );
+    assert_eq!(
+        yaku_shanten(&hand_from_counts(&ready), Yaku::Shousangen),
+        Some(0)
+    );
+    assert!(yaku_shanten(&hand_from_counts(&daisangen), Yaku::Shousangen) > Some(-1));
+}
+
+#[test]
+fn daisangen_requires_all_three_dragon_triplets() {
+    let complete = counts(&[(0, 1), (1, 1), (2, 1), (27, 2), (31, 3), (32, 3), (33, 3)]);
+    let ready = counts(&[(0, 1), (1, 1), (2, 1), (27, 2), (31, 3), (32, 3), (33, 2)]);
+    let shousangen = counts(&[
+        (0, 1),
+        (1, 1),
+        (2, 1),
+        (12, 1),
+        (13, 1),
+        (14, 1),
+        (31, 2),
+        (32, 3),
+        (33, 3),
+    ]);
+
+    assert_eq!(
+        yaku_shanten(&hand_from_counts(&complete), Yaku::Daisangen),
+        Some(-1)
+    );
+    assert_eq!(
+        yaku_shanten(&hand_from_counts(&ready), Yaku::Daisangen),
+        Some(0)
+    );
+    assert!(yaku_shanten(&hand_from_counts(&shousangen), Yaku::Daisangen) > Some(-1));
+}
+
+#[test]
+fn shousuushi_requires_a_wind_pair_and_the_other_three_triplets() {
+    let complete = counts(&[(0, 1), (1, 1), (2, 1), (27, 3), (28, 3), (29, 3), (30, 2)]);
+    let ready = counts(&[(0, 1), (1, 1), (2, 1), (27, 3), (28, 3), (29, 2), (30, 2)]);
+    let daisuushi = counts(&[(27, 3), (28, 3), (29, 3), (30, 3), (31, 2)]);
+
+    assert_eq!(
+        yaku_shanten(&hand_from_counts(&complete), Yaku::Shousuushi),
+        Some(-1)
+    );
+    assert_eq!(
+        yaku_shanten(&hand_from_counts(&ready), Yaku::Shousuushi),
+        Some(0)
+    );
+    assert!(yaku_shanten(&hand_from_counts(&daisuushi), Yaku::Shousuushi) > Some(-1));
+}
+
+#[test]
+fn daisuushi_requires_all_four_wind_triplets() {
+    let complete = counts(&[(27, 3), (28, 3), (29, 3), (30, 3), (31, 2)]);
+    let ready = counts(&[(27, 3), (28, 3), (29, 3), (30, 2), (31, 2)]);
+    let shousuushi = counts(&[(0, 1), (1, 1), (2, 1), (27, 3), (28, 3), (29, 3), (30, 2)]);
+
+    assert_eq!(
+        yaku_shanten(&hand_from_counts(&complete), Yaku::Daisuushi),
+        Some(-1)
+    );
+    assert_eq!(
+        yaku_shanten(&hand_from_counts(&ready), Yaku::Daisuushi),
+        Some(0)
+    );
+    assert!(yaku_shanten(&hand_from_counts(&shousuushi), Yaku::Daisuushi) > Some(-1));
+}
+
+#[test]
+fn tsuuiisou_covers_ordinary_chiitoitsu_and_rejects_numbered_tiles() {
+    let complete = counts(&[(27, 3), (28, 3), (29, 3), (30, 3), (31, 2)]);
+    let ready = counts(&[(27, 3), (28, 3), (29, 3), (30, 3), (31, 1)]);
+    let with_numbered = counts(&[(0, 3), (27, 3), (28, 3), (29, 3), (31, 2)]);
+    let chiitoitsu = counts(&[
+        (27, 2),
+        (28, 2),
+        (29, 2),
+        (30, 2),
+        (31, 2),
+        (32, 2),
+        (33, 2),
+    ]);
+
+    assert_eq!(
+        yaku_shanten(&hand_from_counts(&complete), Yaku::Tsuuiisou),
+        Some(-1)
+    );
+    assert_eq!(
+        yaku_shanten(&hand_from_counts(&ready), Yaku::Tsuuiisou),
+        Some(0)
+    );
+    assert!(yaku_shanten(&hand_from_counts(&with_numbered), Yaku::Tsuuiisou) > Some(-1));
+    assert_eq!(
+        yaku_shanten(&hand_from_counts(&chiitoitsu), Yaku::Tsuuiisou),
+        Some(-1)
+    );
+}
+
+#[test]
+fn chinroutou_allows_only_terminal_triplets_and_pair() {
+    let complete = counts(&[(0, 3), (8, 3), (9, 3), (17, 3), (18, 2)]);
+    let ready = counts(&[(0, 3), (8, 3), (9, 3), (17, 3), (18, 1)]);
+    let with_honor = counts(&[(0, 3), (8, 3), (9, 3), (27, 3), (31, 2)]);
+
+    assert_eq!(
+        yaku_shanten(&hand_from_counts(&complete), Yaku::Chinroutou),
+        Some(-1)
+    );
+    assert_eq!(
+        yaku_shanten(&hand_from_counts(&ready), Yaku::Chinroutou),
+        Some(0)
+    );
+    assert!(yaku_shanten(&hand_from_counts(&with_honor), Yaku::Chinroutou) > Some(-1));
+}
+
+#[test]
+fn ryuuiisou_allows_only_green_tiles() {
+    // 234s 234s 666s 888s 发发。
+    let complete = counts(&[(19, 2), (20, 2), (21, 2), (23, 3), (25, 3), (32, 2)]);
+    let ready = counts(&[(19, 2), (20, 2), (21, 2), (23, 3), (25, 3), (32, 1)]);
+    let with_five_sou = counts(&[
+        (19, 1),
+        (20, 2),
+        (21, 2),
+        (22, 1),
+        (23, 3),
+        (25, 3),
+        (32, 2),
+    ]);
+
+    assert_eq!(
+        yaku_shanten(&hand_from_counts(&complete), Yaku::Ryuuiisou),
+        Some(-1)
+    );
+    assert_eq!(
+        yaku_shanten(&hand_from_counts(&ready), Yaku::Ryuuiisou),
+        Some(0)
+    );
+    assert!(yaku_shanten(&hand_from_counts(&with_five_sou), Yaku::Ryuuiisou) > Some(-1));
+}

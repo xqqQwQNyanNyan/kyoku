@@ -40,6 +40,8 @@ pub(super) struct CompiledConstraint {
 
 pub(super) struct ChiitoitsuConstraint {
     pub(super) allowed_tiles: TileMask,
+    /// 每组至少要有一种牌被选作对子；用于表达混一色等严格语义。
+    pub(super) required_groups: Vec<TileMask>,
 }
 
 pub(super) struct KokushiConstraint;
@@ -289,6 +291,7 @@ fn standard_constraint() -> CompiledConstraint {
 pub(super) fn unrestricted_chiitoitsu_constraint() -> ChiitoitsuConstraint {
     ChiitoitsuConstraint {
         allowed_tiles: (1u64 << TILE_KIND_COUNT) - 1,
+        required_groups: Vec::new(),
     }
 }
 
@@ -296,17 +299,43 @@ fn chiitoitsu_shanten_with_constraint(
     counts: &[u8; TILE_KIND_COUNT],
     constraint: &ChiitoitsuConstraint,
 ) -> i8 {
-    let mut pairs = 0;
-    let mut unique = 0;
+    let required_state_count = 1usize << constraint.required_groups.len();
+    let accepting_state = required_state_count - 1;
+    let mut dp = vec![vec![UNREACHABLE; required_state_count]; 8];
+    dp[0][0] = 0;
+
     for (tile, &count) in counts.iter().enumerate() {
         if (constraint.allowed_tiles >> tile) & 1 == 0 {
             continue;
         }
-        pairs += usize::from(count >= 2);
-        unique += usize::from(count > 0);
+
+        let mut group_bits = 0;
+        for (group, &mask) in constraint.required_groups.iter().enumerate() {
+            if (mask >> tile) & 1 != 0 {
+                group_bits |= 1 << group;
+            }
+        }
+
+        for selected in (0..7).rev() {
+            for state in 0..required_state_count {
+                let missing = dp[selected][state];
+                if missing == UNREACHABLE {
+                    continue;
+                }
+
+                let next_state = state | group_bits;
+                let missing_pair = 2u8.saturating_sub(count);
+                dp[selected + 1][next_state] =
+                    dp[selected + 1][next_state].min(missing + missing_pair);
+            }
+        }
     }
 
-    6 - pairs as i8 + 7usize.saturating_sub(unique) as i8
+    let missing = dp[7][accepting_state];
+    if missing == UNREACHABLE {
+        unreachable!("compiled chiitoitsu constraint must be satisfiable");
+    }
+    missing as i8 - 1
 }
 
 fn ordinary_dp_index(
