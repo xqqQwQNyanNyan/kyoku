@@ -2,10 +2,12 @@ use std::error::Error;
 use std::fmt;
 
 use crate::analysis::agari::{AgariGroup, AgariInterpretation, AgariPattern, WinningPosition};
-use crate::analysis::{AgariContext, WinMethod, Yaku};
+use crate::analysis::{AgariContext, BonusHan, WinMethod, Yaku};
 use crate::mahjong::{round::Wind, tile::TileKind};
 
-/// 单个和牌解释的价值，不包含宝牌、点数上限或支付金额。
+/// 单个和牌解释的役与符数价值，不包含点数上限或支付金额。
+///
+/// `han` 只保存普通役的番数，宝牌另行统计并通过 [`Self::total_han`] 合计。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HandValue {
     /// 普通型为进位后的符数，七对子为 25；役满不使用符数，返回 `None`。
@@ -14,6 +16,20 @@ pub struct HandValue {
     pub han: u32,
     /// 役满倍数；当前每个役满均计一倍，复合役满累加。
     pub yakuman: u32,
+}
+
+impl HandValue {
+    /// 返回普通役与宝牌合计的番数；役满或无役时返回 0。
+    ///
+    /// `bonus` 应来自同一手完整和牌的统计。宝牌不能满足有役条件，也不增加役满价值。
+    /// 本方法不检查其他和牌合法性，不将高番转换成数え役满。
+    pub const fn total_han(&self, bonus: &BonusHan) -> u32 {
+        if self.yakuman > 0 || self.han == 0 {
+            0
+        } else {
+            self.han + bonus.total_han()
+        }
+    }
 }
 
 /// 和牌价值无法计算的原因。

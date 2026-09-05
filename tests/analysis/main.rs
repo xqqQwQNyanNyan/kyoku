@@ -1,5 +1,6 @@
 mod agari_context;
 mod agari_interpretations;
+mod bonus;
 mod scoring;
 mod shanten;
 mod tile_efficiency;
