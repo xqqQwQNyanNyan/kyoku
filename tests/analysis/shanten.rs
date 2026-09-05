@@ -1,4 +1,4 @@
-use kyoku::analysis::standard_shanten;
+use kyoku::analysis::{chiitoitsu_shanten, kokushi_shanten, shanten, standard_shanten};
 
 fn counts(tiles: &[(usize, u8)]) -> [u8; 34] {
     let mut counts = [0; 34];
@@ -152,4 +152,204 @@ fn sequences_cannot_cross_suit_boundaries() {
 
     // 8m 9m 仍缺 7m；如果错误地允许顺子跨到 1p，这手牌就会被判为已和牌。
     assert_eq!(standard_shanten(&hand), 0);
+}
+
+#[test]
+fn completed_chiitoitsu_is_minus_one() {
+    let hand = counts(&[(0, 2), (2, 2), (4, 2), (9, 2), (11, 2), (13, 2), (27, 2)]);
+
+    assert_eq!(chiitoitsu_shanten(&hand), -1);
+}
+
+#[test]
+fn chiitoitsu_ready_hand_is_zero() {
+    let hand = counts(&[(0, 2), (2, 2), (4, 2), (9, 2), (11, 2), (13, 2), (27, 1)]);
+
+    assert_eq!(chiitoitsu_shanten(&hand), 0);
+}
+
+#[test]
+fn chiitoitsu_one_away_hand_is_one() {
+    let hand = counts(&[
+        (0, 2),
+        (2, 2),
+        (4, 2),
+        (9, 2),
+        (11, 2),
+        (13, 1),
+        (27, 1),
+        (28, 1),
+    ]);
+
+    assert_eq!(chiitoitsu_shanten(&hand), 1);
+}
+
+#[test]
+fn four_identical_tiles_are_only_one_chiitoitsu_pair() {
+    let hand = counts(&[(0, 4), (2, 2), (4, 2), (9, 2), (11, 2), (13, 2)]);
+
+    assert_eq!(chiitoitsu_shanten(&hand), 1);
+}
+
+#[test]
+fn chiitoitsu_penalizes_hands_with_too_few_unique_tiles() {
+    let hand = counts(&[(0, 2), (2, 2), (4, 2), (9, 2), (11, 2)]);
+
+    assert_eq!(chiitoitsu_shanten(&hand), 3);
+}
+
+#[test]
+fn completed_kokushi_is_minus_one() {
+    let hand = counts(&[
+        (0, 2),
+        (8, 1),
+        (9, 1),
+        (17, 1),
+        (18, 1),
+        (26, 1),
+        (27, 1),
+        (28, 1),
+        (29, 1),
+        (30, 1),
+        (31, 1),
+        (32, 1),
+        (33, 1),
+    ]);
+
+    assert_eq!(kokushi_shanten(&hand), -1);
+}
+
+#[test]
+fn thirteen_sided_kokushi_wait_is_zero() {
+    let hand = counts(&[
+        (0, 1),
+        (8, 1),
+        (9, 1),
+        (17, 1),
+        (18, 1),
+        (26, 1),
+        (27, 1),
+        (28, 1),
+        (29, 1),
+        (30, 1),
+        (31, 1),
+        (32, 1),
+        (33, 1),
+    ]);
+
+    assert_eq!(kokushi_shanten(&hand), 0);
+}
+
+#[test]
+fn kokushi_with_pair_and_one_missing_kind_is_zero() {
+    let hand = counts(&[
+        (0, 2),
+        (8, 1),
+        (9, 1),
+        (17, 1),
+        (18, 1),
+        (26, 1),
+        (27, 1),
+        (28, 1),
+        (29, 1),
+        (30, 1),
+        (31, 1),
+        (32, 1),
+    ]);
+
+    assert_eq!(kokushi_shanten(&hand), 0);
+}
+
+#[test]
+fn kokushi_one_away_hand_is_one() {
+    let hand = counts(&[
+        (0, 1),
+        (8, 1),
+        (9, 1),
+        (17, 1),
+        (18, 1),
+        (26, 1),
+        (27, 1),
+        (28, 1),
+        (29, 1),
+        (30, 1),
+        (31, 1),
+        (32, 1),
+    ]);
+
+    assert_eq!(kokushi_shanten(&hand), 1);
+}
+
+#[test]
+fn non_terminal_tiles_do_not_count_toward_kokushi() {
+    let hand = counts(&[
+        (0, 1),
+        (1, 2),
+        (8, 1),
+        (9, 1),
+        (17, 1),
+        (18, 1),
+        (26, 1),
+        (27, 1),
+        (28, 1),
+        (29, 1),
+        (30, 1),
+        (31, 1),
+        (32, 1),
+    ]);
+
+    assert_eq!(kokushi_shanten(&hand), 1);
+}
+
+#[test]
+fn unified_shanten_prefers_standard_hand() {
+    let hand = counts(&[
+        (0, 1),
+        (1, 1),
+        (2, 1),
+        (3, 1),
+        (4, 1),
+        (5, 1),
+        (6, 1),
+        (7, 1),
+        (8, 1),
+        (9, 3),
+        (27, 2),
+    ]);
+
+    assert_eq!(shanten(&hand), standard_shanten(&hand));
+    assert!(standard_shanten(&hand) < chiitoitsu_shanten(&hand));
+    assert!(standard_shanten(&hand) < kokushi_shanten(&hand));
+}
+
+#[test]
+fn unified_shanten_prefers_chiitoitsu() {
+    let hand = counts(&[(0, 2), (2, 2), (4, 2), (9, 2), (11, 2), (13, 2), (27, 2)]);
+
+    assert_eq!(shanten(&hand), chiitoitsu_shanten(&hand));
+    assert!(chiitoitsu_shanten(&hand) < standard_shanten(&hand));
+    assert!(chiitoitsu_shanten(&hand) < kokushi_shanten(&hand));
+}
+
+#[test]
+fn unified_shanten_prefers_kokushi() {
+    let hand = counts(&[
+        (0, 2),
+        (8, 1),
+        (9, 1),
+        (17, 1),
+        (18, 1),
+        (26, 1),
+        (27, 1),
+        (28, 1),
+        (29, 1),
+        (30, 1),
+        (31, 1),
+        (32, 1),
+        (33, 1),
+    ]);
+
+    assert_eq!(shanten(&hand), kokushi_shanten(&hand));
+    assert!(kokushi_shanten(&hand) < standard_shanten(&hand));
+    assert!(kokushi_shanten(&hand) < chiitoitsu_shanten(&hand));
 }

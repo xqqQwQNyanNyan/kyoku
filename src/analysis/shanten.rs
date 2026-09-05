@@ -2,6 +2,7 @@ const TILE_KIND_COUNT: usize = 34;
 const MAX_COPIES: usize = 4;
 const MAX_MELDS: usize = 4;
 const UNREACHABLE: u8 = u8::MAX;
+const KOKUSHI_TILES: [usize; 13] = [0, 8, 9, 17, 18, 26, 27, 28, 29, 30, 31, 32, 33];
 
 /// 计算普通型“四面子一雀头”的向听数。
 ///
@@ -61,6 +62,38 @@ pub fn standard_shanten(counts: &[u8; TILE_KIND_COUNT]) -> i8 {
     }
 
     dp[TILE_KIND_COUNT][0][0][1][MAX_MELDS] as i8 - 1
+}
+
+/// 计算无副露手牌的七对子向听数。
+///
+/// 四张相同的牌仍然只算一种对子，因为七对子必须由七种不同牌组成。
+pub fn chiitoitsu_shanten(counts: &[u8; TILE_KIND_COUNT]) -> i8 {
+    debug_assert!(counts.iter().all(|&count| count <= MAX_COPIES as u8));
+
+    let pairs = counts.iter().filter(|&&count| count >= 2).count();
+    let unique = counts.iter().filter(|&&count| count > 0).count();
+
+    6 - pairs as i8 + 7usize.saturating_sub(unique) as i8
+}
+
+/// 计算无副露手牌的国士无双向听数。
+pub fn kokushi_shanten(counts: &[u8; TILE_KIND_COUNT]) -> i8 {
+    debug_assert!(counts.iter().all(|&count| count <= MAX_COPIES as u8));
+
+    let unique = KOKUSHI_TILES
+        .iter()
+        .filter(|&&tile| counts[tile] > 0)
+        .count();
+    let has_pair = KOKUSHI_TILES.iter().any(|&tile| counts[tile] >= 2);
+
+    13 - unique as i8 - i8::from(has_pair)
+}
+
+/// 返回无副露手牌在普通型、七对子和国士无双中的最小向听数。
+pub fn shanten(counts: &[u8; TILE_KIND_COUNT]) -> i8 {
+    standard_shanten(counts)
+        .min(chiitoitsu_shanten(counts))
+        .min(kokushi_shanten(counts))
 }
 
 /// 返回可以从该牌种开始的顺子数量上限。

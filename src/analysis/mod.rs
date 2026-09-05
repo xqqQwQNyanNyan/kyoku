@@ -1,3 +1,3 @@
 pub mod shanten;
 
-pub use shanten::standard_shanten;
+pub use shanten::{chiitoitsu_shanten, kokushi_shanten, shanten, standard_shanten};
