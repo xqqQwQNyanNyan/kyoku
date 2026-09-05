@@ -7,4 +7,4 @@ pub use tile_efficiency::{
     AnalysisError, DiscardEfficiency, DrawCandidates, TileAvailability, discard_efficiencies,
     discard_efficiency, effective_tile_kinds, unseen_count, winning_tile_kinds,
 };
-pub use yaku::{Yaku, yaku_shanten};
+pub use yaku::{Yaku, YakuDistanceError, yaku_shanten};

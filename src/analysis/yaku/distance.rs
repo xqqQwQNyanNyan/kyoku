@@ -1,56 +1,10 @@
-use super::shanten::{
+use super::types::{Yaku, YakuDistanceError};
+use crate::analysis::shanten::{
     COMPONENT_COUNT, ChiitoitsuConstraint, CompiledConstraint, Component, HandFormSpec,
     KokushiConstraint, MAX_COPIES, SEQUENCE_COMPONENT_COUNT, SUIT_TILE_KIND_COUNT, Suit,
     concealed_counts, solve_hand_form, tile_kind, unrestricted_chiitoitsu_constraint,
 };
 use crate::mahjong::hand::Hand;
-
-/// 可单独计算向听数的役种。
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Yaku {
-    /// 七对子。
-    Chiitoitsu,
-    /// 国士无双。
-    Kokushi,
-    /// 对对和。
-    Toitoi,
-    /// 清一色。
-    Chinitsu,
-    /// 一气通贯。
-    Ittsu,
-    /// 一杯口。
-    Iipeikou,
-    /// 断幺九。
-    Tanyao,
-    /// 混一色。
-    Honitsu,
-    /// 混老头。
-    Honroutou,
-    /// 混全带幺九。
-    Chanta,
-    /// 纯全带幺九。
-    Junchan,
-    /// 三色同顺。
-    SanshokuDoujun,
-    /// 三色同刻。
-    SanshokuDoukou,
-    /// 二杯口。
-    Ryanpeikou,
-    /// 小三元。
-    Shousangen,
-    /// 大三元。
-    Daisangen,
-    /// 小四喜。
-    Shousuushi,
-    /// 大四喜。
-    Daisuushi,
-    /// 字一色。
-    Tsuuiisou,
-    /// 清老头。
-    Chinroutou,
-    /// 绿一色。
-    Ryuuiisou,
-}
 
 const HONOR_TILE_MASK: u64 = ((1u64 << 7) - 1) << 27;
 const TERMINAL_TILE_MASK: u64 = (1 << 0) | (1 << 8) | (1 << 9) | (1 << 17) | (1 << 18) | (1 << 26);
@@ -74,24 +28,27 @@ impl YakuEligibility {
     }
 }
 
-/// 计算手牌到指定役种和牌形的向听数；固定副露已使役种不可能成立时返回 `None`。
-pub fn yaku_shanten(hand: &Hand, yaku: Yaku) -> Option<i8> {
+/// 计算手牌到指定役种和牌形的向听数。
+///
+/// 返回 `Ok(Some(向听数))`；固定副露已使役种不可能成立时返回 `Ok(None)`。
+/// 尚未支持该役种的距离计算时返回 `Err(YakuDistanceError::UnsupportedYaku(yaku))`。
+pub fn yaku_shanten(hand: &Hand, yaku: Yaku) -> Result<Option<i8>, YakuDistanceError> {
+    let compiled = compile_yaku(yaku)?;
     let counts = concealed_counts(hand);
     debug_assert!(counts.iter().all(|&count| count <= MAX_COPIES as u8));
 
-    let compiled = compile_yaku(yaku);
     if !compiled.eligibility.is_satisfied_by(hand) {
-        return None;
+        return Ok(None);
     }
 
-    compiled
+    Ok(compiled
         .forms
         .iter()
         .filter_map(|spec| solve_hand_form(hand, &counts, spec))
-        .min()
+        .min())
 }
 
-fn compile_yaku(yaku: Yaku) -> CompiledYaku {
+fn compile_yaku(yaku: Yaku) -> Result<CompiledYaku, YakuDistanceError> {
     let (menzen, forms) = match yaku {
         Yaku::Chiitoitsu => (
             false,
@@ -217,12 +174,37 @@ fn compile_yaku(yaku: Yaku) -> CompiledYaku {
                 GREEN_TILE_MASK,
             ))],
         ),
+        Yaku::Riichi
+        | Yaku::DoubleRiichi
+        | Yaku::Ippatsu
+        | Yaku::MenzenTsumo
+        | Yaku::Pinfu
+        | Yaku::Haku
+        | Yaku::Hatsu
+        | Yaku::Chun
+        | Yaku::Bakaze
+        | Yaku::Jikaze
+        | Yaku::Haitei
+        | Yaku::Houtei
+        | Yaku::RinshanKaihou
+        | Yaku::Chankan
+        | Yaku::Sanankou
+        | Yaku::Sankantsu
+        | Yaku::Suuankou
+        | Yaku::SuuankouTanki
+        | Yaku::Suukantsu
+        | Yaku::ChuurenPoutou
+        | Yaku::JunseiChuurenPoutou
+        | Yaku::KokushiJuusanmen
+        | Yaku::Tenhou
+        | Yaku::Chiihou
+        | Yaku::NagashiMangan => return Err(YakuDistanceError::UnsupportedYaku(yaku)),
     };
 
-    CompiledYaku {
+    Ok(CompiledYaku {
         eligibility: YakuEligibility { menzen },
         forms,
-    }
+    })
 }
 
 fn toitoi_constraint() -> CompiledConstraint {
@@ -917,7 +899,14 @@ mod tests {
         ];
 
         for (yaku, form_count) in cases {
-            assert_eq!(compile_yaku(yaku).forms.len(), form_count, "{yaku:?}");
+            assert_eq!(
+                compile_yaku(yaku)
+                    .expect("existing yaku distance must be supported")
+                    .forms
+                    .len(),
+                form_count,
+                "{yaku:?}"
+            );
         }
 
         assert_eq!(honitsu_constraint(Suit::Manzu).transitions.len(), 4);
@@ -987,7 +976,7 @@ mod tests {
         ];
 
         for (yaku, ordinary_counts, chiitoitsu_counts) in cases {
-            let compiled = compile_yaku(yaku);
+            let compiled = compile_yaku(yaku).expect("existing yaku distance must be supported");
             let ordinary_hand = hand_from_counts(&ordinary_counts);
             let chiitoitsu_hand = hand_from_counts(&chiitoitsu_counts);
 
@@ -1004,7 +993,8 @@ mod tests {
 
     #[test]
     fn iipeikou_compiles_to_twenty_one_menzen_ordinary_forms() {
-        let compiled = compile_yaku(Yaku::Iipeikou);
+        let compiled =
+            compile_yaku(Yaku::Iipeikou).expect("existing yaku distance must be supported");
 
         assert!(compiled.eligibility.menzen);
         assert_eq!(compiled.forms.len(), SEQUENCE_COMPONENT_COUNT);
@@ -1020,7 +1010,8 @@ mod tests {
     fn chinitsu_compiles_ordinary_and_chiitoitsu_families() {
         let closed_counts = counts(&[(0, 2), (1, 2), (2, 2), (3, 2), (5, 2), (7, 2), (8, 2)]);
         let hand = hand_from_counts(&closed_counts);
-        let compiled = compile_yaku(Yaku::Chinitsu);
+        let compiled =
+            compile_yaku(Yaku::Chinitsu).expect("existing yaku distance must be supported");
         let specs = &compiled.forms;
 
         assert!(!compiled.eligibility.menzen);
@@ -1070,7 +1061,10 @@ mod tests {
         };
         let hand = hand_with_melds(&concealed, vec![chi]);
 
-        assert_eq!(yaku_shanten(&hand, Yaku::Toitoi), None);
+        assert_eq!(
+            yaku_shanten(&hand, Yaku::Toitoi).expect("existing yaku distance must be supported"),
+            None
+        );
     }
 
     #[test]
@@ -1083,6 +1077,9 @@ mod tests {
         };
         let hand = hand_with_melds(&concealed, vec![pon]);
 
-        assert_eq!(yaku_shanten(&hand, Yaku::Toitoi), Some(-1));
+        assert_eq!(
+            yaku_shanten(&hand, Yaku::Toitoi).expect("existing yaku distance must be supported"),
+            Some(-1)
+        );
     }
 }

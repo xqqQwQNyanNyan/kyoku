@@ -1,5 +1,6 @@
 use kyoku::analysis::{
-    Yaku, chiitoitsu_shanten, kokushi_shanten, shanten, standard_shanten, yaku_shanten,
+    Yaku, YakuDistanceError, chiitoitsu_shanten, kokushi_shanten, shanten, standard_shanten,
+    yaku_shanten,
 };
 use kyoku::mahjong::hand::Hand;
 use kyoku::mahjong::meld::Meld;
@@ -153,17 +154,67 @@ fn constrained_toitoi_matches_pre_refactor_results() {
         let counts = generated_hand(seed);
         let hand = hand_from_counts(&counts);
         assert_eq!(
-            yaku_shanten(&hand, Yaku::Toitoi),
+            yaku_shanten(&hand, Yaku::Toitoi).expect("existing yaku distance must be supported"),
             Some(legacy_toitoi_shanten(&counts))
         );
     }
 }
 
 #[test]
+fn unsupported_yaku_distances_are_distinct_from_unreachable_hands() {
+    let closed = hand_from_counts(&counts(&[(0, 3), (8, 3), (9, 3), (31, 3), (27, 2)]));
+    let open = hand_with_melds(
+        &counts(&[(0, 3), (8, 3), (31, 3), (27, 2)]),
+        vec![chi([18, 19, 20])],
+    );
+    let unsupported = [
+        Yaku::Riichi,
+        Yaku::DoubleRiichi,
+        Yaku::Ippatsu,
+        Yaku::MenzenTsumo,
+        Yaku::Pinfu,
+        Yaku::Haku,
+        Yaku::Hatsu,
+        Yaku::Chun,
+        Yaku::Bakaze,
+        Yaku::Jikaze,
+        Yaku::Haitei,
+        Yaku::Houtei,
+        Yaku::RinshanKaihou,
+        Yaku::Chankan,
+        Yaku::Sanankou,
+        Yaku::Sankantsu,
+        Yaku::Suuankou,
+        Yaku::SuuankouTanki,
+        Yaku::Suukantsu,
+        Yaku::ChuurenPoutou,
+        Yaku::JunseiChuurenPoutou,
+        Yaku::KokushiJuusanmen,
+        Yaku::Tenhou,
+        Yaku::Chiihou,
+        Yaku::NagashiMangan,
+    ];
+
+    for yaku in unsupported {
+        for hand in [&closed, &open] {
+            assert_eq!(
+                yaku_shanten(hand, yaku),
+                Err(YakuDistanceError::UnsupportedYaku(yaku)),
+                "{yaku:?}"
+            );
+        }
+    }
+
+    assert_eq!(yaku_shanten(&closed, Yaku::Toitoi), Ok(Some(-1)));
+    assert_eq!(yaku_shanten(&open, Yaku::Toitoi), Ok(None));
+}
+
+#[test]
 fn yaku_api_routes_special_hand_families() {
     let chiitoitsu = counts(&[(0, 2), (2, 2), (4, 2), (9, 2), (11, 2), (13, 2), (27, 2)]);
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&chiitoitsu), Yaku::Chiitoitsu),
+        yaku_shanten(&hand_from_counts(&chiitoitsu), Yaku::Chiitoitsu)
+            .expect("existing yaku distance must be supported"),
         Some(chiitoitsu_shanten(&chiitoitsu))
     );
 
@@ -183,7 +234,8 @@ fn yaku_api_routes_special_hand_families() {
         (33, 1),
     ]);
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&kokushi), Yaku::Kokushi),
+        yaku_shanten(&hand_from_counts(&kokushi), Yaku::Kokushi)
+            .expect("existing yaku distance must be supported"),
         Some(kokushi_shanten(&kokushi))
     );
 }
@@ -197,7 +249,8 @@ fn completed_ittsu_in_each_suit_is_minus_one() {
         hand[28] = 2;
 
         assert_eq!(
-            yaku_shanten(&hand_from_counts(&hand), Yaku::Ittsu),
+            yaku_shanten(&hand_from_counts(&hand), Yaku::Ittsu)
+                .expect("existing yaku distance must be supported"),
             Some(-1)
         );
     }
@@ -219,7 +272,11 @@ fn ittsu_can_pay_the_original_dp_cost_to_complete_a_segment() {
         (27, 2),
     ]);
 
-    assert_eq!(yaku_shanten(&hand_from_counts(&hand), Yaku::Ittsu), Some(0));
+    assert_eq!(
+        yaku_shanten(&hand_from_counts(&hand), Yaku::Ittsu)
+            .expect("existing yaku distance must be supported"),
+        Some(0)
+    );
 }
 
 #[test]
@@ -241,7 +298,9 @@ fn ittsu_segments_cannot_be_split_across_suits() {
 
     assert_eq!(standard_shanten(&hand), -1);
     assert!(
-        yaku_shanten(&hand_from_counts(&hand), Yaku::Ittsu).is_some_and(|shanten| shanten > -1)
+        yaku_shanten(&hand_from_counts(&hand), Yaku::Ittsu)
+            .expect("existing yaku distance must be supported")
+            .is_some_and(|shanten| shanten > -1)
     );
 }
 
@@ -260,7 +319,10 @@ fn related_chi_advances_ittsu_constraint_state() {
     ]);
     let hand = hand_with_melds(&concealed, vec![chi([0, 1, 2])]);
 
-    assert_eq!(yaku_shanten(&hand, Yaku::Ittsu), Some(-1));
+    assert_eq!(
+        yaku_shanten(&hand, Yaku::Ittsu).expect("existing yaku distance must be supported"),
+        Some(-1)
+    );
 }
 
 #[test]
@@ -278,7 +340,10 @@ fn unrelated_chi_does_not_advance_another_suits_ittsu_state() {
     ]);
     let hand = hand_with_melds(&concealed, vec![chi([9, 10, 11])]);
 
-    assert_eq!(yaku_shanten(&hand, Yaku::Ittsu), Some(2));
+    assert_eq!(
+        yaku_shanten(&hand, Yaku::Ittsu).expect("existing yaku distance must be supported"),
+        Some(2)
+    );
 }
 
 #[test]
@@ -294,7 +359,8 @@ fn completed_iipeikou_in_each_suit_is_minus_one() {
         ]);
 
         assert_eq!(
-            yaku_shanten(&hand_from_counts(&hand), Yaku::Iipeikou),
+            yaku_shanten(&hand_from_counts(&hand), Yaku::Iipeikou)
+                .expect("existing yaku distance must be supported"),
             Some(-1)
         );
     }
@@ -306,7 +372,8 @@ fn iipeikou_can_pay_the_original_dp_cost_for_the_second_sequence() {
     let hand = counts(&[(0, 2), (1, 2), (2, 1), (27, 3), (28, 3), (29, 2)]);
 
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&hand), Yaku::Iipeikou),
+        yaku_shanten(&hand_from_counts(&hand), Yaku::Iipeikou)
+            .expect("existing yaku distance must be supported"),
         Some(0)
     );
 }
@@ -330,7 +397,9 @@ fn a_single_sequence_is_not_enough_for_iipeikou() {
 
     assert_eq!(standard_shanten(&hand), -1);
     assert!(
-        yaku_shanten(&hand_from_counts(&hand), Yaku::Iipeikou).is_some_and(|shanten| shanten > -1)
+        yaku_shanten(&hand_from_counts(&hand), Yaku::Iipeikou)
+            .expect("existing yaku distance must be supported")
+            .is_some_and(|shanten| shanten > -1)
     );
 }
 
@@ -341,7 +410,9 @@ fn different_sequences_do_not_form_iipeikou() {
 
     assert_eq!(standard_shanten(&hand), -1);
     assert!(
-        yaku_shanten(&hand_from_counts(&hand), Yaku::Iipeikou).is_some_and(|shanten| shanten > -1)
+        yaku_shanten(&hand_from_counts(&hand), Yaku::Iipeikou)
+            .expect("existing yaku distance must be supported")
+            .is_some_and(|shanten| shanten > -1)
     );
 }
 
@@ -362,7 +433,9 @@ fn same_ranks_in_different_suits_do_not_form_iipeikou() {
 
     assert_eq!(standard_shanten(&hand), -1);
     assert!(
-        yaku_shanten(&hand_from_counts(&hand), Yaku::Iipeikou).is_some_and(|shanten| shanten > -1)
+        yaku_shanten(&hand_from_counts(&hand), Yaku::Iipeikou)
+            .expect("existing yaku distance must be supported")
+            .is_some_and(|shanten| shanten > -1)
     );
 }
 
@@ -380,7 +453,10 @@ fn open_hand_is_ineligible_for_iipeikou() {
     ]);
     let hand = hand_with_melds(&concealed, vec![chi([18, 19, 20])]);
 
-    assert_eq!(yaku_shanten(&hand, Yaku::Iipeikou), None);
+    assert_eq!(
+        yaku_shanten(&hand, Yaku::Iipeikou).expect("existing yaku distance must be supported"),
+        None
+    );
 }
 
 #[test]
@@ -397,9 +473,18 @@ fn fixed_melds_can_make_a_yaku_unreachable() {
     ]);
     let hand = hand_with_melds(&concealed, vec![chi([9, 10, 11])]);
 
-    assert_eq!(yaku_shanten(&hand, Yaku::Toitoi), None);
-    assert_eq!(yaku_shanten(&hand, Yaku::Chiitoitsu), None);
-    assert_eq!(yaku_shanten(&hand, Yaku::Kokushi), None);
+    assert_eq!(
+        yaku_shanten(&hand, Yaku::Toitoi).expect("existing yaku distance must be supported"),
+        None
+    );
+    assert_eq!(
+        yaku_shanten(&hand, Yaku::Chiitoitsu).expect("existing yaku distance must be supported"),
+        None
+    );
+    assert_eq!(
+        yaku_shanten(&hand, Yaku::Kokushi).expect("existing yaku distance must be supported"),
+        None
+    );
 }
 
 #[test]
@@ -564,7 +649,8 @@ fn completed_chinitsu_is_minus_one() {
     ]);
 
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&hand), Yaku::Chinitsu),
+        yaku_shanten(&hand_from_counts(&hand), Yaku::Chinitsu)
+            .expect("existing yaku distance must be supported"),
         Some(-1)
     );
 }
@@ -578,7 +664,8 @@ fn completed_chinitsu_chiitoitsu_in_each_suit_is_minus_one() {
         }
 
         assert_eq!(
-            yaku_shanten(&hand_from_counts(&hand), Yaku::Chinitsu),
+            yaku_shanten(&hand_from_counts(&hand), Yaku::Chinitsu)
+                .expect("existing yaku distance must be supported"),
             Some(-1)
         );
     }
@@ -589,7 +676,8 @@ fn chinitsu_chiitoitsu_ready_hand_is_zero() {
     let hand = counts(&[(0, 2), (1, 2), (2, 2), (3, 2), (5, 2), (7, 2), (8, 1)]);
 
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&hand), Yaku::Chinitsu),
+        yaku_shanten(&hand_from_counts(&hand), Yaku::Chinitsu)
+            .expect("existing yaku distance must be supported"),
         Some(0)
     );
 }
@@ -599,7 +687,8 @@ fn off_suit_pair_increases_chinitsu_chiitoitsu_distance() {
     let hand = counts(&[(0, 2), (1, 2), (2, 2), (3, 2), (5, 2), (7, 2), (27, 2)]);
 
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&hand), Yaku::Chinitsu),
+        yaku_shanten(&hand_from_counts(&hand), Yaku::Chinitsu)
+            .expect("existing yaku distance must be supported"),
         Some(1)
     );
 }
@@ -619,7 +708,10 @@ fn open_chinitsu_can_use_ordinary_family() {
     ]);
     let hand = hand_with_melds(&concealed, vec![chi([0, 1, 2])]);
 
-    assert_eq!(yaku_shanten(&hand, Yaku::Chinitsu), Some(-1));
+    assert_eq!(
+        yaku_shanten(&hand, Yaku::Chinitsu).expect("existing yaku distance must be supported"),
+        Some(-1)
+    );
 }
 
 #[test]
@@ -638,7 +730,8 @@ fn chinitsu_ready_hand_is_zero() {
     ]);
 
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&hand), Yaku::Chinitsu),
+        yaku_shanten(&hand_from_counts(&hand), Yaku::Chinitsu)
+            .expect("existing yaku distance must be supported"),
         Some(0)
     );
 }
@@ -664,7 +757,8 @@ fn off_suit_tiles_do_not_help_chinitsu() {
 
     assert_eq!(standard_shanten(&hand), -1);
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&hand), Yaku::Chinitsu),
+        yaku_shanten(&hand_from_counts(&hand), Yaku::Chinitsu)
+            .expect("existing yaku distance must be supported"),
         Some(4)
     );
 }
@@ -687,7 +781,8 @@ fn chinitsu_chooses_the_closest_suit() {
     ]);
 
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&hand), Yaku::Chinitsu),
+        yaku_shanten(&hand_from_counts(&hand), Yaku::Chinitsu)
+            .expect("existing yaku distance must be supported"),
         Some(1)
     );
 }
@@ -711,7 +806,8 @@ fn honors_do_not_help_chinitsu() {
 
     assert_eq!(standard_shanten(&hand), -1);
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&hand), Yaku::Chinitsu),
+        yaku_shanten(&hand_from_counts(&hand), Yaku::Chinitsu)
+            .expect("existing yaku distance must be supported"),
         Some(4)
     );
 }
@@ -721,7 +817,8 @@ fn completed_toitoi_is_minus_one() {
     let hand = counts(&[(0, 3), (8, 3), (9, 3), (26, 3), (27, 2)]);
 
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&hand), Yaku::Toitoi),
+        yaku_shanten(&hand_from_counts(&hand), Yaku::Toitoi)
+            .expect("existing yaku distance must be supported"),
         Some(-1)
     );
 }
@@ -731,7 +828,8 @@ fn toitoi_ready_hand_is_zero() {
     let hand = counts(&[(0, 3), (8, 3), (9, 3), (26, 3), (27, 1)]);
 
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&hand), Yaku::Toitoi),
+        yaku_shanten(&hand_from_counts(&hand), Yaku::Toitoi)
+            .expect("existing yaku distance must be supported"),
         Some(0)
     );
 }
@@ -741,7 +839,8 @@ fn toitoi_one_away_hand_is_one() {
     let hand = counts(&[(0, 3), (8, 3), (9, 3), (26, 2), (27, 1), (28, 1)]);
 
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&hand), Yaku::Toitoi),
+        yaku_shanten(&hand_from_counts(&hand), Yaku::Toitoi)
+            .expect("existing yaku distance must be supported"),
         Some(1)
     );
 }
@@ -751,7 +850,8 @@ fn four_identical_tiles_cannot_be_both_toitoi_triplet_and_pair() {
     let hand = counts(&[(0, 4), (8, 3), (9, 3), (26, 3)]);
 
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&hand), Yaku::Toitoi),
+        yaku_shanten(&hand_from_counts(&hand), Yaku::Toitoi)
+            .expect("existing yaku distance must be supported"),
         Some(1)
     );
 }
@@ -776,7 +876,11 @@ fn sequences_cannot_be_toitoi_target_melds() {
     ]);
 
     assert_eq!(standard_shanten(&hand), -1);
-    assert!(yaku_shanten(&hand_from_counts(&hand), Yaku::Toitoi) > Some(-1));
+    assert!(
+        yaku_shanten(&hand_from_counts(&hand), Yaku::Toitoi)
+            .expect("existing yaku distance must be supported")
+            > Some(-1)
+    );
 }
 
 #[test]
@@ -1023,16 +1127,23 @@ fn tanyao_covers_ordinary_chiitoitsu_and_rejects_terminals() {
     let chiitoitsu = counts(&[(1, 2), (3, 2), (5, 2), (7, 2), (10, 2), (13, 2), (16, 2)]);
 
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&complete), Yaku::Tanyao),
+        yaku_shanten(&hand_from_counts(&complete), Yaku::Tanyao)
+            .expect("existing yaku distance must be supported"),
         Some(-1)
     );
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&ready), Yaku::Tanyao),
+        yaku_shanten(&hand_from_counts(&ready), Yaku::Tanyao)
+            .expect("existing yaku distance must be supported"),
         Some(0)
     );
-    assert!(yaku_shanten(&hand_from_counts(&with_terminals), Yaku::Tanyao) > Some(-1));
+    assert!(
+        yaku_shanten(&hand_from_counts(&with_terminals), Yaku::Tanyao)
+            .expect("existing yaku distance must be supported")
+            > Some(-1)
+    );
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&chiitoitsu), Yaku::Tanyao),
+        yaku_shanten(&hand_from_counts(&chiitoitsu), Yaku::Tanyao)
+            .expect("existing yaku distance must be supported"),
         Some(-1)
     );
 }
@@ -1081,17 +1192,28 @@ fn honitsu_requires_both_suited_tiles_and_honors_in_both_families() {
     let chiitoitsu = counts(&[(0, 2), (2, 2), (5, 2), (27, 2), (29, 2), (31, 2), (33, 2)]);
 
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&complete), Yaku::Honitsu),
+        yaku_shanten(&hand_from_counts(&complete), Yaku::Honitsu)
+            .expect("existing yaku distance must be supported"),
         Some(-1)
     );
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&ready), Yaku::Honitsu),
+        yaku_shanten(&hand_from_counts(&ready), Yaku::Honitsu)
+            .expect("existing yaku distance must be supported"),
         Some(0)
     );
-    assert!(yaku_shanten(&hand_from_counts(&chinitsu), Yaku::Honitsu) > Some(-1));
-    assert!(yaku_shanten(&hand_from_counts(&tsuuiisou), Yaku::Honitsu) > Some(-1));
+    assert!(
+        yaku_shanten(&hand_from_counts(&chinitsu), Yaku::Honitsu)
+            .expect("existing yaku distance must be supported")
+            > Some(-1)
+    );
+    assert!(
+        yaku_shanten(&hand_from_counts(&tsuuiisou), Yaku::Honitsu)
+            .expect("existing yaku distance must be supported")
+            > Some(-1)
+    );
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&chiitoitsu), Yaku::Honitsu),
+        yaku_shanten(&hand_from_counts(&chiitoitsu), Yaku::Honitsu)
+            .expect("existing yaku distance must be supported"),
         Some(-1)
     );
 
@@ -1104,7 +1226,11 @@ fn honitsu_requires_both_suited_tiles_and_honors_in_both_families() {
         (32, 2),
         (33, 2),
     ]);
-    assert!(yaku_shanten(&hand_from_counts(&honor_chiitoitsu), Yaku::Honitsu) > Some(-1));
+    assert!(
+        yaku_shanten(&hand_from_counts(&honor_chiitoitsu), Yaku::Honitsu)
+            .expect("existing yaku distance must be supported")
+            > Some(-1)
+    );
 }
 
 #[test]
@@ -1115,16 +1241,23 @@ fn honroutou_covers_ordinary_chiitoitsu_and_rejects_sequences() {
     let chiitoitsu = counts(&[(0, 2), (8, 2), (9, 2), (17, 2), (27, 2), (31, 2), (33, 2)]);
 
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&complete), Yaku::Honroutou),
+        yaku_shanten(&hand_from_counts(&complete), Yaku::Honroutou)
+            .expect("existing yaku distance must be supported"),
         Some(-1)
     );
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&ready), Yaku::Honroutou),
+        yaku_shanten(&hand_from_counts(&ready), Yaku::Honroutou)
+            .expect("existing yaku distance must be supported"),
         Some(0)
     );
-    assert!(yaku_shanten(&hand_from_counts(&with_sequence), Yaku::Honroutou) > Some(-1));
+    assert!(
+        yaku_shanten(&hand_from_counts(&with_sequence), Yaku::Honroutou)
+            .expect("existing yaku distance must be supported")
+            > Some(-1)
+    );
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&chiitoitsu), Yaku::Honroutou),
+        yaku_shanten(&hand_from_counts(&chiitoitsu), Yaku::Honroutou)
+            .expect("existing yaku distance must be supported"),
         Some(-1)
     );
 }
@@ -1166,14 +1299,20 @@ fn chanta_requires_terminal_or_honor_components_a_sequence_and_an_honor() {
     ]);
 
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&complete), Yaku::Chanta),
+        yaku_shanten(&hand_from_counts(&complete), Yaku::Chanta)
+            .expect("existing yaku distance must be supported"),
         Some(-1)
     );
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&ready), Yaku::Chanta),
+        yaku_shanten(&hand_from_counts(&ready), Yaku::Chanta)
+            .expect("existing yaku distance must be supported"),
         Some(0)
     );
-    assert!(yaku_shanten(&hand_from_counts(&junchan), Yaku::Chanta) > Some(-1));
+    assert!(
+        yaku_shanten(&hand_from_counts(&junchan), Yaku::Chanta)
+            .expect("existing yaku distance must be supported")
+            > Some(-1)
+    );
 }
 
 #[test]
@@ -1213,14 +1352,20 @@ fn junchan_requires_terminal_components_a_sequence_and_no_honors() {
     ]);
 
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&complete), Yaku::Junchan),
+        yaku_shanten(&hand_from_counts(&complete), Yaku::Junchan)
+            .expect("existing yaku distance must be supported"),
         Some(-1)
     );
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&ready), Yaku::Junchan),
+        yaku_shanten(&hand_from_counts(&ready), Yaku::Junchan)
+            .expect("existing yaku distance must be supported"),
         Some(0)
     );
-    assert!(yaku_shanten(&hand_from_counts(&chanta), Yaku::Junchan) > Some(-1));
+    assert!(
+        yaku_shanten(&hand_from_counts(&chanta), Yaku::Junchan)
+            .expect("existing yaku distance must be supported")
+            > Some(-1)
+    );
 }
 
 #[test]
@@ -1265,14 +1410,20 @@ fn sanshoku_doujun_requires_the_same_sequence_in_all_three_suits() {
     ]);
 
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&complete), Yaku::SanshokuDoujun),
+        yaku_shanten(&hand_from_counts(&complete), Yaku::SanshokuDoujun)
+            .expect("existing yaku distance must be supported"),
         Some(-1)
     );
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&ready), Yaku::SanshokuDoujun),
+        yaku_shanten(&hand_from_counts(&ready), Yaku::SanshokuDoujun)
+            .expect("existing yaku distance must be supported"),
         Some(0)
     );
-    assert!(yaku_shanten(&hand_from_counts(&different_start), Yaku::SanshokuDoujun) > Some(-1));
+    assert!(
+        yaku_shanten(&hand_from_counts(&different_start), Yaku::SanshokuDoujun)
+            .expect("existing yaku distance must be supported")
+            > Some(-1)
+    );
 }
 
 #[test]
@@ -1282,14 +1433,20 @@ fn sanshoku_doukou_requires_the_same_triplet_in_all_three_suits() {
     let different_rank = counts(&[(0, 3), (3, 1), (4, 1), (5, 1), (9, 3), (19, 3), (27, 2)]);
 
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&complete), Yaku::SanshokuDoukou),
+        yaku_shanten(&hand_from_counts(&complete), Yaku::SanshokuDoukou)
+            .expect("existing yaku distance must be supported"),
         Some(-1)
     );
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&ready), Yaku::SanshokuDoukou),
+        yaku_shanten(&hand_from_counts(&ready), Yaku::SanshokuDoukou)
+            .expect("existing yaku distance must be supported"),
         Some(0)
     );
-    assert!(yaku_shanten(&hand_from_counts(&different_rank), Yaku::SanshokuDoukou) > Some(-1));
+    assert!(
+        yaku_shanten(&hand_from_counts(&different_rank), Yaku::SanshokuDoukou)
+            .expect("existing yaku distance must be supported")
+            > Some(-1)
+    );
 }
 
 #[test]
@@ -1311,22 +1468,32 @@ fn ryanpeikou_counts_two_pairs_of_sequences_and_requires_menzen() {
     let four_identical = counts(&[(0, 4), (1, 4), (2, 4), (27, 2)]);
 
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&complete), Yaku::Ryanpeikou),
+        yaku_shanten(&hand_from_counts(&complete), Yaku::Ryanpeikou)
+            .expect("existing yaku distance must be supported"),
         Some(-1)
     );
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&ready), Yaku::Ryanpeikou),
+        yaku_shanten(&hand_from_counts(&ready), Yaku::Ryanpeikou)
+            .expect("existing yaku distance must be supported"),
         Some(0)
     );
-    assert!(yaku_shanten(&hand_from_counts(&only_one_pair), Yaku::Ryanpeikou) > Some(-1));
+    assert!(
+        yaku_shanten(&hand_from_counts(&only_one_pair), Yaku::Ryanpeikou)
+            .expect("existing yaku distance must be supported")
+            > Some(-1)
+    );
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&four_identical), Yaku::Ryanpeikou),
+        yaku_shanten(&hand_from_counts(&four_identical), Yaku::Ryanpeikou)
+            .expect("existing yaku distance must be supported"),
         Some(-1)
     );
 
     let open_concealed = counts(&[(0, 2), (1, 2), (2, 2), (12, 1), (13, 1), (14, 1), (27, 2)]);
     let open = hand_with_melds(&open_concealed, vec![chi([24, 25, 26])]);
-    assert_eq!(yaku_shanten(&open, Yaku::Ryanpeikou), None);
+    assert_eq!(
+        yaku_shanten(&open, Yaku::Ryanpeikou).expect("existing yaku distance must be supported"),
+        None
+    );
 }
 
 #[test]
@@ -1356,14 +1523,20 @@ fn shousangen_requires_a_dragon_pair_and_the_other_two_triplets() {
     let daisangen = counts(&[(0, 1), (1, 1), (2, 1), (27, 2), (31, 3), (32, 3), (33, 3)]);
 
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&complete), Yaku::Shousangen),
+        yaku_shanten(&hand_from_counts(&complete), Yaku::Shousangen)
+            .expect("existing yaku distance must be supported"),
         Some(-1)
     );
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&ready), Yaku::Shousangen),
+        yaku_shanten(&hand_from_counts(&ready), Yaku::Shousangen)
+            .expect("existing yaku distance must be supported"),
         Some(0)
     );
-    assert!(yaku_shanten(&hand_from_counts(&daisangen), Yaku::Shousangen) > Some(-1));
+    assert!(
+        yaku_shanten(&hand_from_counts(&daisangen), Yaku::Shousangen)
+            .expect("existing yaku distance must be supported")
+            > Some(-1)
+    );
 }
 
 #[test]
@@ -1383,14 +1556,20 @@ fn daisangen_requires_all_three_dragon_triplets() {
     ]);
 
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&complete), Yaku::Daisangen),
+        yaku_shanten(&hand_from_counts(&complete), Yaku::Daisangen)
+            .expect("existing yaku distance must be supported"),
         Some(-1)
     );
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&ready), Yaku::Daisangen),
+        yaku_shanten(&hand_from_counts(&ready), Yaku::Daisangen)
+            .expect("existing yaku distance must be supported"),
         Some(0)
     );
-    assert!(yaku_shanten(&hand_from_counts(&shousangen), Yaku::Daisangen) > Some(-1));
+    assert!(
+        yaku_shanten(&hand_from_counts(&shousangen), Yaku::Daisangen)
+            .expect("existing yaku distance must be supported")
+            > Some(-1)
+    );
 }
 
 #[test]
@@ -1400,14 +1579,20 @@ fn shousuushi_requires_a_wind_pair_and_the_other_three_triplets() {
     let daisuushi = counts(&[(27, 3), (28, 3), (29, 3), (30, 3), (31, 2)]);
 
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&complete), Yaku::Shousuushi),
+        yaku_shanten(&hand_from_counts(&complete), Yaku::Shousuushi)
+            .expect("existing yaku distance must be supported"),
         Some(-1)
     );
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&ready), Yaku::Shousuushi),
+        yaku_shanten(&hand_from_counts(&ready), Yaku::Shousuushi)
+            .expect("existing yaku distance must be supported"),
         Some(0)
     );
-    assert!(yaku_shanten(&hand_from_counts(&daisuushi), Yaku::Shousuushi) > Some(-1));
+    assert!(
+        yaku_shanten(&hand_from_counts(&daisuushi), Yaku::Shousuushi)
+            .expect("existing yaku distance must be supported")
+            > Some(-1)
+    );
 }
 
 #[test]
@@ -1417,14 +1602,20 @@ fn daisuushi_requires_all_four_wind_triplets() {
     let shousuushi = counts(&[(0, 1), (1, 1), (2, 1), (27, 3), (28, 3), (29, 3), (30, 2)]);
 
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&complete), Yaku::Daisuushi),
+        yaku_shanten(&hand_from_counts(&complete), Yaku::Daisuushi)
+            .expect("existing yaku distance must be supported"),
         Some(-1)
     );
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&ready), Yaku::Daisuushi),
+        yaku_shanten(&hand_from_counts(&ready), Yaku::Daisuushi)
+            .expect("existing yaku distance must be supported"),
         Some(0)
     );
-    assert!(yaku_shanten(&hand_from_counts(&shousuushi), Yaku::Daisuushi) > Some(-1));
+    assert!(
+        yaku_shanten(&hand_from_counts(&shousuushi), Yaku::Daisuushi)
+            .expect("existing yaku distance must be supported")
+            > Some(-1)
+    );
 }
 
 #[test]
@@ -1443,16 +1634,23 @@ fn tsuuiisou_covers_ordinary_chiitoitsu_and_rejects_numbered_tiles() {
     ]);
 
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&complete), Yaku::Tsuuiisou),
+        yaku_shanten(&hand_from_counts(&complete), Yaku::Tsuuiisou)
+            .expect("existing yaku distance must be supported"),
         Some(-1)
     );
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&ready), Yaku::Tsuuiisou),
+        yaku_shanten(&hand_from_counts(&ready), Yaku::Tsuuiisou)
+            .expect("existing yaku distance must be supported"),
         Some(0)
     );
-    assert!(yaku_shanten(&hand_from_counts(&with_numbered), Yaku::Tsuuiisou) > Some(-1));
+    assert!(
+        yaku_shanten(&hand_from_counts(&with_numbered), Yaku::Tsuuiisou)
+            .expect("existing yaku distance must be supported")
+            > Some(-1)
+    );
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&chiitoitsu), Yaku::Tsuuiisou),
+        yaku_shanten(&hand_from_counts(&chiitoitsu), Yaku::Tsuuiisou)
+            .expect("existing yaku distance must be supported"),
         Some(-1)
     );
 }
@@ -1464,14 +1662,20 @@ fn chinroutou_allows_only_terminal_triplets_and_pair() {
     let with_honor = counts(&[(0, 3), (8, 3), (9, 3), (27, 3), (31, 2)]);
 
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&complete), Yaku::Chinroutou),
+        yaku_shanten(&hand_from_counts(&complete), Yaku::Chinroutou)
+            .expect("existing yaku distance must be supported"),
         Some(-1)
     );
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&ready), Yaku::Chinroutou),
+        yaku_shanten(&hand_from_counts(&ready), Yaku::Chinroutou)
+            .expect("existing yaku distance must be supported"),
         Some(0)
     );
-    assert!(yaku_shanten(&hand_from_counts(&with_honor), Yaku::Chinroutou) > Some(-1));
+    assert!(
+        yaku_shanten(&hand_from_counts(&with_honor), Yaku::Chinroutou)
+            .expect("existing yaku distance must be supported")
+            > Some(-1)
+    );
 }
 
 #[test]
@@ -1490,12 +1694,18 @@ fn ryuuiisou_allows_only_green_tiles() {
     ]);
 
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&complete), Yaku::Ryuuiisou),
+        yaku_shanten(&hand_from_counts(&complete), Yaku::Ryuuiisou)
+            .expect("existing yaku distance must be supported"),
         Some(-1)
     );
     assert_eq!(
-        yaku_shanten(&hand_from_counts(&ready), Yaku::Ryuuiisou),
+        yaku_shanten(&hand_from_counts(&ready), Yaku::Ryuuiisou)
+            .expect("existing yaku distance must be supported"),
         Some(0)
     );
-    assert!(yaku_shanten(&hand_from_counts(&with_five_sou), Yaku::Ryuuiisou) > Some(-1));
+    assert!(
+        yaku_shanten(&hand_from_counts(&with_five_sou), Yaku::Ryuuiisou)
+            .expect("existing yaku distance must be supported")
+            > Some(-1)
+    );
 }
