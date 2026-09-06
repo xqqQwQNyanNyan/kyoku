@@ -187,3 +187,26 @@ fn invalid_input_does_not_write_a_key_or_settings() {
     assert!(secrets.values.borrow().is_empty());
     assert!(!store.0.directory.exists());
 }
+
+#[test]
+fn chat_endpoint_can_be_saved_and_reloaded_with_its_own_key() {
+    let store = TestStore::new();
+    let secrets = MemorySecrets::default();
+    let endpoint = "https://service.example/v1/chat/completions";
+    let view = store
+        .0
+        .save_with(input(endpoint, "chat-test-key"), &secrets)
+        .unwrap();
+    assert_eq!(view.endpoint, endpoint);
+    assert!(view.saved && view.has_api_key);
+    let config = store.0.draft(input(endpoint, ""), &secrets).unwrap();
+    assert_eq!(config.endpoint, endpoint);
+    assert_eq!(config.key.as_deref(), Some("chat-test-key"));
+    config.borrowed().validate().unwrap();
+    assert!(
+        store
+            .0
+            .draft(input(DEFAULT_ENDPOINT, ""), &secrets)
+            .is_err()
+    );
+}

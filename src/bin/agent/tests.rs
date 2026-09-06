@@ -51,9 +51,20 @@ fn browse_requires_a_file_and_keeps_single_position_options_exclusive() {
         "--player 0 --browse -",
         "--player 0 --browse --event 2 log",
         "--player 0 --browse --question why log",
+        "--player 0 --browse --without-mortal log",
     ] {
         assert!(parse(input).is_err(), "{input}");
     }
+}
+
+#[test]
+fn unanalysed_single_position_does_not_require_mortal_paths() {
+    let args = parse("--player 0 --event 2 --without-mortal --python missing --question why log")
+        .unwrap()
+        .unwrap();
+    assert!(args.without_mortal);
+    assert!(!args.browse);
+    assert!(!args.interactive);
 }
 
 fn points() -> Vec<kyoku::review::DecisionPoint> {
@@ -137,7 +148,7 @@ fn browse_questions_reset_history_on_switch_but_keep_it_on_invalid_selection() {
     let endpoint = format!("http://{}/v1/responses", listener.local_addr().unwrap());
     let handle = thread::spawn(move || {
         let call = json!({"status":"completed","output":[{"type":"function_call","status":"completed","call_id":"a","name":"get_review","arguments":"{}"}]}).to_string();
-        let answer = json!({"status":"completed","output":[{"type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"answer"}]}]}).to_string();
+        let answer = json!({"status":"completed","output":[{"type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":json!({"sections":[{"source":"limitation","text":"当前证据不足。","facts":[]}]}).to_string()}]}]}).to_string();
         let mut requests = Vec::<Value>::new();
         // 首问两次请求，同局面追问一次；每次切换后的首问都重新取证。
         for body in [&call, &answer, &answer, &call, &answer, &call, &answer] {
@@ -260,7 +271,7 @@ fn interactive_evidence_quit_and_eof_need_no_llm_configuration() {
         let mut output = Vec::new();
         let mut diagnostics = Vec::new();
         conversation(
-            &review,
+            &AgentContext::from(&review),
             config,
             &mut session,
             &b"\n/evidence\n/quit\nignored\n"[..],
@@ -275,7 +286,7 @@ fn interactive_evidence_quit_and_eof_need_no_llm_configuration() {
         assert!(session.is_none());
         output.clear();
         conversation(
-            &review,
+            &AgentContext::from(&review),
             config,
             &mut session,
             &b""[..],
@@ -294,7 +305,7 @@ fn missing_llm_configuration_blocks_questions_but_not_subsequent_evidence() {
     let mut output = Vec::new();
     let mut diagnostics = Vec::new();
     conversation(
-        &review(),
+        &AgentContext::from(&review()),
         None,
         &mut session,
         &b"why\n/evidence\n/quit\n"[..],

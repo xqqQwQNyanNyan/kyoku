@@ -13,7 +13,7 @@
 点击“导入牌谱”，选择本地文件、天凤链接或内置示例牌谱，然后选择玩家并点击“分析此玩家”。
 本地回放和分析无需账号或 API Key；只有链接下载和 Agent 问答需要联网。
 
-需要问答时，打开右上角“设置”，填写完整 Responses 服务地址、模型名和对应 API Key。
+需要问答时，打开右上角“设置”，填写完整 Responses 或 Chat Completions 服务地址、模型名和对应 API Key。
 可点击“测试连接”检查认证、模型和工具调用能力，再点击“保存设置”。测试会发送一次不含牌谱的请求，
 可能产生少量调用费用；测试成功不会自动保存。保存新配置会清空当前问答历史。
 “检查引擎”会在本地加载内置模型，确认运行环境可用。
@@ -37,7 +37,7 @@ API Key 保存在 macOS 钥匙串，不回显到界面。相同地址下留空�
 | 命令行回放 | 稳定版 Rust 工具链、Git |
 | 桌面 GUI | 上述工具、Node.js 22.12+、对应系统的 [Tauri 开发依赖](https://v2.tauri.app/start/prerequisites/) |
 | Mortal 分析 | Python 3.11+（推荐 3.12）、curl；安装时需联网下载依赖和约 125 MiB 的权重 |
-| Agent 问答 | 支持 Responses API 工具调用的 LLM 服务、模型名及对应密钥 |
+| Agent 问答 | 支持 Responses 或 Chat Completions 工具调用的 LLM 服务、模型名及对应密钥 |
 
 桌面版已在 macOS 验证。Mortal 安装脚本支持 macOS 和 Linux；Linux 桌面尚未完成验收，
 Windows 的 Mortal 环境仍需适配。下述步骤用于开发；安装包用户无需执行。
@@ -95,7 +95,7 @@ GUI 推荐直接在“设置”中配置。下面的 `.env` 方式用于 CLI，�
 cp .env.example .env
 ```
 
-使用中转站或其他兼容服务时，填写完整的 Responses 地址、模型名和专用密钥：
+使用中转站或其他兼容服务时，填写完整的 API 地址、模型名和专用密钥：
 
 ```dotenv
 KYOKU_OPENAI_ENDPOINT='https://your-service.example/v1/responses'
@@ -110,8 +110,13 @@ OPENAI_MODEL='your-model-name'
 OPENAI_API_KEY='your-key'
 ```
 
-上面的地址、模型名和密钥都是占位符，须替换成服务实际支持的值。只有聊天接口、
-不支持 Responses 工具调用的服务不能用于当前 Agent。密钥用单引号包裹，避免 `$` 被展开；
+服务提供 Chat Completions 时，把地址改为 `https://your-service.example/v1/chat/completions`。
+GUI 设置页也可直接填写该地址，程序按地址自动选择协议，不需要额外切换选项。
+标准路径是复数 `/chat/completions`；若供应商明确提供单数 `/chat/completion`，也按 Chat 协议处理，保留原地址。
+
+上面的地址、模型名和密钥都是占位符，须替换成服务实际支持的值。两种协议都要求服务和模型
+支持 `tools`、`tool_choice` 及工具结果回传；只有普通聊天能力的服务仍不能使用。
+密钥用单引号包裹，避免 `$` 被展开；
 `.env` 已被 Git 忽略，不要把真实密钥写进命令或提交到仓库。
 
 在 GUI 中跳到一个决策点，输入“比较这里的候选切牌，说明向听、进张和 Mortal 的倾向。”
@@ -243,6 +248,9 @@ cargo run --bin review -- --player 0 fixtures/tenhou/ranked_game.json
 ### 交互问答与整场浏览
 
 ```bash
+# 不运行 Mortal，只询问可见局面；缺少的分析会明确说明。
+cargo run --bin agent -- --player 0 --event 2 --without-mortal fixtures/tenhou/ranked_game.json
+
 # 同一局面反复提问；输入 /quit 退出。
 cargo run --bin agent -- --player 0 --event 2 fixtures/tenhou/ranked_game.json
 
@@ -260,7 +268,9 @@ cargo run --bin agent -- --player 0 --browse fixtures/tenhou/ranked_game.json
 | `/show` | 查看当前局面、牌效率和候选，仅浏览模式 |
 
 直接输入文字即可提问。浏览模式最初选择第一个决策点，无效选择保留当前局面和问答。
-浏览、`/show` 和 `/evidence` 不需要 LLM 配置；启动时仍需 Mortal，且已有 `.env` 的语法须正确。
+浏览、`/show` 和 `/evidence` 不需要 LLM 配置；默认启动仍需 Mortal，且已有 `.env` 的语法须正确。
+单局面加 `--without-mortal` 可跳过 Mortal，不需要 Python 或权重；只提供可见局面，
+切牌效率和 Mortal 标为未分析。该选项不能与 `--browse` 同用。
 `--browse` 只接受文件，不能与 `--event` 或 `--question` 同用。
 
 单局面可用 `--question '问题'` 回答一次后退出；加上 `--interactive` 则回答后继续交互。
@@ -273,7 +283,7 @@ cat fixtures/tenhou/ranked_game.json | cargo run --bin agent -- \
 ```
 
 `agent` 自动读取当前工作目录的 `.env`，配置优先级为命令行参数、已有环境变量、`.env`。
-`--llm-model NAME` 覆盖问答模型名，`--endpoint URL` 覆盖完整 Responses 地址；
+`--llm-model NAME` 覆盖问答模型名，`--endpoint URL` 覆盖完整 Responses 或 Chat Completions 地址；
 `--model` 始终指 Mortal 权重，不是 LLM 模型。
 GUI 优先使用设置页保存的配置。仅开发版在没有已保存设置时，才依次读取已有环境变量和资源目录内的 `.env`。
 
@@ -294,8 +304,12 @@ Mortal 的“最终推荐”可能与候选表中 Q 值最高的动作不同，�
 源码版本、模型来源及许可附件记录在 [Mortal 来源说明](mortal/README.md)。
 
 牌效率中的不可见枚数不是实际牌山剩余枚数，完成牌形也不代表可以合法和牌。
-Agent 按【计算】【Mortal】【推测】组织解释，但这些是提示词约束，不能保证每句话正确；
-可用原始证据核对数字，模型推荐本身也不能证明它“为什么这样想”。
+Agent 按问题使用【局面】【计算】【Mortal】【说明】段落，程序统一排版并校验引用的证据路径和原始值；
+格式或引用不合格时最多自动纠正两次，仍失败则报错，不展示不合格回答。未运行 Mortal 时明确显示“未分析”。
+正文 Q 值保留三位小数，字牌使用东、南、西、北、白、发、中；原始证据仍保留完整精度和牌值编码。
+有效牌明细按花色分行、相同不可见枚数合并，由程序从计算结果生成，并列出牌种数和不可见总枚数。
+当前向听和直接进张相同不代表整体牌效率相同；缺少后续改良、打点或防守分析时，
+Agent 应承认证据不足，不强行为模型偏好编造理由。正文推理仍不能逐句自动验证，可用原始证据核对。
 
 回放和 Mortal 分析在本地进行。提问时，LLM 服务收到问题、自家暗牌、公开信息、
 牌效率和 Mortal 判断，不会收到完整牌谱、对手暗牌、实际后续动作或其他局面的对话。
@@ -312,7 +326,7 @@ macOS 安装包已包含 Python 和模型；尚未提供 Developer ID 签名、A
 | 找不到牌谱或 `.env` | 确认 CLI 在仓库根目录运行，或为牌谱使用绝对路径；示例文件已随仓库提供。 |
 | 无法启动 Mortal、找不到 Python 或 `libriichi` | 先完成安装脚本，再运行快速开始中的 `review` 命令；GUI 还需检查 `KYOKU_HOME` 是否指向资源目录。 |
 | 安装脚本报告 Mortal 版本或工作区不符 | 检查 `mortal/runtime` 中的本地改动，保存自己的工作后恢复到脚本指定的干净版本再重试；脚本不会替你覆盖改动。 |
-| 配置后仍提示模型或认证错误 | 检查是否还留着示例占位符、完整地址是否以 `/responses` 对应的路径结尾、服务是否支持工具调用，以及已有环境变量是否覆盖了 `.env`。 |
+| 配置后仍提示模型或认证错误 | 检查是否还留着示例占位符、是否填写服务的完整 `/responses` 或 `/chat/completions` 地址、服务是否支持工具调用，以及已有环境变量是否覆盖了 `.env`。 |
 | GUI 无法提问 | 先分析选定玩家，再用“下一决策”进入决策点；已有请求进行中时等待其结束。 |
 
 ## 开发

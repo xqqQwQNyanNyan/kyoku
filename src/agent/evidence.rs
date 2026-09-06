@@ -9,58 +9,13 @@ use crate::mahjong::{
 };
 use crate::mortal::Action;
 use crate::replay::inspector::format_tile;
-use crate::review::Review;
+use crate::review::{Review, VisiblePosition};
 
 /// 将可见复盘数据转换为工具使用的 JSON 证据，无需 LLM 配置或网络请求。
 /// 协议见 `docs/agent/agent.md`，与 `AgentSession::evidence` 使用同一份投影。
 pub fn review_evidence(review: &Review) -> Value {
-    let position = &review.position;
-    let players: Vec<_> = position
-        .players
-        .iter()
-        .enumerate()
-        .map(|(index, player)| {
-            let discards: Vec<_> = player
-                .discards
-                .iter()
-                .map(|discard| {
-                    json!({
-                        "tile": format_tile(discard.tile()),
-                        "tsumogiri": discard.is_tsumogiri(),
-                        "riichi": discard.is_riichi(),
-                        "called": discard.is_called(),
-                    })
-                })
-                .collect();
-            let melds: Vec<_> = player
-                .melds
-                .iter()
-                .map(|meld| {
-                    json!({
-                        "kind": match meld {
-                            Meld::Chi { .. } => "chi",
-                            Meld::Pon { .. } => "pon",
-                            Meld::Daiminkan { .. } => "daiminkan",
-                            Meld::Ankan { .. } => "ankan",
-                            Meld::Kakan { .. } => "kakan",
-                        },
-                        "tiles": tiles(meld.tiles()),
-                        "called": meld.called().map(format_tile),
-                        "from": meld.from().map(|player| player.get_id()),
-                    })
-                })
-                .collect();
-            json!({
-                "player": index, "score": player.score,
-                "riichi": match player.riichi {
-                    RiichiState::NotDeclared => "not_declared",
-                    RiichiState::Declared => "declared",
-                    RiichiState::Accepted => "accepted",
-                },
-                "discards": discards, "melds": melds,
-            })
-        })
-        .collect();
+    let mut evidence =
+        position_evidence(review.event_index, review.player.get_id(), &review.position);
     let discards: Vec<_> = review
         .discards
         .iter()
@@ -108,9 +63,74 @@ pub fn review_evidence(review: &Review) -> Value {
             "shanten": decision.shanten, "at_furiten": decision.at_furiten,
         })
     });
+    evidence["discards"] = json!(discards);
+    evidence["analysis_status"] = json!(if review.discards.is_empty() {
+        "unavailable"
+    } else {
+        "available"
+    });
+    evidence["mortal"] = json!({
+        "status": if decision.is_some() { "available" } else { "no_decision" },
+        "model": {"version": review.model.version, "tag": review.model.tag, "sha256": review.model.sha256},
+        "decision": decision,
+    });
+    evidence
+}
+
+pub(super) fn position_evidence(
+    event_index: usize,
+    player: u8,
+    position: &VisiblePosition,
+) -> Value {
+    let players: Vec<_> = position
+        .players
+        .iter()
+        .enumerate()
+        .map(|(index, player)| {
+            let discards: Vec<_> = player
+                .discards
+                .iter()
+                .map(|discard| {
+                    json!({
+                        "tile": format_tile(discard.tile()),
+                        "tsumogiri": discard.is_tsumogiri(),
+                        "riichi": discard.is_riichi(),
+                        "called": discard.is_called(),
+                    })
+                })
+                .collect();
+            let melds: Vec<_> = player
+                .melds
+                .iter()
+                .map(|meld| {
+                    json!({
+                        "kind": match meld {
+                            Meld::Chi { .. } => "chi",
+                            Meld::Pon { .. } => "pon",
+                            Meld::Daiminkan { .. } => "daiminkan",
+                            Meld::Ankan { .. } => "ankan",
+                            Meld::Kakan { .. } => "kakan",
+                        },
+                        "tiles": tiles(meld.tiles()),
+                        "called": meld.called().map(format_tile),
+                        "from": meld.from().map(|player| player.get_id()),
+                    })
+                })
+                .collect();
+            json!({
+                "player": index, "score": player.score,
+                "riichi": match player.riichi {
+                    RiichiState::NotDeclared => "not_declared",
+                    RiichiState::Declared => "declared",
+                    RiichiState::Accepted => "accepted",
+                },
+                "discards": discards, "melds": melds,
+            })
+        })
+        .collect();
     json!({
-        "schema_version": 1,
-        "event_index": review.event_index, "player": review.player.get_id(),
+        "schema_version": 2,
+        "event_index": event_index, "player": player,
         "position": {
             "round": {"wind": match position.round.wind() {
                 Wind::East => "E", Wind::South => "S", Wind::West => "W", Wind::North => "N",
@@ -121,11 +141,9 @@ pub fn review_evidence(review: &Review) -> Value {
             "dora_indicators": tiles(&position.dora_indicators),
             "concealed": tiles(&position.concealed), "players": players,
         },
-        "discards": discards,
-        "mortal": {
-            "model": {"version": review.model.version, "tag": review.model.tag, "sha256": review.model.sha256},
-            "decision": decision,
-        },
+        "discards": [],
+        "analysis_status": "not_analyzed",
+        "mortal": {"status": "not_analyzed", "model": null, "decision": null},
         "limitations": [
             "unseen_includes_opponent_hands",
             "winning_shape_is_not_legal_agari",

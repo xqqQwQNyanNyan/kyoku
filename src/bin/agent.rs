@@ -8,10 +8,10 @@ use std::{
 
 use convlog::{tenhou::Log, tenhou_to_mjai};
 use kyoku::{
-    agent::{AgentConfig, AgentError, AgentSession, review_evidence},
+    agent::{AgentConfig, AgentContext, AgentError, AgentSession, review_evidence},
     mahjong::player_index::PlayerIndex,
     mortal::MortalConfig,
-    review::{Review, review_at, review_game},
+    review::{review_at, review_game},
 };
 
 #[path = "agent/browse.rs"]
@@ -36,11 +36,12 @@ N is the global event index from /list. Switching positions clears the conversat
 Browsing and /evidence need no LLM configuration; asking questions requires it.
 
 Options:
+  --without-mortal   use visible position only; analysis is marked unavailable
   --browse           cache every decision and interactively browse a file
   --question TEXT    answer one question and exit
   --interactive      continue asking after --question (requires a file input)
-  --llm-model NAME   Responses model (otherwise OPENAI_MODEL; required for questions)
-  --endpoint URL     full Responses URL (otherwise KYOKU_OPENAI_ENDPOINT,
+  --llm-model NAME   LLM model (otherwise OPENAI_MODEL; required for questions)
+  --endpoint URL     full Responses or Chat Completions URL (otherwise KYOKU_OPENAI_ENDPOINT,
                      default: https://api.openai.com/v1/responses)
   --python PATH      Mortal Python (default: mortal/.venv/bin/python)
   --runtime PATH     Mortal checkout (default: mortal/runtime)
@@ -112,16 +113,25 @@ fn run() -> Result<(), Box<dyn Error>> {
     }
     let event = args.event.ok_or("missing --event")?;
     eprintln!(
-        "正在重建 G{event:03}、P{} 的局面并运行 Mortal…",
-        args.player.get_id()
+        "正在重建 G{event:03}、P{} 的局面{}…",
+        args.player.get_id(),
+        if args.without_mortal {
+            "（不运行 Mortal）"
+        } else {
+            "并运行 Mortal"
+        }
     );
-    let review = review_at(&events, args.player, event, &mortal_config)?;
+    let context = if args.without_mortal {
+        AgentContext::from_events(&events, args.player, event)?
+    } else {
+        AgentContext::from(&review_at(&events, args.player, event, &mortal_config)?)
+    };
     let mut session = None;
     if let Some(question) = &args.question {
         eprintln!("正在请求复盘解释…");
         println!(
             "{}",
-            ask_question(&mut session, &review, agent_config.as_ref(), question)?
+            ask_question(&mut session, &context, agent_config.as_ref(), question)?
         );
     }
     if args.interactive {
@@ -129,7 +139,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             "局面已固定。输入问题继续复盘；/evidence 查看工具证据，/quit 退出。回答中的计算和模型判断可与证据核对。"
         );
         conversation(
-            &review,
+            &context,
             agent_config.as_ref(),
             &mut session,
             io::stdin().lock(),
@@ -159,7 +169,7 @@ fn connection_settings(
 }
 
 fn conversation(
-    review: &Review,
+    context: &AgentContext,
     config: Option<&AgentConfig<'_>>,
     session: &mut Option<AgentSession>,
     mut input: impl BufRead,
@@ -179,10 +189,10 @@ fn conversation(
         match line.trim() {
             "" => continue,
             "/quit" => return Ok(()),
-            "/evidence" => writeln!(output, "{:#}", review_evidence(review))?,
+            "/evidence" => writeln!(output, "{:#}", context.evidence())?,
             question => {
                 writeln!(diagnostics, "正在请求复盘解释…")?;
-                match ask_question(session, review, config, question) {
+                match ask_question(session, context, config, question) {
                     Ok(answer) => writeln!(output, "{answer}")?,
                     Err(error) => {
                         writeln!(diagnostics, "agent: {error}；本轮未写入会话，可重试。")?
@@ -195,7 +205,7 @@ fn conversation(
 
 fn ask_question(
     session: &mut Option<AgentSession>,
-    review: &Review,
+    context: &AgentContext,
     config: Option<&AgentConfig<'_>>,
     question: &str,
 ) -> Result<String, AgentError> {
@@ -204,7 +214,7 @@ fn ask_question(
             field: "model",
             reason: "set --llm-model or OPENAI_MODEL to ask questions",
         })?;
-        *session = Some(AgentSession::new(review, config)?);
+        *session = Some(AgentSession::with_context(context, config)?);
     }
     session.as_mut().expect("会话已成功创建").ask(question)
 }
@@ -213,6 +223,7 @@ struct Args {
     player: PlayerIndex,
     event: Option<usize>,
     browse: bool,
+    without_mortal: bool,
     python: PathBuf,
     runtime: PathBuf,
     model: PathBuf,
@@ -228,6 +239,7 @@ impl Args {
         let mut player = None;
         let mut event = None;
         let mut browse = false;
+        let mut without_mortal = false;
         let mut python = PathBuf::from("mortal/.venv/bin/python");
         let mut runtime = PathBuf::from("mortal/runtime");
         let mut model = PathBuf::from("mortal/models/mortal_582500.pth");
@@ -242,6 +254,7 @@ impl Args {
                 "-h" | "--help" => return Ok(None),
                 "--interactive" => interactive = true,
                 "--browse" => browse = true,
+                "--without-mortal" => without_mortal = true,
                 "--player" | "--event" | "--python" | "--runtime" | "--model" | "--llm-model"
                 | "--endpoint" | "--question" => {
                     let value = arguments
@@ -270,6 +283,9 @@ impl Args {
             }
         }
         let input = input.ok_or("missing Tenhou JSON input")?;
+        if browse && without_mortal {
+            return Err("--without-mortal requires --event; decision browsing needs Mortal".into());
+        }
         if browse && (event.is_some() || question.is_some()) {
             return Err("--browse cannot be combined with --event or --question".into());
         }
@@ -284,6 +300,7 @@ impl Args {
             player: player.ok_or("missing --player (0..3)")?,
             event,
             browse,
+            without_mortal,
             python,
             runtime,
             model,

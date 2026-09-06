@@ -1,13 +1,18 @@
-//! 固定单局面的 Responses API 工具调用与中文复盘会话。
+//! 固定单局面的 LLM 工具调用与中文复盘会话。
 
 use std::{collections::HashSet, error::Error, fmt};
 
 use serde_json::{Value, json};
 
-use crate::review::Review;
+use crate::{
+    mahjong::player_index::PlayerIndex,
+    replay::replayer::Replayer,
+    review::{PublicPlayer, Review, ReviewError, VisiblePosition},
+};
 
 mod client;
 mod evidence;
+mod output;
 
 pub use evidence::review_evidence;
 
@@ -16,9 +21,72 @@ const MAX_REQUESTS: usize = 6;
 const MAX_HISTORY_BYTES: usize = 1024 * 1024;
 const MAX_QUESTION_BYTES: usize = 16 * 1024;
 
-/// Responses API 连接参数。密钥只用于 HTTP 认证，不进入提示词或调试输出。
+/// 固定事件的可见证据；可从已有分析或只回放牌谱建立，不要求运行 Mortal。
+pub struct AgentContext {
+    evidence: Value,
+}
+
+impl From<&Review> for AgentContext {
+    fn from(review: &Review) -> Self {
+        Self {
+            evidence: review_evidence(review),
+        }
+    }
+}
+
+impl AgentContext {
+    /// 只回放至目标事件，隐藏对手暗牌；不运行分析或 Mortal，状态明确标为未分析。
+    pub fn from_events(
+        events: &[convlog::Event],
+        player: PlayerIndex,
+        event_index: usize,
+    ) -> Result<Self, ReviewError> {
+        if event_index >= events.len() {
+            return Err(ReviewError::EventOutOfRange {
+                event_index,
+                event_count: events.len(),
+            });
+        }
+        let mut replay = Replayer::new();
+        for (index, event) in events[..=event_index].iter().enumerate() {
+            replay.apply(event).map_err(|source| ReviewError::Replay {
+                event_index: index,
+                source,
+            })?;
+        }
+        let state = replay.state().ok_or(ReviewError::NoRound { event_index })?;
+        let position = VisiblePosition {
+            round: state.round(),
+            honba: state.honba(),
+            riichi_sticks: state.riichi_sticks(),
+            remaining_draws: state.remaining_draws(),
+            phase: state.phase(),
+            dora_indicators: state.dora_indicators().to_vec(),
+            concealed: state.player(player).hand().concealed().to_vec(),
+            players: std::array::from_fn(|index| {
+                let public = &state.players()[index];
+                PublicPlayer {
+                    score: public.score(),
+                    riichi: public.riichi(),
+                    discards: public.discards().to_vec(),
+                    melds: public.hand().melds().to_vec(),
+                }
+            }),
+        };
+        Ok(Self {
+            evidence: evidence::position_evidence(event_index, player.get_id(), &position),
+        })
+    }
+
+    /// 当前快照的只读证据，与会话提供给模型的内容一致。
+    pub fn evidence(&self) -> &Value {
+        &self.evidence
+    }
+}
+
+/// Responses / Chat Completions API 连接参数。密钥只用于 HTTP 认证，不进入提示词或调试输出。
 pub struct AgentConfig<'a> {
-    /// 完整的 Responses 地址，例如 `https://api.openai.com/v1/responses`。
+    /// 完整的 API 地址；`/chat/completions`（也接受 `/chat/completion`）使用 Chat 协议，其余使用 Responses。
     pub endpoint: &'a str,
     /// 服务端支持工具调用的模型名称。
     pub model: &'a str,
@@ -33,7 +101,7 @@ impl AgentConfig<'_> {
         client::Client::new(self).map(|_| ())
     }
 
-    /// 发送一次不含牌谱的请求，检查认证、模型和 Responses 工具调用能力。
+    /// 发送一次不含牌谱的请求，检查认证、模型和工具调用能力。
     /// 此操作可能产生服务商的调用费用，不保存服务端会话。
     pub fn test_connection(&self) -> Result<(), AgentError> {
         let response = client::Client::new(self)?.respond(
@@ -101,7 +169,7 @@ impl fmt::Display for AgentError {
                 "LLM returned HTTP {status}; check endpoint, credentials, model and quota"
             ),
             Self::InvalidResponse { reason } => {
-                write!(f, "invalid Responses API response: {reason}")
+                write!(f, "invalid LLM API response: {reason}")
             }
             Self::Refused => write!(f, "LLM declined this request"),
             Self::IncompleteResponse => write!(
@@ -126,7 +194,7 @@ impl Error for AgentError {}
 
 /// 只持有可见复盘证据与内存对话的会话，不持有完整牌谱或 Mortal 进程。
 ///
-/// 调用方先用 `review_at` 生成一次 `Review`。失败的问答不会写入对话历史，
+/// 调用方提供已有 `Review` 或不依赖分析的 `AgentContext`。失败的问答不会写入对话历史，
 /// 可以重试；已经发送的 HTTP 请求不会被撤销。
 pub struct AgentSession {
     client: client::Client,
@@ -138,9 +206,17 @@ pub struct AgentSession {
 impl AgentSession {
     /// 创建会话并校验连接参数；此时不发起 HTTP 请求。
     pub fn new(review: &Review, config: &AgentConfig<'_>) -> Result<Self, AgentError> {
+        Self::with_context(&AgentContext::from(review), config)
+    }
+
+    /// 使用已建立的可见快照创建会话；快照不要求存在 Mortal 分析。
+    pub fn with_context(
+        context: &AgentContext,
+        config: &AgentConfig<'_>,
+    ) -> Result<Self, AgentError> {
         Ok(Self {
             client: client::Client::new(config)?,
-            evidence: review_evidence(review),
+            evidence: context.evidence.clone(),
             history: Vec::new(),
             has_evidence: false,
         })
@@ -170,7 +246,7 @@ impl AgentSession {
 fn tool_definition() -> Value {
     json!({
         "type": "function", "name": "get_review",
-        "description": "读取当前固定局面：自家暗牌、公开信息、切牌向听及进张、Mortal 最终推荐和原始 Q。无对手暗牌或未来事件。输入必须是空对象。",
+        "description": "读取当前固定局面的可见证据，以及切牌计算和 Mortal 的可用状态。未分析时只提供自家手牌和公开信息；不能补造分析。无对手暗牌或未来事件。输入必须是空对象。",
         "strict": true,
         "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": false},
     })
@@ -206,12 +282,15 @@ fn answer(
         return Err(AgentError::InvalidQuestion);
     }
     let mut staged = history.to_vec();
+    let mut corrections = 0;
     let mut call_ids: HashSet<String> = history
         .iter()
         .filter(|item| item["type"] == "function_call")
         .filter_map(|item| item["call_id"].as_str().map(str::to_owned))
         .collect();
     staged.push(json!({"role": "user", "content": question}));
+    // 纠错时临时给模型看被拒绝的输出，但不让错误回答进入后续追问的历史。
+    let mut accepted = staged.clone();
     for _ in 0..MAX_REQUESTS {
         check_history(&staged)?;
         let response = respond(&staged, !has_evidence)?;
@@ -270,8 +349,26 @@ fn answer(
             if text.trim().is_empty() {
                 return Err(invalid("no answer or tool call"));
             }
-            check_history(&staged)?;
-            return Ok((text, staged));
+            match output::render(&text, evidence) {
+                Ok(rendered) => {
+                    accepted.extend(output.iter().cloned());
+                    check_history(&accepted)?;
+                    return Ok((rendered, accepted));
+                }
+                Err(reason) if corrections < 2 => {
+                    corrections += 1;
+                    staged.push(json!({"role": "developer", "content": format!("回答校验失败：{reason} 请按原问题重新回答；无依据的结论应删去或说明证据不足。") }));
+                }
+                Err(_) => {
+                    return Err(invalid(
+                        "answer format or evidence references failed validation",
+                    ));
+                }
+            }
+        }
+        if !tool_results.is_empty() {
+            accepted.extend(output.iter().cloned());
+            accepted.extend(tool_results.iter().cloned());
         }
         staged.extend(tool_results);
     }

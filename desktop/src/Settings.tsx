@@ -68,7 +68,7 @@ export function SettingsPanel({
     try {
       if (action === 'test') {
         await api.testConnection(input);
-        setNotice('连接成功，模型支持 Responses 工具调用。');
+        setNotice('连接成功，模型支持工具调用。');
       } else {
         const result = await api.saveSettings(input);
         setSaved(result);
@@ -168,7 +168,9 @@ export function SettingsPanel({
             placeholder="https://api.openai.com/v1/responses"
             onChange={(e) => change({ endpoint: e.target.value })}
           />
-          <small>填写完整的 Responses 地址；仅本机服务允许 HTTP。</small>
+          <small>
+            填写完整地址，以 /responses 或 /chat/completions 结尾；仅本机服务允许 HTTP。
+          </small>
           <div className="settings-credentials">
             <div>
               <label htmlFor="llm-model">模型名</label>

@@ -5,11 +5,20 @@ use ureq::http::{HeaderValue, Uri};
 
 use super::{AgentConfig, AgentError, INSTRUCTIONS, invalid, tool_definition};
 
+mod chat;
+
+#[derive(Clone, Copy)]
+enum Protocol {
+    Responses,
+    ChatCompletions,
+}
+
 pub(super) struct Client {
     agent: ureq::Agent,
     endpoint: String,
     model: String,
     authorization: Option<HeaderValue>,
+    protocol: Protocol,
 }
 
 impl Client {
@@ -18,7 +27,7 @@ impl Client {
         let uri: Uri = config
             .endpoint
             .parse()
-            .map_err(|_| bad_config("endpoint", "expected an absolute Responses URL"))?;
+            .map_err(|_| bad_config("endpoint", "expected an absolute API URL"))?;
         let local = matches!(uri.host(), Some("localhost" | "127.0.0.1" | "[::1]"));
         if uri.host().is_none()
             || uri
@@ -59,11 +68,18 @@ impl Client {
             builder = builder.proxy(None);
         }
         let agent = builder.build().into();
+        let protocol = match uri.path().trim_end_matches('/') {
+            path if path.ends_with("/chat/completions") || path.ends_with("/chat/completion") => {
+                Protocol::ChatCompletions
+            }
+            _ => Protocol::Responses,
+        };
         Ok(Self {
             agent,
             endpoint: config.endpoint.to_owned(),
             model: config.model.to_owned(),
             authorization,
+            protocol,
         })
     }
 
@@ -72,14 +88,17 @@ impl Client {
         input: &[Value],
         needs_evidence: bool,
     ) -> Result<Value, AgentError> {
-        let request = json!({
+        let request = match self.protocol {
+            Protocol::ChatCompletions => chat::request(&self.model, input, needs_evidence)?,
+            Protocol::Responses => json!({
             "model": self.model, "instructions": INSTRUCTIONS,
             "input": input, "tools": [tool_definition()],
             "tool_choice": if needs_evidence { json!({"type": "function", "name": "get_review"}) } else { json!("auto") },
             "parallel_tool_calls": false, "store": false,
             "include": ["reasoning.encrypted_content"],
             "max_output_tokens": 4096,
-        });
+            }),
+        };
         let mut call = self
             .agent
             .post(&self.endpoint)
@@ -99,7 +118,12 @@ impl Client {
             .limit(2 * 1024 * 1024)
             .read_to_string()
             .map_err(transport)?;
-        serde_json::from_str(&body).map_err(|_| invalid("body is not valid JSON"))
+        let response =
+            serde_json::from_str(&body).map_err(|_| invalid("body is not valid JSON"))?;
+        match self.protocol {
+            Protocol::Responses => Ok(response),
+            Protocol::ChatCompletions => chat::response(response),
+        }
     }
 }
 

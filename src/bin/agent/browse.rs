@@ -83,7 +83,12 @@ pub(super) fn conversation(
             }
             question => {
                 writeln!(diagnostics, "正在请求复盘解释…")?;
-                match ask_question(&mut session, &points[selected].review, config, question) {
+                match ask_question(
+                    &mut session,
+                    &AgentContext::from(&points[selected].review),
+                    config,
+                    question,
+                ) {
                     Ok(answer) => writeln!(output, "{answer}")?,
                     Err(error) => {
                         writeln!(diagnostics, "agent: {error}；本轮未写入会话，可重试。")?

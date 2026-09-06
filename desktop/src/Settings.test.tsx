@@ -103,3 +103,25 @@ it('可删除密钥并独立检查本地引擎', async () => {
   await waitFor(() => expect(screen.getByText('应用内置 · 引擎检查通过')).toBeTruthy());
   expect(bridge.testConnection).not.toHaveBeenCalled();
 });
+
+it('允许填写 Chat Completions 地址、测试连接并保存', async () => {
+  const bridge = api();
+  const endpoint = 'https://service.example/v1/chat/completions';
+  bridge.saveSettings = vi.fn().mockResolvedValue({ ...stored, endpoint });
+  render(<SettingsPanel api={bridge} onClose={vi.fn()} onSaved={vi.fn()} />);
+  await screen.findByPlaceholderText('已有密钥，留空保留');
+  await userEvent.clear(screen.getByLabelText('服务地址'));
+  await userEvent.type(screen.getByLabelText('服务地址'), endpoint);
+  await userEvent.type(screen.getByLabelText('API Key'), 'chat-key');
+  await userEvent.click(screen.getByRole('button', { name: '测试连接' }));
+  await screen.findByText('连接成功，模型支持工具调用。');
+  expect(bridge.testConnection).toHaveBeenCalledWith(
+    expect.objectContaining({ endpoint, api_key: 'chat-key' }),
+  );
+  await userEvent.click(screen.getByRole('button', { name: '保存设置' }));
+  await screen.findByText('设置已保存，下次提问将使用新配置。');
+  expect(bridge.saveSettings).toHaveBeenCalledWith(
+    expect.objectContaining({ endpoint, api_key: 'chat-key' }),
+  );
+  expect((screen.getByLabelText('服务地址') as HTMLInputElement).value).toBe(endpoint);
+});
