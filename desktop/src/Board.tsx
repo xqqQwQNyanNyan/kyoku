@@ -1,3 +1,4 @@
+import type { CSSProperties } from 'react';
 import type { Frame, Meld } from './types';
 import { Tile, tileName } from './Tile';
 
@@ -129,24 +130,34 @@ export function Board({
               <b>{seat.score.toLocaleString()}</b>
               {seat.riichi && <span className="riichi-tag">立直</span>}
             </div>
-            <div className="hand" aria-label={`${names[index]}的手牌`}>
-              {hand.map((tile, i) => (
-                <Tile
-                  key={i}
-                  tile={visible ? tile : '?'}
-                  small={relative !== 0}
-                  className={drawn && i === hand.length - 1 ? 'drawn' : ''}
-                  selected={visible && selected === tile}
-                  onClick={relative === 0 ? () => onSelect(tile) : undefined}
-                />
-              ))}
+            <div className="seat-hand">
+              <div className="hand" aria-label={`${names[index]}的手牌`}>
+                {hand.map((tile, i) => (
+                  <Tile
+                    key={i}
+                    tile={visible ? tile : '?'}
+                    small={relative !== 0}
+                    className={drawn && i === hand.length - 1 ? 'drawn' : ''}
+                    selected={visible && selected === tile}
+                    onClick={relative === 0 ? () => onSelect(tile) : undefined}
+                  />
+                ))}
+              </div>
+              <div className="melds">
+                {seat.melds.map((meld, i) => (
+                  <MeldTiles key={i} meld={meld} player={index} />
+                ))}
+              </div>
             </div>
-            <div className="melds">
-              {seat.melds.map((meld, i) => (
-                <MeldTiles key={i} meld={meld} player={index} />
-              ))}
-            </div>
-            <div className="river" aria-label={`${names[index]}的牌河`}>
+            <div
+              className="river"
+              aria-label={`${names[index]}的牌河`}
+              style={
+                {
+                  '--river-rows': Math.max(3, Math.ceil(seat.discards.length / 6)),
+                } as CSSProperties
+              }
+            >
               {seat.discards.map((d, i) => (
                 <span
                   key={i}

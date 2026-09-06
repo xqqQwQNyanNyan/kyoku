@@ -90,6 +90,15 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe('完整回放与问答边界', () => {
+  it('切换局面清空对话后，侧栏回到引导内容顶部', async () => {
+    await load(api());
+    const messages = screen.getByRole('log', { name: '复盘对话' });
+    messages.scrollTop = 200;
+    await userEvent.click(screen.getByLabelText('下一事件'));
+    expect(messages.scrollTop).toBe(0);
+    expect(screen.getByText('这一步，你在想什么？')).toBeTruthy();
+  });
+
   it('未运行 Mortal 也能逐事件跳转，并且默认隐藏对手摸牌', async () => {
     const bridge = api();
     await load(bridge);

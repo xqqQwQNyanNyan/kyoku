@@ -14,7 +14,7 @@
 }
 body {
   margin: 0;
-  min-width: 1050px;
+  min-width: 1100px;
 }
 button,
 select,
@@ -263,7 +263,7 @@ h2 {
 }
 .workspace {
   display: grid;
-  grid-template-columns: 176px minmax(520px, 1fr) 340px;
+  grid-template-columns: 152px minmax(592px, 1fr) 360px;
   height: calc(100vh - 64px);
   min-height: 0;
 }
@@ -335,17 +335,21 @@ h2 {
 }
 .replay-column {
   display: grid;
-  grid-template-rows: minmax(0, 1fr) 64px 172px;
+  grid-template-rows: minmax(632px, 1fr) 64px;
+  min-width: 0;
+  overflow: auto;
   min-height: 0;
   background: #111c18;
 }
 .table-stage {
   min-height: 0;
+  container-type: size;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 20px 8px;
+  gap: 8px;
+  padding: 8px 16px;
   background: radial-gradient(ellipse, #28413955, transparent 75%);
 }
 .table-toolbar {
@@ -367,9 +371,10 @@ input[type='checkbox'] {
 .board {
   position: relative;
   aspect-ratio: 1;
-  width: min(100%, calc(100vh - 350px));
-  min-width: 280px;
-  max-width: 600px;
+  /* 空间不足时滚动回放区域，避免继续缩小牌面。 */
+  width: min(100%, calc(100cqh - 56px));
+  min-width: 560px;
+  flex-shrink: 0;
   container-type: inline-size;
   background: #1e3b31;
   border: 1px solid #82ae8c21;
@@ -445,45 +450,48 @@ input[type='checkbox'] {
 }
 .seat {
   position: absolute;
-  width: 70%;
-  display: flex;
-  align-items: center;
-  flex-direction: column;
-}
-.seat-0 {
-  bottom: 2.8%;
-  left: 6%;
-  width: 88%;
+  inset: 0;
+  pointer-events: none;
 }
 .seat-1 {
-  bottom: 15%;
-  left: 97.2%;
-  transform-origin: bottom left;
   transform: rotate(-90deg);
 }
 .seat-2 {
-  bottom: 97.2%;
-  left: 85%;
-  transform-origin: bottom left;
   transform: rotate(180deg);
 }
 .seat-3 {
-  bottom: 85%;
-  left: 2.8%;
-  transform-origin: bottom left;
   transform: rotate(90deg);
 }
+/* 牌河不再随手牌、副露的高度移动，四家共享固定的桌面区域。 */
+.seat-hand {
+  position: absolute;
+  bottom: 5.8%;
+  left: 16%;
+  width: 68%;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 1cqw;
+  pointer-events: auto;
+}
+.seat-0 .seat-hand {
+  left: 6%;
+  width: 88%;
+}
 .seat-label {
+  position: absolute;
+  bottom: 1%;
+  left: 20%;
+  width: 60%;
+  height: 3.6cqw;
+  pointer-events: auto;
   display: flex;
   gap: 6px;
   align-items: center;
   color: #b3c2b0;
   font-size: 1.8cqw;
-  width: 100%;
-  padding: 3px 6px;
+  padding: 0 0.6cqw;
   border-radius: 4px;
-  margin-top: 5px;
-  order: 4;
 }
 .seat.active .seat-label {
   background: #aac79d12;
@@ -523,11 +531,9 @@ input[type='checkbox'] {
   border-radius: 3px;
 }
 .hand {
-  order: 2;
   display: flex;
   justify-content: center;
-  width: 100%;
-  gap: 1px;
+  gap: 0.15cqw;
 }
 .hand .tile {
   width: 5.7cqw;
@@ -541,16 +547,12 @@ input[type='checkbox'] {
   margin-left: 6px;
 }
 .melds {
-  order: 3;
   display: flex;
-  justify-content: flex-end;
   align-items: center;
-  gap: 7px;
-  width: 100%;
-  margin-top: 4px;
+  gap: 1cqw;
 }
 .melds:empty {
-  margin-top: 0;
+  display: none;
 }
 .meld {
   display: inline-flex;
@@ -567,17 +569,21 @@ input[type='checkbox'] {
   height: 4.2cqw;
 }
 .river {
-  order: 1;
+  /* 长牌河在预留区域内缩放，不能侵入中央信息或手牌。 */
+  --river-tile-width: min(3.6cqw, calc((20cqw / var(--river-rows) - 0.3cqw) / 1.38));
+  position: absolute;
+  top: 65%;
+  left: 36%;
+  width: 26%;
   display: grid;
-  grid-template-columns: repeat(6, 3.8cqw);
-  gap: 3px 2px;
+  grid-template-columns: repeat(6, var(--river-tile-width));
+  gap: 0.3cqw;
   justify-content: center;
-  margin: 0 0 11px;
-  min-height: 0;
+  pointer-events: auto;
 }
 .river .tile.small {
-  width: 3.8cqw;
-  height: 5.2cqw;
+  width: var(--river-tile-width);
+  height: calc(var(--river-tile-width) * 1.38);
 }
 .discard {
   display: grid;
@@ -596,49 +602,35 @@ input[type='checkbox'] {
   width: 32px;
   height: 44px;
   padding: 0;
-  background: #f0eddf;
-  border: 1px solid #d9d6c2;
+  background: linear-gradient(145deg, #fffefa, #f2f0e7);
+  border: 1px solid #dedbd1;
   border-radius: 3px;
   box-shadow:
-    0 2px #b2b099,
-    0 3px 3px #0003;
+    inset 0 1px 1px #fff,
+    0 2px #b9b4a3,
+    0 3px 3px #0004;
   vertical-align: middle;
 }
-.tile svg {
+.tile img {
+  display: block;
   width: 100%;
   height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  user-select: none;
 }
 .tile.small {
   width: 22px;
   height: 30px;
   border-radius: 2px;
 }
-.tile.ink {
-  color: #233c49;
-}
-.tile.red {
-  color: #b93130;
-}
-.tile.green {
-  color: #1d6a49;
-}
 .tile.back {
-  background: #6a9278;
-  border-color: #98b196;
-  box-shadow: 0 2px #385443;
-}
-.tile-back-pattern {
-  width: 74%;
-  height: 80%;
-  border: 1px solid #a9c29b70;
-  border-radius: 1px;
-  background: repeating-linear-gradient(
-    45deg,
-    transparent,
-    transparent 3px,
-    #b5cca314 3px,
-    #b5cca314 4px
-  );
+  background: #e9b340;
+  border-color: #d0a044;
+  box-shadow:
+    inset 0 1px 1px #ffdc79,
+    0 2px #a58137,
+    0 3px 3px #0003;
 }
 .tile.sideways {
   transform: rotate(90deg) scale(0.84);
@@ -736,8 +728,18 @@ input[type='range'] {
   padding: 5px 7px;
   color: #a8b9a8;
 }
+.review-sidebar {
+  display: grid;
+  grid-template-rows: minmax(250px, 0.85fr) minmax(380px, 1fr);
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+  border-left: 1px solid var(--line);
+}
 .analysis-panel {
   min-height: 0;
+  min-width: 0;
+  border-bottom: 1px solid var(--line);
   display: flex;
   flex-direction: column;
   background: #15211c;
@@ -747,6 +749,8 @@ input[type='range'] {
 }
 .analysis-empty {
   display: flex;
+  flex-direction: column;
+  text-align: center;
   align-items: center;
   justify-content: center;
   gap: 18px;
@@ -774,6 +778,7 @@ input[type='range'] {
 }
 .recommendation {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
   margin: 0 20px 7px;
@@ -882,13 +887,12 @@ summary {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  border-left: 1px solid var(--line);
   background: #151f1b;
 }
 .chat-heading {
   display: flex;
   align-items: center;
-  padding: 22px 20px 18px;
+  padding: 14px 20px;
   gap: 10px;
 }
 .agent-icon {
@@ -931,31 +935,16 @@ summary {
   min-height: 0;
   padding: 20px;
 }
-.chat-welcome {
-  padding-top: 55px;
-}
-.chat-orbit {
-  display: grid;
-  place-items: center;
-  color: #c0c09b;
-  font-size: 43px;
-  height: 60px;
-  width: 60px;
-  border: 1px solid #c0c09b20;
-  border-radius: 50%;
-  margin-bottom: 23px;
-  background: radial-gradient(circle, #c0c09b0c, transparent);
-}
 .chat-welcome h3 {
-  font-size: 17px;
+  font-size: 14px;
   font-weight: 500;
-  margin-bottom: 13px;
+  margin-bottom: 8px;
 }
 .chat-welcome p {
-  font-size: 12px;
+  font-size: 11px;
   color: #829789;
-  line-height: 1.9;
-  margin-bottom: 26px;
+  line-height: 1.7;
+  margin-bottom: 12px;
 }
 .chat-welcome button {
   font-size: 11px;
@@ -1090,7 +1079,7 @@ summary {
 }
 @media (max-width: 1200px) {
   .workspace {
-    grid-template-columns: 146px minmax(520px, 1fr) 300px;
+    grid-template-columns: 128px minmax(592px, 1fr) 340px;
   }
   .app-header {
     padding: 0 18px;
