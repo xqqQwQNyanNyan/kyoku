@@ -1,0 +1,13 @@
+{
+  "action_space": 46,
+  "checkpoint_sha256": "738e0d6e3c0ce9671629554ad39abd147d2ffbac676e80b194c83f2acc0fea20",
+  "checkpoint_steps": 582500,
+  "model_id": "mortal-hpc",
+  "mortal_version": 4,
+  "observation_shape": [
+    1012,
+    34
+  ],
+  "players": 4,
+  "runtime_manifest_sha256": "0afff5c64f0459408efc7dc7c512a615432c37f1b2017aeab9f0bea63b347fac"
+}

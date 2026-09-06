@@ -445,6 +445,7 @@ name = "kyoku"
 version = "0.1.0"
 dependencies = [
  "convlog",
+ "serde",
  "serde_json",
  "ureq",
 ]
