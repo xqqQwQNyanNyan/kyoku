@@ -7,6 +7,7 @@ import { Analysis } from './Analysis';
 import { Tile } from './Tile';
 import { SettingsPanel } from './Settings';
 import { useWindowScale } from './useWindowScale';
+import { ImportDialog } from './ImportDialog';
 
 type Message = { role: 'user' | 'assistant'; text: string };
 const roundsPerPage = 7;
@@ -30,9 +31,8 @@ export default function App({ api = bridge }: { api?: Bridge }) {
   const [decisions, setDecisions] = useState<Record<number, Decision[]>>({});
   const [analyzing, setAnalyzing] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
-  const [showLink, setShowLink] = useState(false);
+  const [showImport, setShowImport] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [link, setLink] = useState('');
   const [error, setError] = useState('');
   const [messages, setMessages] = useState<Message[]>([]);
   const [question, setQuestion] = useState('');
@@ -103,8 +103,7 @@ export default function App({ api = bridge }: { api?: Bridge }) {
       setReveal(false);
       setDecisions({});
       setAnalyzing(null);
-      setShowLink(false);
-      setLink('');
+      setShowImport(false);
     } catch (error) {
       setError(errorMessage(error));
     } finally {
@@ -122,9 +121,10 @@ export default function App({ api = bridge }: { api?: Bridge }) {
     await importReplay(file.name, async () => api.importLog(await file.text()));
   }
 
-  function openLink() {
+  function openImport() {
     setPlaying(false);
-    setShowLink(true);
+    setError('');
+    setShowImport(true);
   }
 
   async function analyze() {
@@ -192,7 +192,7 @@ export default function App({ api = bridge }: { api?: Bridge }) {
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
-      if (showSettings) return;
+      if (showSettings || showImport) return;
       if (!replay || event.altKey || event.ctrlKey || event.metaKey || event.isComposing) return;
       if (
         (event.target as HTMLElement).closest(
@@ -291,11 +291,8 @@ export default function App({ api = bridge }: { api?: Bridge }) {
             </select>
           </label>
         )}
-        <button className="import-button" disabled={loading} onClick={openFile}>
+        <button className="import-button" disabled={loading} onClick={openImport}>
           {loading ? '正在读取…' : '＋ 导入牌谱'}
-        </button>
-        <button disabled={loading} onClick={openLink}>
-          链接导入
         </button>
         <button
           onClick={() => {
@@ -314,7 +311,7 @@ export default function App({ api = bridge }: { api?: Bridge }) {
           onSaved={resetConversation}
         />
       )}
-      {error && (
+      {error && !showImport && (
         <div role="alert" className="error-banner">
           <span>{error}</span>
           <button onClick={() => setError('')} aria-label="关闭错误提示">
@@ -322,37 +319,15 @@ export default function App({ api = bridge }: { api?: Bridge }) {
           </button>
         </div>
       )}
-      {showLink && (
-        <form
-          className="link-import"
-          aria-label="链接导入"
-          onSubmit={(event) => {
-            event.preventDefault();
-            const value = link.trim();
-            if (value) void importReplay(value, () => api.importLink(value));
-          }}
-        >
-          <label htmlFor="log-link">天凤牌谱链接</label>
-          <div className="link-import-controls">
-            <input
-              id="log-link"
-              autoFocus
-              autoComplete="off"
-              spellCheck={false}
-              placeholder="https://tenhou.net/0/?log=…"
-              value={link}
-              disabled={loading}
-              onChange={(event) => setLink(event.target.value)}
-            />
-            <button className="primary" type="submit" disabled={loading || !link.trim()}>
-              {loading ? '正在导入…' : '导入链接'}
-            </button>
-            <button type="button" disabled={loading} onClick={() => setShowLink(false)}>
-              收起
-            </button>
-          </div>
-          <small>支持天凤四人牌谱链接或 log ID，需要联网。雀魂链接暂不支持。</small>
-        </form>
+      {showImport && (
+        <ImportDialog
+          busy={loading}
+          error={error}
+          onFile={openFile}
+          onLink={(value) => void importReplay(value, () => api.importLink(value))}
+          onExample={(name, json) => void importReplay(name, () => api.importLog(json))}
+          onClose={() => setShowImport(false)}
+        />
       )}
       {!replay || !frame ? (
         <main className="welcome">
@@ -371,13 +346,10 @@ export default function App({ api = bridge }: { api?: Bridge }) {
             回到每一次摸打，比较当时的选择，
             <br />和 Agent 一起梳理你的判断。
           </p>
-          <button className="primary large" onClick={openFile} disabled={loading}>
-            {loading ? '正在读取牌谱…' : '选择牌谱文件'} <span>↗</span>
+          <button className="primary large" onClick={openImport} disabled={loading}>
+            {loading ? '正在读取牌谱…' : '导入牌谱'} <span>↗</span>
           </button>
-          <span className="welcome-hint">支持本地天凤 JSON · 也可以拖入文件</span>
-          <button onClick={openLink} disabled={loading}>
-            粘贴天凤链接
-          </button>
+          <span className="welcome-hint">本地文件 · 天凤链接 · 示例牌谱</span>
           <div className="welcome-footer">
             <span>01 完整牌局回放</span>
             <span>02 Mortal 动作对比</span>

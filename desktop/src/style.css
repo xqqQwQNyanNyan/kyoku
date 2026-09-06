@@ -107,34 +107,6 @@ h2 {
 .file-input {
   display: none;
 }
-.link-import {
-  position: absolute;
-  z-index: 5;
-  top: 64px;
-  left: 0;
-  right: 0;
-  box-shadow: 0 12px 28px #0005;
-  padding: 16px 26px;
-  background: #182620;
-  border-bottom: 1px solid var(--line);
-}
-.link-import-controls {
-  display: flex;
-  gap: 10px;
-  margin: 8px 0;
-}
-.link-import input {
-  flex: 1;
-  min-width: 0;
-  padding: 9px 12px;
-  border: 1px solid #ffffff24;
-  border-radius: 6px;
-  background: #101817;
-  color: inherit;
-}
-.link-import small {
-  color: var(--muted);
-}
 .app-header {
   height: 64px;
   flex-shrink: 0;
@@ -1203,7 +1175,8 @@ summary {
   }
 }
 
-.settings-dialog {
+.settings-dialog,
+.import-dialog {
   /* 原生模态框位于顶层，需要单独应用窗口缩放比例。 */
   position: fixed;
   top: 50%;
@@ -1221,7 +1194,8 @@ summary {
   color: #e6e9e5;
   box-shadow: 0 24px 100px #0009;
 }
-.settings-dialog::backdrop {
+.settings-dialog::backdrop,
+.import-dialog::backdrop {
   background: #080f0dcc;
 }
 .settings-heading,
@@ -1311,4 +1285,85 @@ summary {
 }
 .settings-credentials > div {
   min-width: 0;
+}
+
+.import-dialog {
+  width: 640px;
+  padding: 26px;
+}
+.import-heading,
+.import-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.import-heading h2 {
+  font-size: 24px;
+  margin-bottom: 8px;
+}
+.import-heading p,
+.import-dialog small,
+.import-hint {
+  color: var(--muted);
+  line-height: 1.6;
+}
+.import-sources {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin: 24px 0;
+}
+.import-sources button {
+  padding: 22px 12px;
+  text-align: left;
+}
+.import-sources strong {
+  display: block;
+  font-size: 15px;
+  margin-bottom: 10px;
+}
+.import-sources span {
+  color: var(--muted);
+  font-size: 11px;
+}
+.import-sources button[aria-pressed='true'] {
+  border-color: #d5bc8666;
+  background: #d5bc8610;
+  color: var(--accent);
+}
+.import-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+}
+.import-detail input,
+.import-detail select {
+  width: 100%;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid #ffffff24;
+  border-radius: 7px;
+  background: #101817;
+  color: inherit;
+}
+.import-actions button {
+  flex-shrink: 0;
+}
+.example-credit {
+  margin-top: 4px;
+  font-size: 10px;
+}
+.example-credit a {
+  color: inherit;
+}
+.import-hint {
+  font-size: 12px;
+}
+.import-error {
+  margin-top: 16px;
+  color: #efaaa1;
+  line-height: 1.6;
 }

@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
 import type { Bridge, Decision, Frame, Replay } from './types';
+import { examples } from './examples';
 
 const first: Frame = {
   event_index: 1,
@@ -100,7 +101,15 @@ async function openChat() {
   await userEvent.click(screen.getByRole('tab', { name: '一起复盘' }));
 }
 
+async function openLink() {
+  await userEvent.click(screen.getByRole('button', { name: '＋ 导入牌谱' }));
+  await userEvent.click(screen.getByRole('button', { name: /天凤链接/ }));
+}
+
 beforeEach(() => {
+  HTMLDialogElement.prototype.showModal = function () {
+    this.open = true;
+  };
   Element.prototype.scrollTo = vi.fn();
 });
 afterEach(cleanup);
@@ -172,13 +181,88 @@ describe('复盘工具标签', () => {
   });
 });
 
+describe('统一导入入口', () => {
+  it('主页和顶栏打开同一个来源选择，关闭后保留当前牌谱', async () => {
+    const bridge = api();
+    render(<App api={bridge} />);
+    expect(screen.queryByRole('button', { name: '链接导入' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '粘贴天凤链接' })).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: '导入牌谱 ↗' }));
+    expect(screen.getByRole('dialog', { name: '导入牌谱' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /本地文件/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /天凤链接/ })).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: /示例牌谱/ }));
+    await userEvent.click(screen.getByRole('button', { name: '导入示例' }));
+    await screen.findByLabelText('牌谱进度');
+    await userEvent.click(screen.getByLabelText('下一事件'));
+    await userEvent.click(screen.getByRole('button', { name: '＋ 导入牌谱' }));
+    const dialog = screen.getByRole('dialog', { name: '导入牌谱' });
+    fireEvent.keyDown(dialog, { code: 'ArrowRight' });
+    expect((screen.getByLabelText('牌谱进度') as HTMLInputElement).value).toBe('1');
+    fireEvent(dialog, new Event('cancel', { bubbles: false, cancelable: true }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect((screen.getByLabelText('牌谱进度') as HTMLInputElement).value).toBe('1');
+  });
+
+  it('选择本地文件后沿用文件导入，成功时关闭弹窗', async () => {
+    const bridge = api();
+    render(<App api={bridge} />);
+    await userEvent.click(screen.getByRole('button', { name: '＋ 导入牌谱' }));
+    const fileInput = screen.getByLabelText('选择天凤牌谱文件');
+    const choose = vi.spyOn(fileInput, 'click');
+    await userEvent.click(screen.getByRole('button', { name: /本地文件/ }));
+    expect(choose).toHaveBeenCalledOnce();
+    const file = new File(['{}'], 'local.json', { type: 'application/json' });
+    Object.defineProperty(file, 'text', { value: () => Promise.resolve('{}') });
+    await userEvent.upload(fileInput, file);
+    await screen.findByLabelText('牌谱进度');
+    expect(bridge.importLog).toHaveBeenCalledExactlyOnceWith('{}');
+    expect(screen.getByText('local.json')).toBeTruthy();
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('可选择不同内置样本，失败后保留选择并支持重试', async () => {
+    const bridge = api();
+    vi.mocked(bridge.importLog).mockRejectedValueOnce({ message: '示例导入失败' });
+    render(<App api={bridge} />);
+    await userEvent.click(screen.getByRole('button', { name: '＋ 导入牌谱' }));
+    await userEvent.click(screen.getByRole('button', { name: /示例牌谱/ }));
+    const select = screen.getByRole('combobox', { name: '选择示例牌谱' });
+    expect(screen.getAllByRole('option')).toHaveLength(21);
+    await userEvent.selectOptions(select, 'rinshan.json');
+    await userEvent.click(screen.getByRole('button', { name: '导入示例' }));
+    await screen.findByRole('alert');
+    expect((select as HTMLSelectElement).value).toBe('rinshan.json');
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    expect(bridge.importLink).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole('button', { name: '导入示例' }));
+    await screen.findByLabelText('牌谱进度');
+    expect(bridge.importLog).toHaveBeenLastCalledWith(
+      examples.find((e) => e.filename === 'rinshan.json')!.json,
+    );
+    expect(screen.getByText('rinshan.json')).toBeTruthy();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: '＋ 导入牌谱' }));
+    await userEvent.click(screen.getByRole('button', { name: /示例牌谱/ }));
+    await userEvent.selectOptions(
+      screen.getByRole('combobox', { name: '选择示例牌谱' }),
+      'double_ron.json',
+    );
+    await userEvent.click(screen.getByRole('button', { name: '导入示例' }));
+    await screen.findByText('double_ron.json');
+    expect(bridge.importLog).toHaveBeenLastCalledWith(
+      examples.find((e) => e.filename === 'double_ron.json')!.json,
+    );
+  });
+});
+
 describe('天凤链接导入', () => {
   const link = 'https://tenhou.net/0/?log=2023010100gm-00a9-0000-123456ab&tw=2';
 
   it('空输入不能提交，粘贴链接后可按 Enter 导入并回放', async () => {
     const bridge = api();
     render(<App api={bridge} />);
-    await userEvent.click(screen.getByRole('button', { name: '粘贴天凤链接' }));
+    await openLink();
     expect((screen.getByRole('button', { name: '导入链接' }) as HTMLButtonElement).disabled).toBe(
       true,
     );
@@ -195,7 +279,7 @@ describe('天凤链接导入', () => {
     const pending = deferred<Replay>();
     vi.mocked(bridge.importLink).mockReturnValueOnce(pending.promise);
     render(<App api={bridge} />);
-    await userEvent.click(screen.getByRole('button', { name: '链接导入' }));
+    await openLink();
     await userEvent.type(screen.getByLabelText('天凤牌谱链接'), link);
     const form = screen.getByRole('form', { name: '链接导入' });
     fireEvent.submit(form);
@@ -220,7 +304,7 @@ describe('天凤链接导入', () => {
     await openChat();
     await userEvent.click(screen.getByText('这里的几个选择差在哪里？'));
     await screen.findByText('【计算】测试回答');
-    await userEvent.click(screen.getByRole('button', { name: '链接导入' }));
+    await openLink();
     const input = screen.getByLabelText('天凤牌谱链接');
     await userEvent.type(input, link);
     fireEvent.keyDown(input, { code: 'ArrowRight' });
