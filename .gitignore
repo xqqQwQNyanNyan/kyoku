@@ -1,4 +1,9 @@
 /target/
+/desktop/node_modules/
+/desktop/dist/
+/desktop/*.tsbuildinfo
+/desktop/src-tauri/target/
+/desktop/src-tauri/gen/
 *.profraw
 *.profdata
 .env
@@ -12,6 +17,7 @@ AGENTS.md
 .AppleDouble
 .LSOverride
 Icon?
+!/desktop/src-tauri/icons/
 ._*
 .DocumentRevisions-V100
 .fseventsd
