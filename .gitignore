@@ -35,4 +35,9 @@ Icon?
 /mortal/models/*.pth
 /mortal/models/*.part
 /docs/
-/fixtures/
+/fixtures/*
+!/fixtures/tenhou/
+/fixtures/tenhou/*
+!/fixtures/tenhou/*.json
+!/fixtures/tenhou/README.md
+!/fixtures/tenhou/LICENSE

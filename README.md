@@ -2,281 +2,34 @@
 
 一个用 Rust 编写的日麻牌谱复盘助手。
 
-这个项目想解决的不是“让 LLM 自己判断麻将怎么打”，而是把几种不同的能力组合起来：
+目前提供桌面 GUI 和命令行，仍是需要从源码启动的开发版本。
 
-* Rust 负责牌局状态、规则和确定性计算；
-* Mortal 提供打法上的模型判断；
-* LLM 负责调用工具、整理证据并解释结果；
-* GUI 负责牌谱浏览、局面查看和交互式复盘。
+## 快速开始
 
-最终希望用户可以导入一份牌谱，然后直接问：
+下面先跑通示例牌谱回放，再启用本地分析和问答。除特别说明外，命令都在仓库根目录运行。
 
-* 为什么这里不应该切六万？
-* 这两个切牌在牌效率上差多少？
-* Mortal 为什么更喜欢另一个选择？
-* 这里应该继续进攻还是开始防守？
-* 整场牌谱里哪些决策最值得复盘？
+### 1. 准备环境并获取项目
 
-系统尽量不只给结论，而是说明这个结论来自规则计算、Mortal、统计资料，还是进一步的推断。
+| 用途 | 需要安装 |
+| --- | --- |
+| 命令行回放 | 稳定版 Rust 工具链、Git |
+| 桌面 GUI | 上述工具、Node.js 22.12+、对应系统的 [Tauri 开发依赖](https://v2.tauri.app/start/prerequisites/) |
+| Mortal 分析 | Python 3.11+（推荐 3.12）、curl；安装时需联网下载依赖和约 125 MiB 的权重 |
+| Agent 问答 | 支持 Responses API 工具调用的 LLM 服务、模型名及对应密钥 |
 
-## How it works
-
-整个项目大致会沿着下面这条链路工作：
-
-```text
-game log
-    ↓
-parser / convlog
-    ↓
-game state
-    ↓
-mahjong analysis
-    ↓
-Mortal / other tools
-    ↓
-Agent
-    ↓
-GUI
-```
-
-目前已实现局面重建、确定性麻将分析、本地 Mortal 推理、单局面复盘、整场决策浏览及 Agent 问答；初版桌面 GUI 已接入完整牌谱回放与局面复盘。
-
-### Mahjong core
-
-Rust 负责维护可信的麻将状态。
-
-领域层会表示诸如：
-
-* 牌；
-* 手牌和副露；
-* 玩家状态；
-* 牌河；
-* 当前局和局面阶段；
-* 点数和其他牌桌信息。
-
-状态对象自己维护合法性和状态转换，而不是把所有规则都堆到牌谱解析代码里。
-
-对于同样的输入和规则，这一层应该得到稳定、可复现的结果。
-
-### Game log replay
-
-牌谱目前使用 `convlog` 提供的 mjai 事件作为输入。
-
-`Replayer` 负责把外部事件翻译成领域对象上的操作：
-
-```text
-convlog::Event
-      ↓
-   Replayer
-      ↓
-RoundState / PlayerState / Hand
-```
-
-`Replayer` 本身尽量只承担适配工作。
-
-真正的麻将状态和约束留在领域模型里，这样以后无论输入来自天凤、雀魂还是别的格式，上层分析代码都不需要跟着牌谱格式变化。
-
-可以用开发用的 `replay` 二进制检查本地或远程 Tenhou 牌谱：
+桌面版已在 macOS 验证。Mortal 安装脚本支持 macOS 和 Linux；Linux 桌面尚未完成验收，
+Windows 的 Mortal 环境仍需适配。当前没有包含 Python 和模型的开箱即用安装包。
 
 ```bash
+git clone https://github.com/xqqQwQNyanNyan/kyoku.git
+cd kyoku
 cargo run --bin replay -- fixtures/tenhou/ranked_game.json
-cargo run --bin replay -- --full-state fixtures/tenhou/rinshan.json
-cargo run --bin replay -- --kyoku E2 --only hora,kan,dora,ryukyoku fixtures/tenhou/ranked_game.json
-cargo run --bin replay -- --from 120 --to 140 fixtures/tenhou/ranked_game.json
-cargo run --bin replay -- --state-at 120 fixtures/tenhou/ranked_game.json
-cargo run --bin replay -- 'https://tenhou.net/0/?log=<log-id>&tw=0'
-cargo run --bin replay -- '<log-id>'
 ```
 
-输入使用 `-` 时从标准输入读取。`--event`、`--from`、`--to` 和 `--state-at` 使用输出中的零基全局事件编号，范围端点包含在结果内；`--state-at` 捕获指定事件应用后的完整局面。`--kyoku E2` 会包含东二局的所有本场，写成 `E2.1` 时只选择一本场。`--only` 只过滤显示，事件仍会完整进入回放器；局开始、局结束和比赛结束摘要会保留。命令默认打印逐事件状态变化；回放失败时仍会显示事件索引、附近事件和最后一个有效局面。
+看到逐事件局面变化和结束摘要，说明牌谱解析与回放正常。`fixtures/tenhou/` 已随仓库提供，
+不需要另行下载示例牌谱，也不需要 Mortal 或 LLM 配置。
 
-回放用的 Tenhou JSON 牌谱来自 `convlog` 仓库的 `convlog/tests/testdata`，本地副本放在
-`fixtures/tenhou/`。这些 fixture 被 Git 忽略，不属于项目源码；在新的工作区运行回放
-测试前，需要先从对应的 `convlog` checkout 复制这些 JSON 文件到该目录。当前目录中的
-牌谱覆盖双响、流局、抢杠、岭上摸牌、连续杠和复杂鸣牌等状态转移。
-
-### Mahjong analysis
-
-在可靠的局面状态之上，会逐步实现确定性的麻将分析工具，例如：
-
-* 向听数；
-* 有效牌；
-* 牌效率；
-* 打点和符数；
-* 剩余枚数；
-* 危险度和防守相关信息。
-
-这些问题如果能够由程序确定计算，就不交给 LLM 猜。
-
-### Mortal
-
-Mortal 已作为独立的本地 Python 进程接入，当前支持四人 Mortal V4 的 CPU 推理。
-Rust 按顺序发送 mjai 事件，并获取推荐动作、候选动作 Q 值、引擎向听数及振听状态。
-对手起手牌和摸牌会遮蔽，后续仍沿真实牌谱推进，不自动执行模型建议。
-
-第一次使用需要 Python 3.11+（推荐 3.12）、Rust、Git 和 curl：
-
-```bash
-bash scripts/setup-mortal.sh /path/to/python3.12
-cargo run --bin mortal -- --player 0 --event 2 fixtures/tenhou/ranked_game.json
-cargo run --bin mortal -- --player 0 fixtures/tenhou/ranked_game.json
-```
-
-准备脚本将 Python 虚拟环境、固定版本的官方 Mortal 源码及模型放在根目录的
-`mortal/` 下，并编译 `libriichi`。这些本地依赖被 Git 忽略，目录说明和许可记录可提交；
-具体结构见 [`mortal/README.md`](mortal/README.md)。支持 macOS 和 Linux，需要联网下载依赖和约 125 MiB
-的模型。默认使用 [Yuchen1457/mortal-582500 社区四麻权重](https://huggingface.co/Yuchen1457/mortal-582500)，
-下载后校验 SHA-256；这不是 Mortal 官网的官方权重，不据此声称相同棋力。
-Mortal 源码与模型的许可及来源分别见[官方仓库](https://github.com/Equim-chan/Mortal)
-和模型发布页。
-
-`--player` 是整场不变的玩家索引 `0..3`；`--event` 与 `replay` 共用零基全局事件编号，
-表示该事件应用后的决策，之前的事件仍完整送入引擎。省略它则输出整场该玩家的判断。
-输入支持本地 Tenhou JSON 或标准输入 `-`；`--python`、`--runtime`、`--model` 可以
-覆盖默认路径。命令输出实际模型文件的 SHA-256，便于确认复盘使用了哪个模型。
-
-程序接口为 `kyoku::mortal::{Mortal, MortalConfig}`：`start` 加载一次模型，`react`
-逐事件返回 `Option<Decision>`，`finish` 关闭进程并检查退出状态。没有决策机会时返回
-`None`；主动跳过鸣牌则返回推荐动作为 `convlog::Event::None` 的 `Some(Decision)`。
-启动或响应超过 60 秒、进程提前退出、JSON 或动作掩码不合法时会返回错误，失败会话
-不可继续使用。调用方仍需用 Replay 校验输入事件；推理适配不代替领域状态机。
-
-`Decision::recommended` 是引擎的最终推荐，**不保证等于 Q 值最大的候选动作**。
-桥接启用了和牌规则保护（`enable_rule_based_agari_guard=True`），可能改变最终动作，
-而 Q 表仍保留原始评价。两者冲突时以 `recommended` 为准；Agent 和其他调用方不得
-用 argmax Q 或排序后的首项代替最终推荐。CLI 的 `Mortal:` 行同样优先于候选表。
-这符合[官方 FAQ](https://github.com/Equim-chan/mjai-reviewer/blob/master/faq.md#mortal-the-single-line-output-and-the-table-are-in-conflict-is-it-a-bug) 的约定。
-
-Q 值是原始模型输出，不是概率或期望点数。杠牌种选择保留独立评价，不与主动作的
-Q 值混排。CLI 对单个杠牌种候选只显示主层 `Kan` 的 Q；多个候选才展开第二层评价，
-用于比较“杠哪个”。API 始终保留两层原始值。当前不计算整场评分、顺位预测或自动识别
-失误，也不依赖 GRP 权重。
-
-接口、事件协议和错误边界见 [`docs/mortal/mortal.md`](docs/mortal/mortal.md)，
-自动测试及真实模型验证见 [`docs/mortal/mortal-tests.md`](docs/mortal/mortal-tests.md)。
-
-它适合回答：
-
-* 哪个动作更值得选择；
-* 不同候选动作之间的倾向有多大；
-* 某个局面的整体价值如何。
-
-但 Mortal 不是规则引擎。
-
-牌是否合法、当前状态是什么、某个确定性指标是多少，仍然由 Rust 这一层负责。
-
-### Review
-
-`review` 将同一事件后的玩家可见局面、切牌效率和 Mortal 判断汇总展示：
-
-```bash
-cargo run --bin review -- --player 0 --event 2 fixtures/tenhou/ranked_game.json
-cargo run --bin review -- --player 1 --event 30 fixtures/tenhou/complex_nakis.json
-
-# 省略 --event，列出整场该玩家的行动机会。
-cargo run --bin review -- --player 0 fixtures/tenhou/ranked_game.json
-```
-
-运行前按上面的 Mortal 说明准备本地环境。输入支持本地 Tenhou JSON 和标准输入 `-`，
-`--player` 必填；指定 `--event` 查看单局面，省略则列出整场决策。
-事件编号与 `replay`、`mortal` 一致，表示事件应用后的局面。
-支持相同的 `--python`、`--runtime`、`--model` 路径覆盖参数。
-
-程序接口为 `kyoku::review::review_at`，返回结构化 `Review`；命令行只负责格式化。
-结果包含自家暗牌、四家公开信息、Mortal 当前切牌候选的向听与进张、模型身份和原始判断，
-不暴露对手暗牌。不可见枚数不是实际牌山剩余枚数，完成牌形也不代表可以合法和牌。
-无行动机会仍返回局面；吃碰、和牌或跳过等决策保留 Mortal 输出，只有切牌候选附带牌效率。
-单局面查询 `review_at` 每次独立加载模型。整场接口 `review_game` 只启动一次 Mortal，
-按真实牌谱顺序推理，返回 `GameReview`；`decisions()` 列出行动机会，`at_event(N)`
-读取缓存的 `DecisionPoint`，切换时无需重新回放或计算。缓存仅存在当前进程内存中。
-
-列表包含局数、本场、自家手番、实际动作与 Mortal 最终推荐；手番按自家牌河长度加一
-计算，鸣牌响应标在下一次出牌手番，杠不单独增加手番。仅收录 Mortal 返回的行动机会，
-包含单候选和跳过，不做失误评分或排序。实际动作单独存放在 `DecisionPoint.actual`，
-不进入当时的 `Review` 证据；他家抢先鸣牌或和牌、流局原因不明及牌谱截断时，
-无法确认的选择明确标为“无法确定”，不当作跳过。
-
-接口和行为约定见 [`docs/review/review.md`](docs/review/review.md)，
-验证说明见 [`docs/review/review-tests.md`](docs/review/review-tests.md)。
-
-### Agent
-
-`agent` 已接入 OpenAI Responses API，可以围绕指定局面提问和追问。
-先按 Mortal 的说明准备本地环境。`agent` 自动读取当前工作目录的 `.env`；
-在项目根目录把 `.env.example` 复制为 `.env`，填写服务地址、模型名和密钥即可。
-中转站使用 `KYOKU_OPENAI_ENDPOINT`、`OPENAI_MODEL`、`AGENT_API_KEY`；
-官方服务省略地址覆盖，使用 `OPENAI_MODEL` 和 `OPENAI_API_KEY`。
-模型须支持 Responses 工具调用。配置优先级为命令行参数、已有环境变量、`.env`；
-`.env` 已被 Git 忽略，示例文件不含真实密钥。
-
-```bash
-cargo run --bin agent -- --player 0 --event 2 \
-  --question '比较这里的候选切牌，说明向听、进张和 Mortal 的倾向。' \
-  fixtures/tenhou/ranked_game.json
-
-# 不带 --question 就进入交互模式；同一局面只运行一次 Mortal。
-cargo run --bin agent -- --player 0 --event 2 fixtures/tenhou/ranked_game.json
-
-# 整场浏览：模型加载一次，切换局面使用缓存。
-cargo run --bin agent -- --player 0 --browse fixtures/tenhou/ranked_game.json
-```
-
-交互中可以继续问“这就是牌山剩余枚数吗？”，输入 `/evidence` 查看原始 JSON 证据，
-输入 `/quit` 退出。单局面交互中的 `/evidence` 同样无需 LLM 配置，问答时才创建会话。
-`--question` 搭配 `--interactive` 可以先回答一问再继续交互。
-牌谱从标准输入 `-` 读取时，只支持单次 `--question`。
-
-浏览模式先列出整场决策并选择第一项。用 `/select N` 按列表中的全局事件编号选择，
-`/next`、`/prev` 切换，`/show` 查看局面、牌效率和 Mortal 候选，`/list` 重看列表，
-直接输入问题即可问答。切换到其他局面会清空问答历史；切回也重新取证，不复用旧对话。
-越界或无效选择保留当前局面和问答。浏览、`/show` 和 `/evidence` 不需要 LLM 配置；
-仅问答需要按上面的说明配置服务。`--browse` 只接受文件，不能与 `--event` 或 `--question` 同用。
-
-默认官方地址使用 `OPENAI_API_KEY`。通过 `--endpoint` 或 `KYOKU_OPENAI_ENDPOINT`
-覆盖地址时，只读取独立的 `AGENT_API_KEY`，不会回退到 `OPENAI_API_KEY`；
-本地无认证服务可不设置 `AGENT_API_KEY`，自定义远程服务则需设置。
-
-首次回答前必须通过 `get_review` 工具取得当前局面的证据；追问复用这份证据及对话历史。
-LLM 服务收到问题、自家暗牌、公开信息、牌效率和 Mortal 判断，不会收到完整牌谱、
-对手暗牌或未来事件。会话仅保存在本地进程内存中，请求使用 `store: false`；这不等于
-服务商承诺零数据留存。不要将密钥写进命令行参数或提交到仓库。
-
-回答要求区分【计算】【Mortal】【推测】，不能把 Q 值当成概率或编造推荐原因；
-这些是提示词约束，不保证每句解释都正确，具体数字可以用 `/evidence` 核对。
-每次问答仅使用当前选定局面的证据，不向 LLM 提供整场缓存、实际后续动作或其他局面的对话。
-当前不提供整场自动找错或押退风险计算。
-
-配置、工具协议和错误约定见 [`docs/agent/agent.md`](docs/agent/agent.md)，
-测试及人工验收见 [`docs/agent/agent-tests.md`](docs/agent/agent-tests.md)。
-
-Agent 负责把这些工具组合起来，后续会逐步扩展工具编排能力。
-
-例如用户问：
-
-> 为什么这里不应该切 6m？
-
-Agent 可以先读取当前局面，再调用牌效率、剩余枚数、Mortal 等工具，最后根据得到的结果组织解释。
-
-LLM 的主要工作是：
-
-* 理解用户的问题；
-* 决定需要哪些工具；
-* 综合不同来源的结果；
-* 把分析解释成人能读懂的语言；
-* 支持继续追问。
-
-以后也可以加入麻将书、历史牌谱和统计数据作为额外依据，但这些不属于最基础的依赖。
-
-### GUI
-
-`desktop/` 使用 Tauri 2 + React + TypeScript，提供桌面界面，用来：
-
-* 导入牌谱；
-* 浏览牌局；
-* 查看某一巡的完整局面；
-* 对比候选动作；
-* 展示计算和模型结果；
-* 和 Agent 继续讨论这个局面。
+### 2. 启动桌面回放
 
 ```bash
 cd desktop
@@ -284,128 +37,280 @@ npm ci
 npm run tauri dev
 ```
 
-导入本地天凤 JSON 后即可逐事件播放、按局跳转、切换玩家视角或显示全部手牌；
-回放不需要 Mortal 或 LLM。点击“分析此玩家”后在后台生成整场决策缓存，
-可查看最终推荐、候选 Q 值、切牌效率，并对当前决策提问。
-显示全部手牌不会扩大 Agent 的证据范围。切换局面会重置问答，旧任务的结果不会覆盖新局面。
+在窗口中点击“＋ 导入牌谱”，选择仓库内的 `fixtures/tenhou/ranked_game.json`。
+用底部播放按钮、进度条或局数选择浏览牌局，左右方向键移动一个事件，空格播放或暂停。
+默认隐藏其他玩家手牌；需要查看牌谱中的全部手牌时，勾选“显示全部手牌”。
 
-当前为开发版本，依赖本地 Mortal 环境和 `.env`，尚未将 Python、模型及签名发行流程打包。
-启动、资源路径与验证说明见 [`desktop/README.md`](desktop/README.md)。
+`npm run dev` 只启动前端服务器；使用完整功能请运行 `npm run tauri dev`。
+关闭窗口并在终端按 Ctrl+C 可结束开发服务。下面的准备步骤请在仓库根目录执行；
+如果仍在 `desktop/`，先运行 `cd ..`，也可以另开终端进入仓库根目录。
 
-## Project structure
-
-目前项目还在早期阶段，目录结构会随着需求继续调整。
-
-代码会尽量保持几个明确的边界：
-
-```text
-game log / external formats
-            ↓
-         replay
-            ↓
-      mahjong domain
-            ↓
-        analysis
-            ↓
-   Mortal / Agent / GUI
-```
-
-领域层不应该依赖 GUI、具体 LLM SDK 或牌谱来源格式。
-
-上层可以依赖领域层，领域层尽量不知道上层的存在。
-
-## Current status
-
-目前包含麻将领域模型、真实牌谱 Replay、确定性麻将分析、本地 Mortal 推理、单局面复盘、整场决策浏览、Agent 问答及初版桌面 GUI。
-`mortal` 可以获取指定玩家逐事件的模型建议，运行时不依赖 Kyoku 分析层；
-`review` 在指定事件上汇总可见局面、Kyoku 切牌分析和 Mortal 判断。
-分析层已支持向听、基础牌效率、役种判断和计分；`agent` 通过 Responses API
-调用当前选定局面的工具并生成中文解释，支持追问和在整场缓存间切换。
-GUI 支持完整回放、局面分析和问答；更丰富的工具编排及桌面发行流程仍待完善。
-
-## Roadmap
-
-大致的开发顺序是：
-
-```text
-Mahjong core
-    ↓
-Replay
-    ↓
-Mahjong analysis
-    ↓
-Mortal
-    ↓
-Agent
-    ↓
-GUI
-```
-
-第一版不追求一次把所有设想做完。
-
-只要能够跑通：
-
-```text
-牌谱
- → 局面重建
- → 麻将分析
- → Mortal
- → Agent
- → GUI
-```
-
-这一整条链路，就已经是一个完整的可用版本。
-
-之后再考虑更大的功能，例如：
-
-* 自动找出整场牌谱中值得复盘的决策；
-* 麻将书和文章检索；
-* 历史牌谱统计；
-* 相似局面搜索；
-* 更完整的评估体系。
-
-## Development
-
-需要安装稳定版 Rust 工具链。
-
-常用检查：
+### 3. 启用 Mortal 分析
 
 ```bash
-cargo test
-cargo fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
+bash scripts/setup-mortal.sh python3.12
+cargo run --bin review -- --player 0 --event 2 fixtures/tenhou/ranked_game.json
 ```
 
-项目仍在开发中，API 和目录结构暂时都可能继续调整。
+将 `python3.12` 替换为本机 Python 3.11+ 的命令或可执行文件绝对路径。
+脚本创建 Python 虚拟环境、下载固定版本的 Mortal 源码、编译 `libriichi`，并下载和校验权重。
+首次安装需要一些时间，末尾出现 `Mortal checkpoint verified` 和 `Ready` 表示准备完成。
+随后 `review` 应显示局面、Mortal 推荐与候选切牌的向听、进张。
 
-## Why this project
+回到 GUI，选择玩家并点击“分析此玩家”。后台完成后，用“上一决策”或“下一决策”
+跳转到可分析的局面；右侧展示最终推荐和候选 Q 值，点击切牌候选查看有效牌。
+这一步仍不需要 LLM 配置。
 
-麻将复盘里其实混着几种完全不同的问题。
+### 4. 配置问答并提出第一个问题
 
-有些问题有明确答案，例如：
+第一次配置时，在仓库根目录复制示例；已有 `.env` 时直接编辑它，避免覆盖自己的配置。
 
-* 现在是什么向听；
-* 有哪些有效牌；
-* 某张牌还剩多少；
-* 当前动作是否合法。
+```bash
+cp .env.example .env
+```
 
-这些问题应该交给程序计算。
+使用中转站或其他兼容服务时，填写完整的 Responses 地址、模型名和专用密钥：
 
-另外一些问题没有唯一正确答案：
+```dotenv
+KYOKU_OPENAI_ENDPOINT='https://your-service.example/v1/responses'
+OPENAI_MODEL='your-model-name'
+AGENT_API_KEY='your-key'
+```
 
-* 速度和打点怎么权衡；
-* 要不要继续押；
-* 两个都合理的切牌哪个更好；
-* 当前点况下应该采用什么策略。
+使用官方服务时，删除或注释 `.env` 中的 `KYOKU_OPENAI_ENDPOINT` 和 `AGENT_API_KEY`，改为：
 
-这些问题更适合参考 Mortal 一类模型。
+```dotenv
+OPENAI_MODEL='your-model-name'
+OPENAI_API_KEY='your-key'
+```
 
-最后还有一个很重要的问题：
+上面的地址、模型名和密钥都是占位符，须替换成服务实际支持的值。只有聊天接口、
+不支持 Responses 工具调用的服务不能用于当前 Agent。密钥用单引号包裹，避免 `$` 被展开；
+`.env` 已被 Git 忽略，不要把真实密钥写进命令或提交到仓库。
 
-> 为什么？
+在 GUI 中跳到一个决策点，输入“比较这里的候选切牌，说明向听、进张和 Mortal 的倾向。”
+并发送；也可以用命令行验证：
 
-一个模型可能告诉你它更喜欢某个动作，但这并不等于完成了一次好的复盘。
+```bash
+cargo run --bin agent -- --player 0 --event 2 \
+  --question '比较这里的候选切牌，说明向听、进张和 Mortal 的倾向。' \
+  fixtures/tenhou/ranked_game.json
+```
 
-这个项目希望把确定性计算、模型判断和自然语言解释分开，然后再把它们组合起来。
+得到解释后，就跑通了“牌谱 → 局面重建 → 分析 → Mortal → Agent”的流程。
+同一局面可以继续追问；切换事件或玩家会清空问答历史，切回也不会恢复旧对话。
 
-程序负责算清楚，模型负责提供判断，Agent 负责把这些东西讲明白。
+## 使用自己的牌谱
+
+GUI 接受本地四人天凤 JSON（`tenhou.net/6` 格式，最大 16 MiB）；命令行示例中的
+`fixtures/tenhou/ranked_game.json` 也可以直接替换为自己的 JSON 路径。带空格的路径用引号包裹。
+当前不能直接导入雀魂原始牌谱、天凤 XML 或 mjai JSONL。
+
+如果手上只有天凤牌谱链接，`replay` 可以直接回放链接或 log ID：
+
+```bash
+cargo run --bin replay -- 'https://tenhou.net/0/?log=<log-id>&tw=0'
+cargo run --bin replay -- '<log-id>'
+```
+
+将 `<log-id>` 替换成实际牌谱编号。GUI、`mortal`、`review` 和 `agent` 需要本地 JSON；
+可以先下载同一份牌谱，再导入或分析：
+
+```bash
+curl -fL --referer 'https://tenhou.net/' \
+  'https://tenhou.net/5/mjlog2json.cgi?<log-id>' -o /tmp/kyoku-game.json
+cargo run --bin review -- --player 0 /tmp/kyoku-game.json
+```
+
+下载受天凤服务可用性和牌谱访问权限影响；初次体验可以先使用仓库示例。
+`replay` 的终端输出是可读的局面摘要，不能重定向后当作 JSON 导入 GUI。
+
+`--player 0..3` 是牌谱中整场不变的玩家索引，对应 JSON 的 `name` 数组顺序，
+不是当前东南西北座位。所有入口使用相同的零基全局事件编号；`--event N`
+表示第 N 个事件应用后的局面，不是第 N 巡。可先用 `replay` 或整场决策列表找到编号。
+
+仓库内 21 份样本覆盖双响、流局、抢杠、岭上摸牌、连续杠和复杂鸣牌；部分仅包含几局。
+来源、固定版本及文件对应关系见[示例牌谱来源](fixtures/tenhou/README.md)。
+
+## 桌面使用
+
+分析在后台运行，期间可以继续回放。每份牌谱、每个玩家的整场分析缓存在当前进程中，
+切换决策不需要重新推理；关闭应用后缓存消失。导入新牌谱后需要重新分析。
+
+问答只支持选定玩家的决策点。提示没有行动机会时，用“下一决策”移动到可提问的局面。
+回答目前一次完整返回；切换局面不会取消已经发出的请求，请等它结束后再发送新问题。
+失败时保留问题，便于重试。原始证据可用于核对解释中的具体数字。
+
+窗口可以调整大小；空间不足时牌桌与侧栏分别滚动，回放控制位于底部。
+输入框中的方向键和空格不会触发回放快捷键。
+
+开发版本默认从源码仓库根目录读取 Mortal 和 `.env`。需要改用其他资源目录时，
+在启动前设置绝对路径：
+
+```bash
+# 在仓库根目录运行；也可以换成已准备好资源的其他绝对路径。
+export KYOKU_HOME="$PWD"
+cd desktop
+npm run tauri dev
+```
+
+该目录的结构应为：
+
+```text
+mortal/.venv/bin/python
+mortal/runtime/
+mortal/models/mortal_582500.pth
+.env                              # 仅问答需要
+```
+
+`KYOKU_HOME` 只用于桌面版。CLI 默认路径相对于当前工作目录，因此请在仓库根目录运行，
+或使用下面的路径覆盖参数。Python 虚拟环境包含绝对路径，搬动项目后需要重新创建。
+
+## 命令行使用
+
+### 回放与定位局面
+
+```bash
+cargo run --bin replay -- --full-state fixtures/tenhou/rinshan.json
+cargo run --bin replay -- --kyoku E2 --only hora,kan,dora,ryukyoku fixtures/tenhou/ranked_game.json
+cargo run --bin replay -- --from 120 --to 140 fixtures/tenhou/ranked_game.json
+cargo run --bin replay -- --state-at 120 fixtures/tenhou/ranked_game.json
+```
+
+`--event N` 只显示指定事件，`--from` 和 `--to` 的范围包含两端；`--state-at N`
+额外输出该事件后的完整局面，`--full-state` 输出最终完整局面。
+`--kyoku E2` 包含东二局的所有本场，`E2.1` 只选一本场，南场使用 `S`。
+`--only` 只过滤显示，所有事件仍会进入回放器，局与比赛的结束摘要也会保留。
+回放失败时会报告事件编号、附近事件和最后一个有效局面。
+
+### Mortal 判断与综合复盘
+
+```bash
+# 只查看 Mortal 判断。
+cargo run --bin mortal -- --player 0 --event 2 fixtures/tenhou/ranked_game.json
+
+# 同时查看可见局面、切牌效率与 Mortal 判断。
+cargo run --bin review -- --player 1 --event 30 fixtures/tenhou/complex_nakis.json
+
+# 省略 --event：mortal 输出整场判断，review 列出整场行动机会。
+cargo run --bin review -- --player 0 fixtures/tenhou/ranked_game.json
+```
+
+`--player` 必填。单局面查询每次加载模型；整场查询只加载一次，沿真实牌谱推进，
+不会自动执行模型建议。没有行动机会的单局面仍可展示局面；吃、碰、和牌和跳过保留模型判断，
+只有切牌候选附带牌效率。
+
+整场列表显示局数、本场、自家手番、实际动作和最终推荐。手番按自家牌河长度加一计算，
+鸣牌响应标在下一次出牌手番，杠不单独增加手番。无法确认的实际选择标为“无法确定”，
+不当作跳过。当前不进行失误评分或排序。
+
+`mortal`、`review` 和 `agent` 都支持 `--python PATH`、`--runtime PATH`、`--model PATH`，
+分别覆盖 Python、Mortal 源码目录和权重文件；默认路径与上面的目录结构相同。
+
+### 交互问答与整场浏览
+
+```bash
+# 同一局面反复提问；输入 /quit 退出。
+cargo run --bin agent -- --player 0 --event 2 fixtures/tenhou/ranked_game.json
+
+# 缓存整场决策，然后选择局面并提问。
+cargo run --bin agent -- --player 0 --browse fixtures/tenhou/ranked_game.json
+```
+
+| 交互命令 | 用途 |
+| --- | --- |
+| `/evidence` | 查看当前局面的原始 JSON 证据 |
+| `/quit` | 退出 |
+| `/list` | 重看整场决策列表，仅浏览模式 |
+| `/select N` | 按全局事件编号选择决策，仅浏览模式 |
+| `/next`、`/prev` | 切换相邻决策，仅浏览模式 |
+| `/show` | 查看当前局面、牌效率和候选，仅浏览模式 |
+
+直接输入文字即可提问。浏览模式最初选择第一个决策点，无效选择保留当前局面和问答。
+浏览、`/show` 和 `/evidence` 不需要 LLM 配置；启动时仍需 Mortal，且已有 `.env` 的语法须正确。
+`--browse` 只接受文件，不能与 `--event` 或 `--question` 同用。
+
+单局面可用 `--question '问题'` 回答一次后退出；加上 `--interactive` 则回答后继续交互。
+所有 CLI 都支持 `-` 从标准输入读取牌谱，但 `agent` 此时必须使用单次 `--question`，
+不能加 `--interactive` 或使用浏览模式。例如：
+
+```bash
+cat fixtures/tenhou/ranked_game.json | cargo run --bin agent -- \
+  --player 0 --event 2 --question '这里有哪些有效牌？' -
+```
+
+`agent` 自动读取当前工作目录的 `.env`，配置优先级为命令行参数、已有环境变量、`.env`。
+`--llm-model NAME` 覆盖问答模型名，`--endpoint URL` 覆盖完整 Responses 地址；
+`--model` 始终指 Mortal 权重，不是 LLM 模型。
+GUI 同样优先使用已有环境变量，再读取资源目录内的 `.env`。
+
+默认官方地址只读取 `OPENAI_API_KEY`。一旦显式覆盖地址，就只读取独立的 `AGENT_API_KEY`，
+不会回退到官方密钥；远程自定义服务必须设置专用密钥，本地无认证服务可省略它。
+每个 CLI 的完整参数可用 `cargo run --bin <名称> -- --help` 查看，名称为
+`replay`、`mortal`、`review` 或 `agent`。
+
+## 如何理解结果
+
+Mortal 的“最终推荐”可能与候选表中 Q 值最高的动作不同，因为引擎还会应用和牌规则保护。
+两者冲突时以最终推荐为准；CLI 中对应 `Mortal:` 行。Q 值是原始模型输出，
+不是概率或期望点数。杠牌种选择有独立的第二层评价，不能与主动作 Q 值混排。
+
+默认使用 Mortal V4 的 CPU 推理及
+[Yuchen1457/mortal-582500 社区四麻权重](https://huggingface.co/Yuchen1457/mortal-582500)，
+并非 Mortal 官网的官方权重，不据此声称相同棋力。CLI 输出实际加载权重的 SHA-256。
+源码版本、模型来源及许可附件记录在 [Mortal 来源说明](mortal/README.md)。
+
+牌效率中的不可见枚数不是实际牌山剩余枚数，完成牌形也不代表可以合法和牌。
+Agent 按【计算】【Mortal】【推测】组织解释，但这些是提示词约束，不能保证每句话正确；
+可用原始证据核对数字，模型推荐本身也不能证明它“为什么这样想”。
+
+回放和 Mortal 分析在本地进行。提问时，LLM 服务收到问题、自家暗牌、公开信息、
+牌效率和 Mortal 判断，不会收到完整牌谱、对手暗牌、实际后续动作或其他局面的对话。
+“显示全部手牌”不会扩大 Agent 的证据范围。会话保存在当前进程内存中，
+请求使用 `store: false`；这不等于服务商承诺零数据留存。
+
+当前支持四人牌谱的回放、局面分析和问答；尚不提供整场自动找错、顺位预测、押退风险计算，
+也没有打包 Python、模型、签名、公证和自动更新。
+
+## 常见问题
+
+| 现象 | 处理方式 |
+| --- | --- |
+| 找不到牌谱或 `.env` | 确认 CLI 在仓库根目录运行，或为牌谱使用绝对路径；示例文件已随仓库提供。 |
+| 无法启动 Mortal、找不到 Python 或 `libriichi` | 先完成安装脚本，再运行快速开始中的 `review` 命令；GUI 还需检查 `KYOKU_HOME` 是否指向资源目录。 |
+| 安装脚本报告 Mortal 版本或工作区不符 | 检查 `mortal/runtime` 中的本地改动，保存自己的工作后恢复到脚本指定的干净版本再重试；脚本不会替你覆盖改动。 |
+| 配置后仍提示模型或认证错误 | 检查是否还留着示例占位符、完整地址是否以 `/responses` 对应的路径结尾、服务是否支持工具调用，以及已有环境变量是否覆盖了 `.env`。 |
+| GUI 无法提问 | 先分析选定玩家，再用“下一决策”进入决策点；已有请求进行中时等待其结束。 |
+
+## 开发
+
+代码按 `replay → mahjong / analysis → Mortal / Agent → GUI` 分层；
+领域层维护规则和状态，上层组合分析结果。用户用法集中维护在本 README，
+本地 `docs/` 用于开发设计与验证记录，不作为使用前提。
+
+根项目的检查不需要 Python、权重或在线 LLM，回放测试直接使用仓库中的示例牌谱：
+
+```bash
+cargo fmt --check
+cargo test --locked
+cargo clippy --all-targets --all-features -- -D warnings
+bash scripts/test-setup-mortal.sh
+```
+
+桌面项目有独立的依赖和锁文件。在仓库根目录运行：
+
+```bash
+npm --prefix desktop ci
+npm --prefix desktop run build
+npm --prefix desktop test
+npm --prefix desktop run format:check
+cargo fmt --manifest-path desktop/src-tauri/Cargo.toml --check
+cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked
+cargo clippy --manifest-path desktop/src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
+
+# macOS 本地调试应用，仍依赖上文准备的本地资源。
+npm --prefix desktop run tauri -- build --debug --bundles app
+```
+
+调试应用输出到 `desktop/src-tauri/target/debug/bundle/macos/Kyoku.app`。
+项目仍在快速迭代，公共 API 和目录结构可能调整。

@@ -1,8 +1,6 @@
 # 本地 Mortal 环境
 
-在项目根目录运行 `bash scripts/setup-mortal.sh /path/to/python3.12`，然后使用
-`cargo run --bin mortal -- --player 0 --event 2 fixtures/tenhou/ranked_game.json`。
-脚本支持 macOS 和 Linux，Python 3.11+，推荐 3.12。
+安装、运行与配置步骤统一见[根 README](../README.md)。本文件记录本地资源结构与来源许可。
 
 ```text
 mortal/
@@ -18,8 +16,6 @@ mortal/
 `runtime/`、`.venv/`、权重和未完成下载被 Git 忽略；说明、许可证和模型清单保留在仓库。
 Python 虚拟环境包含绝对路径，换工作目录或电脑时应重新创建。
 Kyoku 的 Rust 适配代码和 Python 桥接脚本位于 `src/mortal/`。
-接入设计见 [`docs/mortal/mortal.md`](../docs/mortal/mortal.md)，
-测试说明见 [`docs/mortal/mortal-tests.md`](../docs/mortal/mortal-tests.md)。
 
 ## 来源与许可
 
