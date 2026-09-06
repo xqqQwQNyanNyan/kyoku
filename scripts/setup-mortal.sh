@@ -11,13 +11,6 @@ checkpoint="$project_dir/mortal/models/mortal_582500.pth"
 runtime_commit=0cff2b52982be5b1163aa9a62fb01f03ce91e0d2
 model_sha=738e0d6e3c0ce9671629554ad39abd147d2ffbac676e80b194c83f2acc0fea20
 
-"$python_bin" -c 'import sys; assert sys.version_info >= (3, 11), "Python 3.11+ is required (3.12 recommended)"'
-mkdir -p mortal/models
-if [[ ! -d "$venv_dir" ]]; then
-    "$python_bin" -m venv "$venv_dir"
-fi
-"$venv_dir/bin/python" -m pip install 'torch==2.14.0' 'numpy==2.5.2'
-
 if [[ ! -d "$runtime_dir" ]]; then
     git clone https://github.com/Equim-chan/Mortal.git "$runtime_dir"
     git -C "$runtime_dir" checkout --detach "$runtime_commit"
@@ -26,6 +19,21 @@ if [[ "$(git -C "$runtime_dir" rev-parse HEAD)" != "$runtime_commit" ]]; then
     echo "Unexpected Mortal revision in $runtime_dir; expected $runtime_commit" >&2
     exit 1
 fi
+# HEAD 相同也可能存在本地源码改动；上游忽略的构建产物不影响此检查。
+runtime_status="$(git -C "$runtime_dir" status --porcelain=v1 --untracked-files=all --ignore-submodules=none)"
+if [[ -n "$runtime_status" ]]; then
+    echo "Mortal checkout has uncommitted or untracked changes in $runtime_dir; resolve them before setup." >&2
+    echo "$runtime_status" >&2
+    exit 1
+fi
+
+"$python_bin" -c 'import sys; assert sys.version_info >= (3, 11), "Python 3.11+ is required (3.12 recommended)"'
+mkdir -p mortal/models
+if [[ ! -d "$venv_dir" ]]; then
+    "$python_bin" -m venv "$venv_dir"
+fi
+"$venv_dir/bin/python" -m pip install 'torch==2.14.0' 'numpy==2.5.2'
+
 (
     cd "$runtime_dir"
     PYO3_PYTHON="$venv_dir/bin/python" cargo build -p libriichi --lib --release --locked

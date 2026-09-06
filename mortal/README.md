@@ -31,6 +31,10 @@ Copyright (C) 2021-2022 Equim；参见该提交的
 官方 README 将 logo 与其他素材另列为 CC BY-SA 4.0，不能把整个上游仓库的所有文件
 一概标记成 AGPL；重新打包时还需保留各依赖自身的许可。
 
+准备脚本在安装依赖和编译前检查 HEAD 及工作区：未暂存、已暂存或未跟踪的文件改动
+都会使安装退出，并列出改动，不会自动覆盖或清理。上游 `.gitignore` 忽略的构建产物
+可以保留。此检查只在运行准备脚本时执行，之后修改源码需要重新核验。
+
 权重来自 [Yuchen1457/mortal-582500](https://huggingface.co/Yuchen1457/mortal-582500)，
 固定发布修订为 `7386c9f5c751a3ea75efea99737cef5a5ef950f1`。它是社区 Mortal V4 四麻
 checkpoint，不是 Mortal 官网使用的官方权重。发布页元数据标记 `agpl-3.0`，

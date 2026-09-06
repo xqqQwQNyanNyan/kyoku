@@ -141,8 +141,16 @@ Mortal 源码与模型的许可及来源分别见[官方仓库](https://github.c
 启动或响应超过 60 秒、进程提前退出、JSON 或动作掩码不合法时会返回错误，失败会话
 不可继续使用。调用方仍需用 Replay 校验输入事件；推理适配不代替领域状态机。
 
+`Decision::recommended` 是引擎的最终推荐，**不保证等于 Q 值最大的候选动作**。
+桥接启用了和牌规则保护（`enable_rule_based_agari_guard=True`），可能改变最终动作，
+而 Q 表仍保留原始评价。两者冲突时以 `recommended` 为准；Agent 和其他调用方不得
+用 argmax Q 或排序后的首项代替最终推荐。CLI 的 `Mortal:` 行同样优先于候选表。
+这符合[官方 FAQ](https://github.com/Equim-chan/mjai-reviewer/blob/master/faq.md#mortal-the-single-line-output-and-the-table-are-in-conflict-is-it-a-bug) 的约定。
+
 Q 值是原始模型输出，不是概率或期望点数。杠牌种选择保留独立评价，不与主动作的
-Q 值混排。当前不计算整场评分、顺位预测或自动识别失误，也不依赖 GRP 权重。
+Q 值混排。CLI 对单个杠牌种候选只显示主层 `Kan` 的 Q；多个候选才展开第二层评价，
+用于比较“杠哪个”。API 始终保留两层原始值。当前不计算整场评分、顺位预测或自动识别
+失误，也不依赖 GRP 权重。
 
 接口、事件协议和错误边界见 [`docs/mortal/mortal.md`](docs/mortal/mortal.md)，
 自动测试及真实模型验证见 [`docs/mortal/mortal-tests.md`](docs/mortal/mortal-tests.md)。

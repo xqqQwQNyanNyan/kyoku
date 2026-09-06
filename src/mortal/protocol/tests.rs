@@ -55,6 +55,31 @@ fn pass_is_a_decision_but_no_opportunity_is_not() {
 }
 
 #[test]
+fn final_recommendation_can_differ_from_highest_q_action() {
+    // 模拟和牌保护后的响应：和牌 Q 最高，但引擎最终选择跳过。
+    let raw = response(
+        json!({"type":"none"}),
+        (1 << 43) | (1 << 45),
+        json!([0.9, 0.2]),
+    );
+    let result = decision(&raw.to_string(), player()).unwrap().unwrap();
+    assert_eq!(result.recommended, Event::None);
+    assert_eq!(
+        result.candidates,
+        vec![
+            Candidate {
+                action: Action::Win,
+                q_value: 0.9,
+            },
+            Candidate {
+                action: Action::Pass,
+                q_value: 0.2,
+            },
+        ]
+    );
+}
+
+#[test]
 fn kan_selection_keeps_its_own_q_values() {
     let mut raw = response(
         json!({"type":"ankan","actor":0,"consumed":["1m","1m","1m","1m"]}),

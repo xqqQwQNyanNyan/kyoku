@@ -43,9 +43,13 @@ pub struct KanCandidate {
 /// 单个牌谱事件之后的模型判断。
 #[derive(Debug)]
 pub struct Decision {
+    /// 引擎经过规则保护后的最终推荐动作；与候选 Q 值排序冲突时，以此字段为准。
+    /// 不保证等于 `candidates` 中 Q 值最大的动作，调用方不得用 argmax Q 替代。
     pub recommended: Event,
-    /// 按引擎动作编码排列，不预先按 Q 值排序。
+    /// 原始模型评价，按引擎动作编码排列；即使按 Q 值排序，也不代表最终推荐顺序。
     pub candidates: Vec<Candidate>,
+    /// 原始杠牌种评价，单候选时也可能存在，Q 值不保证与主层 `Action::Kan` 相等。
+    /// 展示单候选时使用主层 Kan 的 Q；多个候选才用此处的 Q 比较“杠哪个”。
     pub kan_candidates: Vec<KanCandidate>,
     /// 引擎提供的诊断值，与 Kyoku 自己的分析结果独立。
     pub shanten: Option<i8>,

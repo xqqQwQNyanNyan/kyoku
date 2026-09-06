@@ -29,7 +29,9 @@ def main():
     engine = MortalEngine(
         brain, dqn, is_oracle=False, version=version,
         device=torch.device("cpu"), enable_amp=False,
-        enable_quick_eval=False, enable_rule_based_agari_guard=True,
+        enable_quick_eval=False,
+        # 规则保护可能改变最终动作，返回的 Q 值仍是原始评价；以 Bot 的动作输出为准。
+        enable_rule_based_agari_guard=True,
         name="kyoku-mortal",
     )
     bot = Bot(engine, int(player))
