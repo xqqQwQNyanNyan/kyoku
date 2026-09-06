@@ -10,8 +10,8 @@
 打开 `Kyoku_0.1.0_aarch64.dmg`，将 Kyoku 拖入“应用程序”后启动。
 包内包含 Python、PyTorch、NumPy、Mortal 引擎和默认权重，无需安装开发工具或首次联网下载分析组件。
 
-导入本地天凤 JSON，然后选择玩家并点击“分析此玩家”。
-本地回放和分析无需账号或 API Key；Agent 问答需要联网。
+导入本地天凤 JSON，或点击“链接导入”粘贴天凤链接，然后选择玩家并点击“分析此玩家”。
+本地回放和分析无需账号或 API Key；只有链接下载和 Agent 问答需要联网。
 
 需要问答时，打开右上角“设置”，填写完整 Responses 服务地址、模型名和对应 API Key。
 可点击“测试连接”检查认证、模型和工具调用能力，再点击“保存设置”。测试会发送一次不含牌谱的请求，
@@ -60,6 +60,7 @@ npm run tauri dev
 ```
 
 在窗口中点击“＋ 导入牌谱”，选择仓库内的 `fixtures/tenhou/ranked_game.json`。
+也可以点击“链接导入”，粘贴天凤牌谱链接或 log ID，再点击“导入链接”（需要联网）。
 用底部播放按钮、进度条或局数选择浏览牌局，左右方向键移动一个事件，空格播放或暂停。
 默认隐藏其他玩家手牌；需要查看牌谱中的全部手牌时，勾选“显示全部手牌”。
 
@@ -126,19 +127,22 @@ cargo run --bin agent -- --player 0 --event 2 \
 
 ## 使用自己的牌谱
 
-GUI 接受本地四人天凤 JSON（`tenhou.net/6` 格式，最大 16 MiB）；命令行示例中的
+GUI 接受天凤牌谱链接、log ID，以及本地四人天凤 JSON（`tenhou.net/6` 格式，最大 16 MiB）；命令行示例中的
 `fixtures/tenhou/ranked_game.json` 也可以直接替换为自己的 JSON 路径。带空格的路径用引号包裹。
-当前不能直接导入雀魂原始牌谱、天凤 XML 或 mjai JSONL。
+当前不能直接导入雀魂链接、雀魂原始牌谱、天凤 XML 或 mjai JSONL。
 
-如果手上只有天凤牌谱链接，`replay` 可以直接回放链接或 log ID：
+如果手上只有天凤牌谱链接，可以在 GUI 中点击“链接导入”，也可以通过 `replay` 直接回放：
 
 ```bash
 cargo run --bin replay -- 'https://tenhou.net/0/?log=<log-id>&tw=0'
 cargo run --bin replay -- '<log-id>'
 ```
 
-将 `<log-id>` 替换成实际牌谱编号。GUI、`mortal`、`review` 和 `agent` 需要本地 JSON；
-可以先下载同一份牌谱，再导入或分析：
+将 `<log-id>` 替换成实际牌谱编号。GUI 下载成功后即可回放和分析，不需要手动保存文件。
+下载最多等待 30 秒，牌谱上限同样为 16 MiB；失败时保留当前牌谱和输入，便于重试。
+链接中的 `tw` 不会自动切换复盘玩家，请在导入后选择玩家。
+
+`mortal`、`review` 和 `agent` 仍需要本地 JSON；可以先下载同一份牌谱，再分析：
 
 ```bash
 curl -fL --referer 'https://tenhou.net/' \

@@ -74,6 +74,7 @@ function api(): Bridge {
       .fn()
       .mockResolvedValue({ bundled: true, available: true, checked: false, model: 'Mortal V4' }),
     importLog: vi.fn().mockResolvedValue(replay),
+    importLink: vi.fn().mockResolvedValue(replay),
     analyze: vi.fn().mockResolvedValue([decision]),
     ask: vi.fn().mockResolvedValue('【计算】测试回答'),
   };
@@ -99,6 +100,72 @@ beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn();
 });
 afterEach(cleanup);
+
+describe('天凤链接导入', () => {
+  const link = 'https://tenhou.net/0/?log=2023010100gm-00a9-0000-123456ab&tw=2';
+
+  it('空输入不能提交，粘贴链接后可按 Enter 导入并回放', async () => {
+    const bridge = api();
+    render(<App api={bridge} />);
+    await userEvent.click(screen.getByRole('button', { name: '粘贴天凤链接' }));
+    expect((screen.getByRole('button', { name: '导入链接' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    await userEvent.type(screen.getByLabelText('天凤牌谱链接'), `  ${link}  {Enter}`);
+    await screen.findByLabelText('牌谱进度');
+    expect(bridge.importLink).toHaveBeenCalledExactlyOnceWith(link);
+    expect(bridge.importLog).not.toHaveBeenCalled();
+    expect(screen.queryByRole('form', { name: '链接导入' })).toBeNull();
+    expect(screen.getByText(link)).toBeTruthy();
+  });
+
+  it('下载中不能重复提交或通过拖放启动另一份导入', async () => {
+    const bridge = api();
+    const pending = deferred<Replay>();
+    vi.mocked(bridge.importLink).mockReturnValueOnce(pending.promise);
+    render(<App api={bridge} />);
+    await userEvent.click(screen.getByRole('button', { name: '链接导入' }));
+    await userEvent.type(screen.getByLabelText('天凤牌谱链接'), link);
+    const form = screen.getByRole('form', { name: '链接导入' });
+    fireEvent.submit(form);
+    fireEvent.submit(form);
+    fireEvent.drop(form, { dataTransfer: { files: [new File(['{}'], 'another.json')] } });
+    expect(bridge.importLink).toHaveBeenCalledOnce();
+    expect(bridge.importLog).not.toHaveBeenCalled();
+    expect((screen.getByLabelText('天凤牌谱链接') as HTMLInputElement).disabled).toBe(true);
+    await act(async () => pending.resolve(replay));
+    await screen.findByLabelText('牌谱进度');
+  });
+
+  it('下载失败保留链接与当前局面，重试成功后重置分析和问答', async () => {
+    const bridge = api();
+    vi.mocked(bridge.importLink)
+      .mockRejectedValueOnce({ code: 'download_timeout', message: '下载天凤牌谱超时，请重试' })
+      .mockResolvedValueOnce({ ...replay, id: 2 });
+    await load(bridge);
+    await userEvent.click(screen.getAllByRole('button', { name: '分析此玩家' })[0]);
+    await screen.findByRole('button', { name: '分析已完成' });
+    await userEvent.click(screen.getByRole('button', { name: '下一决策 ›' }));
+    await userEvent.click(screen.getByText('这里的几个选择差在哪里？'));
+    await screen.findByText('【计算】测试回答');
+    await userEvent.click(screen.getByRole('button', { name: '链接导入' }));
+    const input = screen.getByLabelText('天凤牌谱链接');
+    await userEvent.type(input, link);
+    fireEvent.keyDown(input, { code: 'ArrowRight' });
+    expect(screen.getByTestId('event-caption').textContent).toBe('自己 · 摸牌 一筒');
+    await userEvent.click(screen.getByRole('button', { name: '导入链接' }));
+    await screen.findByText('下载天凤牌谱超时，请重试');
+    expect((input as HTMLInputElement).value).toBe(link);
+    expect(screen.getByText('test.json')).toBeTruthy();
+    expect(screen.getByTestId('event-caption').textContent).toBe('自己 · 摸牌 一筒');
+    expect(screen.getByText('【计算】测试回答')).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: '导入链接' }));
+    await screen.findByText(link);
+    expect(screen.queryByText('分析已完成')).toBeNull();
+    expect(screen.queryByText('【计算】测试回答')).toBeNull();
+    expect((screen.getByLabelText('牌谱进度') as HTMLInputElement).value).toBe('0');
+  });
+});
 
 describe('完整回放与问答边界', () => {
   it('切换局面清空对话后，侧栏回到引导内容顶部', async () => {

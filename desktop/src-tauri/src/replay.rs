@@ -5,7 +5,7 @@ use serde::Serialize;
 
 use crate::UiError;
 
-const MAX_LOG_BYTES: usize = 16 * 1024 * 1024;
+pub(crate) const MAX_LOG_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Clone, Serialize)]
 pub(crate) struct DiscardView {

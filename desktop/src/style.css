@@ -93,6 +93,28 @@ h2 {
 .file-input {
   display: none;
 }
+.link-import {
+  padding: 16px 26px;
+  background: #182620;
+  border-bottom: 1px solid var(--line);
+}
+.link-import-controls {
+  display: flex;
+  gap: 10px;
+  margin: 8px 0;
+}
+.link-import input {
+  flex: 1;
+  min-width: 0;
+  padding: 9px 12px;
+  border: 1px solid #ffffff24;
+  border-radius: 6px;
+  background: #101817;
+  color: inherit;
+}
+.link-import small {
+  color: var(--muted);
+}
 .app-header {
   height: 64px;
   display: flex;

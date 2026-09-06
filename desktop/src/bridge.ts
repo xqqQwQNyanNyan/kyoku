@@ -7,6 +7,7 @@ export const bridge: Bridge = {
   testConnection: (input) => invoke('test_connection', { input }),
   runtimeStatus: (check) => invoke('runtime_status', { check }),
   importLog: (json) => invoke('import_log', { json }),
+  importLink: (link) => invoke('import_link', { link }),
   analyze: (id, player) => invoke('analyze_game', { id, player }),
   ask: (id, player, event_index, conversation_id, text) =>
     invoke('ask', { question: { id, player, event_index, conversation_id, text } }),

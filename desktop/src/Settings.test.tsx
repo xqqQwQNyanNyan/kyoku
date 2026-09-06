@@ -14,6 +14,7 @@ const stored: Settings = {
 function api(): Bridge {
   return {
     importLog: vi.fn(),
+    importLink: vi.fn(),
     analyze: vi.fn(),
     ask: vi.fn(),
     getSettings: vi.fn().mockResolvedValue(stored),

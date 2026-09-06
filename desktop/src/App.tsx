@@ -21,7 +21,9 @@ export default function App({ api = bridge }: { api?: Bridge }) {
   const [decisions, setDecisions] = useState<Record<number, Decision[]>>({});
   const [analyzing, setAnalyzing] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
+  const [showLink, setShowLink] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [link, setLink] = useState('');
   const [error, setError] = useState('');
   const [messages, setMessages] = useState<Message[]>([]);
   const [question, setQuestion] = useState('');
@@ -69,34 +71,46 @@ export default function App({ api = bridge }: { api?: Bridge }) {
     setPlayer(next);
   }
 
-  async function importFile(file: File | undefined) {
-    if (!file || importBusy.current) return;
-    if (file.size > 16 * 1024 * 1024) {
-      setError('牌谱文件不能超过 16 MiB');
-      return;
-    }
+  async function importReplay(name: string, read: () => Promise<Replay>) {
+    if (importBusy.current) return;
     importBusy.current = true;
     setLoading(true);
     setPlaying(false);
     setError('');
     try {
-      const loaded = await api.importLog(await file.text());
+      const loaded = await read();
       documentId.current = loaded.id;
       analysisJob.current += 1;
       resetConversation();
       setReplay(loaded);
-      setFilename(file.name);
+      setFilename(name);
       setIndex(0);
       setPlayer(0);
       setReveal(false);
       setDecisions({});
       setAnalyzing(null);
+      setShowLink(false);
+      setLink('');
     } catch (error) {
       setError(errorMessage(error));
     } finally {
       setLoading(false);
       importBusy.current = false;
     }
+  }
+
+  async function importFile(file: File | undefined) {
+    if (!file || importBusy.current) return;
+    if (file.size > 16 * 1024 * 1024) {
+      setError('牌谱文件不能超过 16 MiB');
+      return;
+    }
+    await importReplay(file.name, async () => api.importLog(await file.text()));
+  }
+
+  function openLink() {
+    setPlaying(false);
+    setShowLink(true);
   }
 
   async function analyze() {
@@ -260,6 +274,9 @@ export default function App({ api = bridge }: { api?: Bridge }) {
         <button className="import-button" disabled={loading} onClick={openFile}>
           {loading ? '正在读取…' : '＋ 导入牌谱'}
         </button>
+        <button disabled={loading} onClick={openLink}>
+          链接导入
+        </button>
         <button
           onClick={() => {
             setPlaying(false);
@@ -285,6 +302,38 @@ export default function App({ api = bridge }: { api?: Bridge }) {
           </button>
         </div>
       )}
+      {showLink && (
+        <form
+          className="link-import"
+          aria-label="链接导入"
+          onSubmit={(event) => {
+            event.preventDefault();
+            const value = link.trim();
+            if (value) void importReplay(value, () => api.importLink(value));
+          }}
+        >
+          <label htmlFor="log-link">天凤牌谱链接</label>
+          <div className="link-import-controls">
+            <input
+              id="log-link"
+              autoFocus
+              autoComplete="off"
+              spellCheck={false}
+              placeholder="https://tenhou.net/0/?log=…"
+              value={link}
+              disabled={loading}
+              onChange={(event) => setLink(event.target.value)}
+            />
+            <button className="primary" type="submit" disabled={loading || !link.trim()}>
+              {loading ? '正在导入…' : '导入链接'}
+            </button>
+            <button type="button" disabled={loading} onClick={() => setShowLink(false)}>
+              收起
+            </button>
+          </div>
+          <small>支持天凤四人牌谱链接或 log ID，需要联网。雀魂链接暂不支持。</small>
+        </form>
+      )}
       {!replay || !frame ? (
         <main className="welcome">
           <div className="welcome-art">
@@ -306,6 +355,9 @@ export default function App({ api = bridge }: { api?: Bridge }) {
             {loading ? '正在读取牌谱…' : '选择牌谱文件'} <span>↗</span>
           </button>
           <span className="welcome-hint">支持本地天凤 JSON · 也可以拖入文件</span>
+          <button onClick={openLink} disabled={loading}>
+            粘贴天凤链接
+          </button>
           <div className="welcome-footer">
             <span>01 完整牌局回放</span>
             <span>02 Mortal 动作对比</span>

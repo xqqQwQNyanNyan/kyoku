@@ -83,6 +83,7 @@ export interface Bridge {
   testConnection(input: SettingsInput): Promise<void>;
   runtimeStatus(check: boolean): Promise<RuntimeStatus>;
   importLog(json: string): Promise<Replay>;
+  importLink(link: string): Promise<Replay>;
   analyze(id: number, player: number): Promise<Decision[]>;
   ask(
     id: number,

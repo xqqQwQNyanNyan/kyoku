@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod config;
+mod log_link;
 mod replay;
 mod settings;
 
@@ -90,6 +91,27 @@ async fn import_log(json: String, state: tauri::State<'_, Desktop>) -> Result<Im
     let (events, data) = tauri::async_runtime::spawn_blocking(move || replay::parse(&json))
         .await
         .map_err(|_| UiError::new("task", "读取牌谱任务异常结束"))??;
+    finish_import(&state, id, events, data)
+}
+
+#[tauri::command]
+async fn import_link(link: String, state: tauri::State<'_, Desktop>) -> Result<Imported, UiError> {
+    let id = state.sequence.fetch_add(1, Ordering::SeqCst) + 1;
+    let (events, data) = tauri::async_runtime::spawn_blocking(move || {
+        let json = log_link::download(&link)?;
+        replay::parse(&json)
+    })
+    .await
+    .map_err(|_| UiError::new("task", "下载牌谱任务异常结束"))??;
+    finish_import(&state, id, events, data)
+}
+
+fn finish_import(
+    state: &Desktop,
+    id: u64,
+    events: Vec<Event>,
+    data: replay::ReplayData,
+) -> Result<Imported, UiError> {
     let mut current = lock(&state.game)?;
     if state.sequence.load(Ordering::SeqCst) != id {
         return Err(UiError::new("stale_import", "已选择另一份牌谱"));
@@ -300,6 +322,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             import_log,
+            import_link,
             analyze_game,
             ask,
             get_settings,
