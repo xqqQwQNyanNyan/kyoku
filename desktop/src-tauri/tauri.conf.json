@@ -13,10 +13,13 @@
     "windows": [
       {
         "title": "Kyoku · 牌谱复盘",
-        "width": 1440,
-        "height": 940,
-        "minWidth": 1100,
-        "minHeight": 760,
+        "width": 1100,
+        "height": 640,
+        "minWidth": 1000,
+        "minHeight": 560,
+        "resizable": true,
+        "center": true,
+        "preventOverflow": { "width": 24, "height": 80 },
         "dragDropEnabled": false
       }
     ],

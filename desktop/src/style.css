@@ -14,7 +14,7 @@
 }
 body {
   margin: 0;
-  min-width: 1100px;
+  min-width: 1000px;
 }
 button,
 select,
@@ -335,14 +335,20 @@ h2 {
 }
 .replay-column {
   display: grid;
-  grid-template-rows: minmax(632px, 1fr) 64px;
+  grid-template-rows: minmax(0, 1fr) 64px;
   min-width: 0;
-  overflow: auto;
+  overflow: hidden;
   min-height: 0;
   background: #111c18;
 }
-.table-stage {
+.table-viewport {
+  /* 只滚动牌桌，回放控制始终留在窗口内。 */
   min-height: 0;
+  overflow: auto;
+}
+.table-stage {
+  height: 100%;
+  min-height: 632px;
   container-type: size;
   display: flex;
   flex-direction: column;
@@ -494,8 +500,13 @@ input[type='checkbox'] {
   border-radius: 4px;
 }
 .seat.active .seat-label {
-  background: #aac79d12;
+  background: #d5bc8630;
+  box-shadow: inset 0 0 0 1px #d5bc8680;
   color: #eee4c9;
+}
+.seat-2 .seat-label {
+  /* 牌面保持对家朝向，点况文字面向阅读者。 */
+  transform: rotate(180deg);
 }
 .wind {
   display: inline-grid;
@@ -670,7 +681,7 @@ button.tile:hover:not(:disabled) {
 }
 .transport {
   padding: 4px 22px 8px;
-  border-bottom: 1px solid var(--line);
+  border-top: 1px solid var(--line);
 }
 input[type='range'] {
   width: 100%;
@@ -730,7 +741,7 @@ input[type='range'] {
 }
 .review-sidebar {
   display: grid;
-  grid-template-rows: minmax(250px, 0.85fr) minmax(380px, 1fr);
+  grid-template-rows: minmax(200px, 0.85fr) minmax(440px, 1fr);
   min-height: 0;
   min-width: 0;
   overflow: auto;
@@ -1079,7 +1090,7 @@ summary {
 }
 @media (max-width: 1200px) {
   .workspace {
-    grid-template-columns: 128px minmax(592px, 1fr) 340px;
+    grid-template-columns: 112px minmax(552px, 1fr) 320px;
   }
   .app-header {
     padding: 0 18px;
@@ -1092,6 +1103,49 @@ summary {
   .messages {
     padding-left: 16px;
     padding-right: 16px;
+  }
+  .board {
+    min-width: 520px;
+  }
+}
+@media (max-height: 800px) {
+  .table-stage {
+    min-height: 592px;
+  }
+  .board {
+    min-width: 520px;
+  }
+  .analysis-empty {
+    gap: 10px;
+    padding: 10px 16px;
+  }
+  .analysis-symbol {
+    font-size: 28px;
+  }
+  .chat-heading {
+    padding: 10px 16px;
+  }
+  .chat-context {
+    padding: 8px 16px;
+  }
+  .messages {
+    padding: 12px 16px;
+  }
+  .chat-welcome p {
+    margin-bottom: 8px;
+  }
+  .chat-welcome button {
+    padding: 10px;
+  }
+  .chat-welcome small {
+    margin-top: 8px;
+  }
+  .composer {
+    margin: 8px 12px 0;
+    padding: 8px;
+  }
+  .chat-footnote {
+    padding: 8px 16px;
   }
 }
 @media (prefers-reduced-motion: reduce) {

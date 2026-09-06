@@ -334,35 +334,37 @@ export default function App({ api = bridge }: { api?: Bridge }) {
             </div>
           </aside>
           <div className="replay-column">
-            <section className="table-stage">
-              <div className="table-toolbar">
-                <span className="eyebrow">
-                  {frame.round} / {frame.honba} 本场
-                </span>
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={reveal}
-                    onChange={(e) => setReveal(e.target.checked)}
-                  />
-                  显示全部手牌
-                </label>
-              </div>
-              <Board
-                frame={frame}
-                names={replay.names}
-                player={player}
-                reveal={reveal}
-                selected={selected}
-                onSelect={(tile) => setSelected(tile === selected ? null : tile)}
-              />
-              <div className="table-caption">
-                <span className="event-caption" data-testid="event-caption">
-                  {eventText(frame, replay.names, player, reveal)}
-                </span>
-                <span className="muted">半透明牌：摸切 · 虚线牌：已被鸣走</span>
-              </div>
-            </section>
+            <div className="table-viewport">
+              <section className="table-stage">
+                <div className="table-toolbar">
+                  <span className="eyebrow">
+                    {frame.round} / {frame.honba} 本场
+                  </span>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={reveal}
+                      onChange={(e) => setReveal(e.target.checked)}
+                    />
+                    显示全部手牌
+                  </label>
+                </div>
+                <Board
+                  frame={frame}
+                  names={replay.names}
+                  player={player}
+                  reveal={reveal}
+                  selected={selected}
+                  onSelect={(tile) => setSelected(tile === selected ? null : tile)}
+                />
+                <div className="table-caption">
+                  <span className="event-caption" data-testid="event-caption">
+                    {eventText(frame, replay.names, player, reveal)}
+                  </span>
+                  <span className="muted">半透明牌：摸切 · 虚线牌：已被鸣走</span>
+                </div>
+              </section>
+            </div>
             <section className="transport" aria-label="回放控制">
               <input
                 type="range"
@@ -463,22 +465,26 @@ export default function App({ api = bridge }: { api?: Bridge }) {
                       <br />
                       也可以说说你当时的考虑。
                     </p>
-                    <button
-                      disabled={!decision || asking}
-                      onClick={() =>
-                        void ask('比较这里的候选切牌，说明向听、进张和 Mortal 的倾向。')
-                      }
-                    >
-                      这里的几个选择差在哪里？ <span>↗</span>
-                    </button>
-                    <button
-                      disabled={!decision || asking}
-                      onClick={() =>
-                        void ask('Mortal 推荐了什么？哪些结论有计算依据，哪些只能推测？')
-                      }
-                    >
-                      帮我读懂 Mortal 的推荐 <span>↗</span>
-                    </button>
+                    {decision && (
+                      <>
+                        <button
+                          disabled={asking}
+                          onClick={() =>
+                            void ask('比较这里的候选切牌，说明向听、进张和 Mortal 的倾向。')
+                          }
+                        >
+                          这里的几个选择差在哪里？ <span>↗</span>
+                        </button>
+                        <button
+                          disabled={asking}
+                          onClick={() =>
+                            void ask('Mortal 推荐了什么？哪些结论有计算依据，哪些只能推测？')
+                          }
+                        >
+                          帮我读懂 Mortal 的推荐 <span>↗</span>
+                        </button>
+                      </>
+                    )}
                     <small>
                       {!points
                         ? '先分析牌谱，再选择一个决策点。'
@@ -531,7 +537,7 @@ export default function App({ api = bridge }: { api?: Bridge }) {
                   value={question}
                   disabled={!decision || asking}
                   onChange={(e) => setQuestion(e.target.value)}
-                  rows={3}
+                  rows={2}
                   onFocus={() => setPlaying(false)}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {

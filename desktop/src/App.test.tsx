@@ -112,6 +112,27 @@ describe('完整回放与问答边界', () => {
     expect(bridge.ask).not.toHaveBeenCalled();
   });
 
+  it('无决策时说明提问前提，有决策时才提供快捷问题', async () => {
+    await load(api());
+    expect(screen.getByText('先分析牌谱，再选择一个决策点。')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /这里的几个选择差在哪里/ })).toBeNull();
+    await userEvent.click(screen.getAllByRole('button', { name: '分析此玩家' })[0]);
+    await screen.findByRole('button', { name: '分析已完成' });
+    expect(screen.getByText('用「下一决策」前往可提问的局面。')).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: '下一决策 ›' }));
+    expect(
+      (screen.getByRole('button', { name: /这里的几个选择差在哪里/ }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(false);
+    expect(
+      (screen.getByRole('button', { name: /帮我读懂 Mortal 的推荐/ }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(false);
+    await userEvent.click(screen.getByLabelText('下一事件'));
+    expect(screen.queryByRole('button', { name: /这里的几个选择差在哪里/ })).toBeNull();
+    expect(screen.getByText('用「下一决策」前往可提问的局面。')).toBeTruthy();
+  });
+
   it('最终推荐独立于 Q 值排序，输入框方向键不会跳转局面', async () => {
     const bridge = api();
     await load(bridge);
