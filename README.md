@@ -2,9 +2,31 @@
 
 一个用 Rust 编写的日麻牌谱复盘助手。
 
-目前提供桌面 GUI 和命令行，仍是需要从源码启动的开发版本。
+目前提供桌面 GUI 和命令行。macOS 桌面版可构建包含完整本地推理环境的安装包。
 
-## 快速开始
+## macOS 安装包使用
+
+安装包支持 **Apple Silicon（M 系列芯片）、macOS 14 及以上**，暂不提供 Intel Mac 和 Windows 包。
+打开 `Kyoku_0.1.0_aarch64.dmg`，将 Kyoku 拖入“应用程序”后启动。
+包内包含 Python、PyTorch、NumPy、Mortal 引擎和默认权重，无需安装开发工具或首次联网下载分析组件。
+
+导入本地天凤 JSON，然后选择玩家并点击“分析此玩家”。
+本地回放和分析无需账号或 API Key；Agent 问答需要联网。
+
+需要问答时，打开右上角“设置”，填写完整 Responses 服务地址、模型名和对应 API Key。
+可点击“测试连接”检查认证、模型和工具调用能力，再点击“保存设置”。测试会发送一次不含牌谱的请求，
+可能产生少量调用费用；测试成功不会自动保存。保存新配置会清空当前问答历史。
+“检查引擎”会在本地加载内置模型，确认运行环境可用。
+
+API Key 保存在 macOS 钥匙串，不回显到界面。相同地址下留空保留现有密钥；更换地址后必须重新填写，
+本机无认证服务可以留空。勾选“删除已保存的密钥”并保存可移除密钥。
+服务地址和模型名保存在 `~/Library/Application Support/dev.kyoku.desktop/settings.json`，升级应用不会覆盖它们。
+安装包不读取源码目录、`.env` 或终端中的问答环境变量。
+
+当前本地构建使用 ad-hoc 签名，**尚无 Developer ID 签名和 Apple 公证**，不等同于可直接公开发行的已公证安装包。
+其他电脑的首次打开可能受到 Gatekeeper 限制；公开发行前需完成签名与公证。
+
+## 从源码运行
 
 下面先跑通示例牌谱回放，再启用本地分析和问答。除特别说明外，命令都在仓库根目录运行。
 
@@ -18,7 +40,7 @@
 | Agent 问答 | 支持 Responses API 工具调用的 LLM 服务、模型名及对应密钥 |
 
 桌面版已在 macOS 验证。Mortal 安装脚本支持 macOS 和 Linux；Linux 桌面尚未完成验收，
-Windows 的 Mortal 环境仍需适配。当前没有包含 Python 和模型的开箱即用安装包。
+Windows 的 Mortal 环境仍需适配。下述步骤用于开发；安装包用户无需执行。
 
 ```bash
 git clone https://github.com/xqqQwQNyanNyan/kyoku.git
@@ -62,6 +84,8 @@ cargo run --bin review -- --player 0 --event 2 fixtures/tenhou/ranked_game.json
 这一步仍不需要 LLM 配置。
 
 ### 4. 配置问答并提出第一个问题
+
+GUI 推荐直接在“设置”中配置。下面的 `.env` 方式用于 CLI，以及尚未保存界面设置的开发版 GUI。
 
 第一次配置时，在仓库根目录复制示例；已有 `.env` 时直接编辑它，避免覆盖自己的配置。
 
@@ -144,7 +168,7 @@ cargo run --bin review -- --player 0 /tmp/kyoku-game.json
 窗口可以调整大小；空间不足时牌桌与侧栏分别滚动，回放控制位于底部。
 输入框中的方向键和空格不会触发回放快捷键。
 
-开发版本默认从源码仓库根目录读取 Mortal 和 `.env`。需要改用其他资源目录时，
+源码开发版本默认从仓库根目录读取 Mortal；尚未保存界面设置时读取 `.env`。需要改用其他资源目录时，
 在启动前设置绝对路径：
 
 ```bash
@@ -242,7 +266,7 @@ cat fixtures/tenhou/ranked_game.json | cargo run --bin agent -- \
 `agent` 自动读取当前工作目录的 `.env`，配置优先级为命令行参数、已有环境变量、`.env`。
 `--llm-model NAME` 覆盖问答模型名，`--endpoint URL` 覆盖完整 Responses 地址；
 `--model` 始终指 Mortal 权重，不是 LLM 模型。
-GUI 同样优先使用已有环境变量，再读取资源目录内的 `.env`。
+GUI 优先使用设置页保存的配置。仅开发版在没有已保存设置时，才依次读取已有环境变量和资源目录内的 `.env`。
 
 默认官方地址只读取 `OPENAI_API_KEY`。一旦显式覆盖地址，就只读取独立的 `AGENT_API_KEY`，
 不会回退到官方密钥；远程自定义服务必须设置专用密钥，本地无认证服务可省略它。
@@ -270,7 +294,7 @@ Agent 按【计算】【Mortal】【推测】组织解释，但这些是提示�
 请求使用 `store: false`；这不等于服务商承诺零数据留存。
 
 当前支持四人牌谱的回放、局面分析和问答；尚不提供整场自动找错、顺位预测、押退风险计算，
-也没有打包 Python、模型、签名、公证和自动更新。
+macOS 安装包已包含 Python 和模型；尚未提供 Developer ID 签名、Apple 公证和自动更新。
 
 ## 常见问题
 
@@ -313,4 +337,36 @@ npm --prefix desktop run tauri -- build --debug --bundles app
 ```
 
 调试应用输出到 `desktop/src-tauri/target/debug/bundle/macos/Kyoku.app`。
+
+### 构建完整 macOS 安装包
+
+在 Apple Silicon Mac 上先完成上述源码环境准备及 `setup-mortal.sh`，使用 Python 3.12。
+打包要求 Python 基础发行版本身可移动，例如 [python-build-standalone](https://github.com/astral-sh/python-build-standalone)
+的 `aarch64-apple-darwin` install-only 发行版；普通 Homebrew Python 可能依赖包外动态库，不能直接复制分发。
+如果现有虚拟环境基于不可移动的 Python，先保留自己的环境，再用独立发行版重新创建 `mortal/.venv` 并运行准备脚本。
+
+```bash
+bash scripts/build-macos.sh
+```
+
+脚本从当前 Mortal 虚拟环境整理独立的 Python 运行目录，保留依赖许可、上游源码和模型来源附件，
+校验固定版本及权重 SHA-256，检查动态库依赖，并实际运行一次模型推理。
+不复制 `.env`、用户设置、额外权重或 Rust 构建缓存。产物只放在已忽略的 `desktop/src-tauri/target/` 中。
+源环境内容不变时复用已整理的资源；无需每次重新安装 Python 或 PyTorch。
+
+输出位置：
+
+```text
+desktop/src-tauri/target/release/bundle/macos/Kyoku.app
+desktop/src-tauri/target/release/bundle/dmg/Kyoku_0.1.0_aarch64.dmg
+```
+
+仅执行默认的 `tauri build` 不会附带推理资源；完整包必须使用上述脚本。
+可以对移动后的应用资源再次检查：
+
+```bash
+mortal/.venv/bin/python scripts/prepare-macos.py --verify \
+  '/Applications/Kyoku.app/Contents/Resources/inference'
+```
+
 项目仍在快速迭代，公共 API 和目录结构可能调整。

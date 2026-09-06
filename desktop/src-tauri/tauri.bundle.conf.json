@@ -1,0 +1,7 @@
+{
+  "bundle": {
+    "targets": ["app", "dmg"],
+    "resources": { "target/bundled-runtime/inference/": "inference/" },
+    "macOS": { "minimumSystemVersion": "14.0", "signingIdentity": "-" }
+  }
+}

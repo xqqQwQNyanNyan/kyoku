@@ -5,6 +5,7 @@ import { bridge, errorMessage } from './bridge';
 import { Board, eventText } from './Board';
 import { Analysis } from './Analysis';
 import { Tile } from './Tile';
+import { SettingsPanel } from './Settings';
 
 type Message = { role: 'user' | 'assistant'; text: string };
 
@@ -20,6 +21,7 @@ export default function App({ api = bridge }: { api?: Bridge }) {
   const [decisions, setDecisions] = useState<Record<number, Decision[]>>({});
   const [analyzing, setAnalyzing] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [error, setError] = useState('');
   const [messages, setMessages] = useState<Message[]>([]);
   const [question, setQuestion] = useState('');
@@ -162,6 +164,7 @@ export default function App({ api = bridge }: { api?: Bridge }) {
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
+      if (showSettings) return;
       if (!replay || event.altKey || event.ctrlKey || event.metaKey || event.isComposing) return;
       if (
         (event.target as HTMLElement).closest(
@@ -205,7 +208,7 @@ export default function App({ api = bridge }: { api?: Bridge }) {
       }}
       onDrop={(event) => {
         event.preventDefault();
-        void importFile(event.dataTransfer.files[0]);
+        if (!showSettings) void importFile(event.dataTransfer.files[0]);
       }}
     >
       <input
@@ -257,7 +260,23 @@ export default function App({ api = bridge }: { api?: Bridge }) {
         <button className="import-button" disabled={loading} onClick={openFile}>
           {loading ? '正在读取…' : '＋ 导入牌谱'}
         </button>
+        <button
+          onClick={() => {
+            setPlaying(false);
+            setShowSettings(true);
+          }}
+          disabled={asking}
+        >
+          设置
+        </button>
       </header>
+      {showSettings && (
+        <SettingsPanel
+          api={api}
+          onClose={() => setShowSettings(false)}
+          onSaved={resetConversation}
+        />
+      )}
       {error && (
         <div role="alert" className="error-banner">
           <span>{error}</span>

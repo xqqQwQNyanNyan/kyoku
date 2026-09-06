@@ -1,80 +1,83 @@
 use crate::UiError;
-use kyoku::agent::AgentConfig;
-use std::{collections::BTreeMap, path::PathBuf};
+use kyoku::mortal::MortalConfig;
+use std::path::{Path, PathBuf};
+use tauri::Manager;
 
-pub(crate) fn home() -> PathBuf {
-    std::env::var_os("KYOKU_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
+pub(crate) struct RuntimePaths {
+    pub python: PathBuf,
+    pub runtime: PathBuf,
+    pub checkpoint: PathBuf,
+    pub bundled: bool,
 }
 
-pub(crate) struct LlmConfig {
-    endpoint: String,
-    model: String,
-    key: Option<String>,
+impl RuntimePaths {
+    pub fn resolve(app: &tauri::AppHandle) -> Result<Self, UiError> {
+        let resources = app
+            .path()
+            .resource_dir()
+            .map_err(|_| UiError::new("runtime", "无法定位应用资源目录"))?;
+        Ok(Self::from_roots(&resources, development_home().as_deref()))
+    }
+
+    fn from_roots(resources: &Path, development: Option<&Path>) -> Self {
+        let root = resources.join("inference");
+        if !root.exists()
+            && let Some(home) = development
+        {
+            return Self {
+                python: home.join("mortal/.venv/bin/python"),
+                runtime: home.join("mortal/runtime"),
+                checkpoint: home.join("mortal/models/mortal_582500.pth"),
+                bundled: false,
+            };
+        }
+        Self {
+            python: root.join("python/bin/python3"),
+            runtime: root.join("runtime"),
+            checkpoint: root.join("models/mortal_582500.pth"),
+            bundled: true,
+        }
+    }
+
+    pub fn borrowed(&self) -> MortalConfig<'_> {
+        MortalConfig {
+            python: &self.python,
+            runtime: &self.runtime,
+            checkpoint: &self.checkpoint,
+        }
+    }
 }
 
-impl LlmConfig {
-    pub fn load() -> Result<Self, UiError> {
-        let mut values = BTreeMap::new();
-        match std::fs::File::open(home().join(".env")) {
-            Ok(file) => {
-                for entry in dotenvy::from_read_iter(file) {
-                    // 解析错误可能包含密钥所在原始行，只报告类别。
-                    let (name, value) = entry
-                        .map_err(|_| UiError::new("config", ".env 读取或语法错误，请检查配置"))?;
-                    values.entry(name).or_insert(value);
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => return Err(UiError::new("config", "无法读取 .env 文件")),
-        }
-        Self::from_values(|name| {
-            std::env::var(name)
-                .ok()
-                .or_else(|| values.get(name).cloned())
-        })
-    }
-
-    fn from_values(mut get: impl FnMut(&str) -> Option<String>) -> Result<Self, UiError> {
-        let (endpoint, key) = match get("KYOKU_OPENAI_ENDPOINT") {
-            Some(endpoint) => (endpoint, get("AGENT_API_KEY")),
-            None => (
-                "https://api.openai.com/v1/responses".into(),
-                get("OPENAI_API_KEY"),
-            ),
-        };
-        let model = get("OPENAI_MODEL").ok_or_else(|| {
-            UiError::new("config", "请在项目 .env 中配置 OPENAI_MODEL 和对应服务密钥")
-        })?;
-        Ok(Self {
-            endpoint,
-            model,
-            key,
-        })
-    }
-
-    pub fn borrowed(&self) -> AgentConfig<'_> {
-        AgentConfig {
-            endpoint: &self.endpoint,
-            model: &self.model,
-            api_key: self.key.as_deref(),
-        }
+pub(crate) fn development_home() -> Option<PathBuf> {
+    // 发行版不读取编译机器的路径或开发 .env。
+    if cfg!(debug_assertions) {
+        Some(
+            std::env::var_os("KYOKU_HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")),
+        )
+    } else {
+        None
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
-    fn custom_endpoint_never_uses_official_key() {
-        let config = LlmConfig::from_values(|name| match name {
-            "KYOKU_OPENAI_ENDPOINT" => Some("http://localhost:8080/v1/responses".into()),
-            "OPENAI_API_KEY" => Some("official-secret".into()),
-            "OPENAI_MODEL" => Some("test-model".into()),
-            _ => None,
-        })
-        .unwrap();
-        assert!(config.key.is_none());
+    fn release_resources_are_relative_to_the_installed_app() {
+        let resources = Path::new("/Applications/复盘 工具.app/Contents/Resources");
+        let paths = RuntimePaths::from_roots(resources, None);
+        assert_eq!(paths.python, resources.join("inference/python/bin/python3"));
+        assert!(paths.bundled);
+    }
+
+    #[test]
+    fn development_can_use_the_existing_environment() {
+        let paths =
+            RuntimePaths::from_roots(Path::new("/missing-resources"), Some(Path::new("/work")));
+        assert_eq!(paths.python, Path::new("/work/mortal/.venv/bin/python"));
+        assert!(!paths.bundled);
     }
 }

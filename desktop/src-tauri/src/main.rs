@@ -2,12 +2,13 @@
 
 mod config;
 mod replay;
+mod settings;
 
 use convlog::Event;
 use kyoku::{
     agent::{AgentSession, review_evidence},
     mahjong::player_index::PlayerIndex,
-    mortal::MortalConfig,
+    mortal::Mortal,
     review::{GameReview, RecordedAction, review_game},
 };
 use serde::{Deserialize, Serialize};
@@ -16,6 +17,7 @@ use std::sync::{
     Arc, Mutex, MutexGuard,
     atomic::{AtomicU64, Ordering},
 };
+use tauri::Manager;
 
 #[derive(Debug, Serialize)]
 struct UiError {
@@ -131,10 +133,12 @@ async fn analyze_game(
     id: u64,
     player: u8,
     state: tauri::State<'_, Desktop>,
+    app: tauri::AppHandle,
 ) -> Result<Vec<DecisionView>, UiError> {
     let player =
         PlayerIndex::try_from(player).map_err(|_| UiError::new("player", "玩家编号必须为 0..3"))?;
     let game = state.game(id)?;
+    let paths = config::RuntimePaths::resolve(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
         // 每份牌谱只允许一个推理任务；后台锁不影响前端已加载的回放。
         let mut cache = game
@@ -143,16 +147,7 @@ async fn analyze_game(
             .map_err(|_| UiError::new("busy", "该牌谱正在分析，请稍候"))?;
         let slot = &mut cache[usize::from(player.get_id())];
         if slot.is_none() {
-            let home = config::home();
-            let python = home.join("mortal/.venv/bin/python");
-            let runtime = home.join("mortal/runtime");
-            let checkpoint = home.join("mortal/models/mortal_582500.pth");
-            let config = MortalConfig {
-                python: &python,
-                runtime: &runtime,
-                checkpoint: &checkpoint,
-            };
-            let review = review_game(&game.events, player, &config)
+            let review = review_game(&game.events, player, &paths.borrowed())
                 .map_err(|error| UiError::new("analysis", format!("Mortal 分析失败：{error}")))?;
             *slot = Some(Arc::new(review));
         }
@@ -175,7 +170,11 @@ struct Question {
 }
 
 #[tauri::command]
-async fn ask(question: Question, state: tauri::State<'_, Desktop>) -> Result<String, UiError> {
+async fn ask(
+    question: Question,
+    state: tauri::State<'_, Desktop>,
+    app: tauri::AppHandle,
+) -> Result<String, UiError> {
     PlayerIndex::try_from(question.player)
         .map_err(|_| UiError::new("player", "玩家编号必须为 0..3"))?;
     if question.conversation_id.is_empty() || question.conversation_id.len() > 128 {
@@ -202,7 +201,7 @@ async fn ask(question: Question, state: tauri::State<'_, Desktop>) -> Result<Str
             .try_lock()
             .map_err(|_| UiError::new("busy", "上一条回答仍在生成，请稍候重试"))?;
         if conversation.as_ref().is_none_or(|c| c.key != key) {
-            let config = config::LlmConfig::load()?;
+            let config = app.state::<settings::SettingsStore>().load()?;
             // 只从 Review 建立证据；完整回放与实际后续动作不会交给 Agent。
             let session = AgentSession::new(&point.review, &config.borrowed())
                 .map_err(|error| UiError::new("agent", error.to_string()))?;
@@ -220,10 +219,94 @@ async fn ask(question: Question, state: tauri::State<'_, Desktop>) -> Result<Str
     .map_err(|_| UiError::new("task", "问答任务异常结束"))?
 }
 
+#[tauri::command]
+async fn get_settings(app: tauri::AppHandle) -> Result<settings::SettingsView, UiError> {
+    tauri::async_runtime::spawn_blocking(move || app.state::<settings::SettingsStore>().view())
+        .await
+        .map_err(|_| UiError::new("task", "读取设置任务异常结束"))?
+}
+
+#[tauri::command]
+async fn save_settings(
+    input: settings::SettingsInput,
+    app: tauri::AppHandle,
+) -> Result<settings::SettingsView, UiError> {
+    tauri::async_runtime::spawn_blocking(move || app.state::<settings::SettingsStore>().save(input))
+        .await
+        .map_err(|_| UiError::new("task", "保存设置任务异常结束"))?
+}
+
+#[tauri::command]
+async fn test_connection(
+    input: settings::SettingsInput,
+    app: tauri::AppHandle,
+) -> Result<(), UiError> {
+    tauri::async_runtime::spawn_blocking(move || app.state::<settings::SettingsStore>().test(input))
+        .await
+        .map_err(|_| UiError::new("task", "连接测试任务异常结束"))?
+}
+
+#[derive(Serialize)]
+struct RuntimeStatus {
+    bundled: bool,
+    available: bool,
+    checked: bool,
+    model: String,
+}
+
+#[tauri::command]
+async fn runtime_status(check: bool, app: tauri::AppHandle) -> Result<RuntimeStatus, UiError> {
+    let paths = config::RuntimePaths::resolve(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut status = RuntimeStatus {
+            bundled: paths.bundled,
+            available: paths.python.is_file()
+                && paths.checkpoint.is_file()
+                && paths.runtime.join("mortal/libriichi.so").is_file(),
+            checked: false,
+            model: "Mortal V4 · mortal-582500 · CPU".into(),
+        };
+        if check {
+            let player =
+                PlayerIndex::try_from(0).map_err(|_| UiError::new("player", "玩家编号无效"))?;
+            let engine = Mortal::start(&paths.borrowed(), player)
+                .map_err(|error| UiError::new("runtime", format!("引擎检查失败：{error}")))?;
+            status.model = format!(
+                "Mortal V{} · {} · CPU",
+                engine.model().version,
+                engine.model().tag
+            );
+            engine
+                .finish()
+                .map_err(|error| UiError::new("runtime", format!("引擎检查失败：{error}")))?;
+            status.available = true;
+            status.checked = true;
+        }
+        Ok(status)
+    })
+    .await
+    .map_err(|_| UiError::new("task", "引擎检查任务异常结束"))?
+}
+
 fn main() {
     let result = tauri::Builder::default()
         .manage(Desktop::default())
-        .invoke_handler(tauri::generate_handler![import_log, analyze_game, ask])
+        .setup(|app| {
+            app.manage(settings::SettingsStore::new(
+                app.path().app_config_dir()?,
+                config::development_home(),
+            ));
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            import_log,
+            analyze_game,
+            ask,
+            get_settings,
+            save_settings,
+            test_connection,
+            runtime_status
+        ])
         .run(tauri::generate_context!());
     if let Err(error) = result {
         eprintln!("无法启动 Kyoku：{error}");

@@ -94,7 +94,8 @@ impl Mortal {
     pub fn start(config: &MortalConfig<'_>, player: PlayerIndex) -> Result<Self, MortalError> {
         let mut command = Command::new(config.python);
         command
-            .args(["-u", "-c", include_str!("bridge.py")])
+            // 独立运行，避免用户的 Python 环境变量或包影响内置引擎；不写入应用资源。
+            .args(["-I", "-B", "-u", "-c", include_str!("bridge.py")])
             .arg(config.runtime)
             .arg(config.checkpoint)
             .arg(player.get_id().to_string());

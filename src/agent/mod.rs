@@ -27,6 +27,41 @@ pub struct AgentConfig<'a> {
     pub api_key: Option<&'a str>,
 }
 
+impl AgentConfig<'_> {
+    /// 校验连接参数，不发送请求。
+    pub fn validate(&self) -> Result<(), AgentError> {
+        client::Client::new(self).map(|_| ())
+    }
+
+    /// 发送一次不含牌谱的请求，检查认证、模型和 Responses 工具调用能力。
+    /// 此操作可能产生服务商的调用费用，不保存服务端会话。
+    pub fn test_connection(&self) -> Result<(), AgentError> {
+        let response = client::Client::new(self)?.respond(
+            &[json!({"role": "user", "content": "连接测试：请调用 get_review，不必回答。"})],
+            true,
+        )?;
+        if response["status"] != "completed" {
+            return Err(AgentError::IncompleteResponse);
+        }
+        let output = response["output"]
+            .as_array()
+            .ok_or(invalid("missing output array"))?;
+        if output.iter().any(|item| {
+            item["type"] == "function_call"
+                && item["status"] == "completed"
+                && item["name"] == "get_review"
+                && item["call_id"].as_str().is_some_and(|id| !id.is_empty())
+                && item["arguments"].as_str().is_some_and(|args| {
+                    serde_json::from_str::<Value>(args).is_ok_and(|v| v == json!({}))
+                })
+        }) {
+            Ok(())
+        } else {
+            Err(invalid("service did not return the requested tool call"))
+        }
+    }
+}
+
 /// Agent 调用失败。不会包含密钥、HTTP 响应正文或未经校验的模型输出。
 #[derive(Debug)]
 pub enum AgentError {

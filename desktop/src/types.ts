@@ -78,6 +78,10 @@ export interface Decision {
   evidence: Evidence;
 }
 export interface Bridge {
+  getSettings(): Promise<Settings>;
+  saveSettings(input: SettingsInput): Promise<Settings>;
+  testConnection(input: SettingsInput): Promise<void>;
+  runtimeStatus(check: boolean): Promise<RuntimeStatus>;
   importLog(json: string): Promise<Replay>;
   analyze(id: number, player: number): Promise<Decision[]>;
   ask(
@@ -87,4 +91,25 @@ export interface Bridge {
     conversation: string,
     text: string,
   ): Promise<string>;
+}
+
+export interface Settings {
+  endpoint: string;
+  model: string;
+  has_api_key: boolean;
+  saved: boolean;
+}
+
+export interface SettingsInput {
+  endpoint: string;
+  model: string;
+  api_key: string;
+  clear_key: boolean;
+}
+
+export interface RuntimeStatus {
+  bundled: boolean;
+  available: boolean;
+  checked: boolean;
+  model: string;
 }

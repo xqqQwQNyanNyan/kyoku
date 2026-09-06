@@ -62,6 +62,17 @@ const decision: Decision = {
 
 function api(): Bridge {
   return {
+    getSettings: vi.fn().mockResolvedValue({
+      endpoint: 'https://api.openai.com/v1/responses',
+      model: '',
+      has_api_key: false,
+      saved: false,
+    }),
+    saveSettings: vi.fn(),
+    testConnection: vi.fn(),
+    runtimeStatus: vi
+      .fn()
+      .mockResolvedValue({ bundled: true, available: true, checked: false, model: 'Mortal V4' }),
     importLog: vi.fn().mockResolvedValue(replay),
     analyze: vi.fn().mockResolvedValue([decision]),
     ask: vi.fn().mockResolvedValue('【计算】测试回答'),

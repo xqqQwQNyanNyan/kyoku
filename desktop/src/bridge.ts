@@ -2,6 +2,10 @@ import { invoke } from '@tauri-apps/api/core';
 import type { Bridge } from './types';
 
 export const bridge: Bridge = {
+  getSettings: () => invoke('get_settings'),
+  saveSettings: (input) => invoke('save_settings', { input }),
+  testConnection: (input) => invoke('test_connection', { input }),
+  runtimeStatus: (check) => invoke('runtime_status', { check }),
   importLog: (json) => invoke('import_log', { json }),
   analyze: (id, player) => invoke('analyze_game', { id, player }),
   ask: (id, player, event_index, conversation_id, text) =>

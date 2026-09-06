@@ -363,6 +363,47 @@ fn server(responses: Vec<(u16, String)>) -> (String, thread::JoinHandle<Vec<Valu
 }
 
 #[test]
+fn connection_test_requires_a_valid_tool_call_without_sending_review_data() {
+    let (endpoint, handle) = server(vec![(
+        200,
+        response(vec![call("probe", "get_review", "{}")]).to_string(),
+    )]);
+    AgentConfig {
+        endpoint: &endpoint,
+        model: "test-model",
+        api_key: None,
+    }
+    .test_connection()
+    .unwrap();
+    let requests = handle.join().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0]["store"], false);
+    assert_eq!(requests[0]["tool_choice"]["name"], "get_review");
+    assert_eq!(requests[0]["input"].as_array().unwrap().len(), 1);
+    assert!(!requests[0].to_string().contains("concealed"));
+}
+
+#[test]
+fn connection_test_rejects_successful_http_with_incompatible_output() {
+    for body in [
+        response(vec![message("OK")]),
+        response(vec![call("probe", "get_review", "{\"wrong\":true}")]),
+    ] {
+        let (endpoint, handle) = server(vec![(200, body.to_string())]);
+        assert!(matches!(
+            AgentConfig {
+                endpoint: &endpoint,
+                model: "test",
+                api_key: None
+            }
+            .test_connection(),
+            Err(AgentError::InvalidResponse { .. })
+        ));
+        handle.join().unwrap();
+    }
+}
+
+#[test]
 fn http_session_handles_tool_roundtrip_followup_and_rolls_back_failed_turn() {
     let (endpoint, handle) = server(vec![
         (
