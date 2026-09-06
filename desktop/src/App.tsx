@@ -249,7 +249,6 @@ export default function App({ api = bridge }: { api?: Bridge }) {
       />
       <header className="app-header">
         <div className="brand">
-          <span className="brand-mark">局</span>
           <div>
             <strong>Kyoku</strong>
             <span>日麻牌谱复盘</span>

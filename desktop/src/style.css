@@ -148,20 +148,7 @@ h2 {
 .brand {
   display: flex;
   align-items: center;
-  gap: 11px;
-  min-width: 153px;
-}
-.brand-mark {
-  display: grid;
-  place-items: center;
-  width: 35px;
-  height: 39px;
-  font-family: serif;
-  font-size: 22px;
-  color: #243529;
-  background: #d9c9a6;
-  border-radius: 5px;
-  box-shadow: 0 3px #8f855f;
+  min-width: 107px;
 }
 .brand div {
   display: flex;
