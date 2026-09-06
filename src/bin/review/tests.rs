@@ -1,16 +1,17 @@
 use super::*;
+use kyoku::mahjong::{meld::Meld, tile::Tile};
 use kyoku::mahjong::{
     player::{Discard, RiichiState},
     round::{RoundId, RoundPhase, Wind},
 };
 use kyoku::mortal::{Action, Candidate, Decision, ModelInfo};
+use kyoku::review::Review;
 use kyoku::review::{PublicPlayer, VisiblePosition};
 
 #[test]
 fn cli_requires_player_event_and_one_input() {
     for input in [
         "",
-        "--player 0 log.json",
         "--event 2 log.json",
         "--player 4 --event 2 log.json",
         "--player 0 --event -1 log.json",
@@ -30,7 +31,14 @@ fn cli_requires_player_event_and_one_input() {
     .unwrap()
     .unwrap();
     assert_eq!(args.player.get_id(), 2);
-    assert_eq!(args.event, 12);
+    assert_eq!(args.event, Some(12));
+    assert!(
+        Args::parse("--player 0 log.json".split_whitespace().map(str::to_owned))
+            .unwrap()
+            .unwrap()
+            .event
+            .is_none()
+    );
     assert_eq!(args.input, "-");
     assert!(Args::parse(["--help".to_owned()]).unwrap().is_none());
 }
@@ -80,7 +88,7 @@ fn output_shows_public_state_and_preserves_final_recommendation() {
         discards: vec![],
     };
     let mut output = Vec::new();
-    write_review(&mut output, review).unwrap();
+    write_review(&mut output, &review).unwrap();
     let output = String::from_utf8(output).unwrap();
     assert!(output.contains("G012 after event, P0 view"));
     assert!(output.contains("Concealed: [1m]"));

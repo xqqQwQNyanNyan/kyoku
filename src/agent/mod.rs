@@ -9,6 +9,8 @@ use crate::review::Review;
 mod client;
 mod evidence;
 
+pub use evidence::review_evidence;
+
 const INSTRUCTIONS: &str = include_str!("prompt.txt");
 const MAX_REQUESTS: usize = 6;
 const MAX_HISTORY_BYTES: usize = 1024 * 1024;
@@ -103,7 +105,7 @@ impl AgentSession {
     pub fn new(review: &Review, config: &AgentConfig<'_>) -> Result<Self, AgentError> {
         Ok(Self {
             client: client::Client::new(config)?,
-            evidence: evidence::review_json(review),
+            evidence: review_evidence(review),
             history: Vec::new(),
             has_evidence: false,
         })

@@ -11,8 +11,9 @@ use crate::mortal::Action;
 use crate::replay::inspector::format_tile;
 use crate::review::Review;
 
-// 协议投影放在 Agent 边界，领域类型不需要为 LLM 增加序列化接口。
-pub(super) fn review_json(review: &Review) -> Value {
+/// 将可见复盘数据转换为工具使用的 JSON 证据，无需 LLM 配置或网络请求。
+/// 协议见 `docs/agent/agent.md`，与 `AgentSession::evidence` 使用同一份投影。
+pub fn review_evidence(review: &Review) -> Value {
     let position = &review.position;
     let players: Vec<_> = position
         .players

@@ -15,6 +15,9 @@ use crate::mahjong::{
 use crate::mortal::{Action, Decision, ModelInfo, Mortal, MortalConfig, MortalError};
 use crate::replay::replayer::{ReplayError, Replayer};
 
+mod game;
+pub use game::{DecisionPoint, GameReview, RecordedAction, review_game};
+
 /// 指定玩家在一个事件应用后的复盘结果，不包含对手暗牌或后续事件。
 #[derive(Debug)]
 pub struct Review {

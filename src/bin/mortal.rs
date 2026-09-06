@@ -74,7 +74,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         if args.event.is_none_or(|target| target == index) {
             if let Some(decision) = decision {
                 println!("\nG{index:03} after {}", format_event(event));
-                write_decision(io::stdout().lock(), decision)?;
+                write_decision(io::stdout().lock(), &decision)?;
                 decisions += 1;
             } else if args.event.is_some() {
                 println!(

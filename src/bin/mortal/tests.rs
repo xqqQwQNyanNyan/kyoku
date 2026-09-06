@@ -20,7 +20,7 @@ fn render(kan_candidates: Vec<KanCandidate>) -> String {
         at_furiten: None,
     };
     let mut output = Vec::new();
-    write_decision(&mut output, decision).unwrap();
+    write_decision(&mut output, &decision).unwrap();
     String::from_utf8(output).unwrap()
 }
 

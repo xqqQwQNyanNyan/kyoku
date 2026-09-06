@@ -99,7 +99,7 @@ fn message(text: &str) -> Value {
 
 #[test]
 fn evidence_preserves_sources_red_tiles_public_details_and_final_recommendation() {
-    let value = evidence::review_json(&review());
+    let value = review_evidence(&review());
     assert_eq!(value["schema_version"], 1);
     assert_eq!(value["position"]["concealed"], json!(["5mr", "5m"]));
     assert_eq!(value["position"]["dealer"], 1);
@@ -127,7 +127,7 @@ fn evidence_preserves_sources_red_tiles_public_details_and_final_recommendation(
     let mut none = review();
     none.decision = None;
     none.discards.clear();
-    assert!(evidence::review_json(&none)["mortal"]["decision"].is_null());
+    assert!(review_evidence(&none)["mortal"]["decision"].is_null());
 }
 
 #[test]
@@ -158,7 +158,7 @@ fn tool_rejects_unknown_names_and_nonempty_or_malformed_arguments() {
 
 #[test]
 fn first_answer_requires_evidence_and_followup_preserves_reasoning_and_history() {
-    let evidence = evidence::review_json(&review());
+    let evidence = review_evidence(&review());
     let reasoning =
         json!({"type": "reasoning", "id": "rs_test", "summary": [], "encrypted_content": "opaque"});
     let mut requests = 0;

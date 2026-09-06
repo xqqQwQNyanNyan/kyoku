@@ -39,7 +39,7 @@ Agent
 GUI
 ```
 
-目前已实现局面重建、确定性麻将分析、本地 Mortal 推理、单局面复盘汇总及命令行 Agent 问答；GUI 尚未接入。
+目前已实现局面重建、确定性麻将分析、本地 Mortal 推理、单局面复盘、整场决策浏览及命令行 Agent 问答；GUI 尚未接入。
 
 ### Mahjong core
 
@@ -165,24 +165,36 @@ Q 值混排。CLI 对单个杠牌种候选只显示主层 `Kan` 的 Q；多个�
 
 牌是否合法、当前状态是什么、某个确定性指标是多少，仍然由 Rust 这一层负责。
 
-### Single-position review
+### Review
 
 `review` 将同一事件后的玩家可见局面、切牌效率和 Mortal 判断汇总展示：
 
 ```bash
 cargo run --bin review -- --player 0 --event 2 fixtures/tenhou/ranked_game.json
 cargo run --bin review -- --player 1 --event 30 fixtures/tenhou/complex_nakis.json
+
+# 省略 --event，列出整场该玩家的行动机会。
+cargo run --bin review -- --player 0 fixtures/tenhou/ranked_game.json
 ```
 
 运行前按上面的 Mortal 说明准备本地环境。输入支持本地 Tenhou JSON 和标准输入 `-`，
-`--player` 与 `--event` 必填；事件编号与 `replay`、`mortal` 一致，表示事件应用后的局面。
+`--player` 必填；指定 `--event` 查看单局面，省略则列出整场决策。
+事件编号与 `replay`、`mortal` 一致，表示事件应用后的局面。
 支持相同的 `--python`、`--runtime`、`--model` 路径覆盖参数。
 
 程序接口为 `kyoku::review::review_at`，返回结构化 `Review`；命令行只负责格式化。
 结果包含自家暗牌、四家公开信息、Mortal 当前切牌候选的向听与进张、模型身份和原始判断，
 不暴露对手暗牌。不可见枚数不是实际牌山剩余枚数，完成牌形也不代表可以合法和牌。
 无行动机会仍返回局面；吃碰、和牌或跳过等决策保留 Mortal 输出，只有切牌候选附带牌效率。
-每次查询独立加载一次模型，暂不提供常驻复盘会话或自然语言解释。
+单局面查询 `review_at` 每次独立加载模型。整场接口 `review_game` 只启动一次 Mortal，
+按真实牌谱顺序推理，返回 `GameReview`；`decisions()` 列出行动机会，`at_event(N)`
+读取缓存的 `DecisionPoint`，切换时无需重新回放或计算。缓存仅存在当前进程内存中。
+
+列表包含局数、本场、自家手番、实际动作与 Mortal 最终推荐；手番按自家牌河长度加一
+计算，鸣牌响应标在下一次出牌手番，杠不单独增加手番。仅收录 Mortal 返回的行动机会，
+包含单候选和跳过，不做失误评分或排序。实际动作单独存放在 `DecisionPoint.actual`，
+不进入当时的 `Review` 证据；他家抢先鸣牌或和牌、流局原因不明及牌谱截断时，
+无法确认的选择明确标为“无法确定”，不当作跳过。
 
 接口和行为约定见 [`docs/review/review.md`](docs/review/review.md)，
 验证说明见 [`docs/review/review-tests.md`](docs/review/review-tests.md)。
@@ -204,11 +216,21 @@ cargo run --bin agent -- --player 0 --event 2 \
 
 # 不带 --question 就进入交互模式；同一局面只运行一次 Mortal。
 cargo run --bin agent -- --player 0 --event 2 fixtures/tenhou/ranked_game.json
+
+# 整场浏览：模型加载一次，切换局面使用缓存。
+cargo run --bin agent -- --player 0 --browse fixtures/tenhou/ranked_game.json
 ```
 
 交互中可以继续问“这就是牌山剩余枚数吗？”，输入 `/evidence` 查看原始 JSON 证据，
-输入 `/quit` 退出。`--question` 搭配 `--interactive` 可以先回答一问再继续交互。
+输入 `/quit` 退出。单局面交互中的 `/evidence` 同样无需 LLM 配置，问答时才创建会话。
+`--question` 搭配 `--interactive` 可以先回答一问再继续交互。
 牌谱从标准输入 `-` 读取时，只支持单次 `--question`。
+
+浏览模式先列出整场决策并选择第一项。用 `/select N` 按列表中的全局事件编号选择，
+`/next`、`/prev` 切换，`/show` 查看局面、牌效率和 Mortal 候选，`/list` 重看列表，
+直接输入问题即可问答。切换到其他局面会清空问答历史；切回也重新取证，不复用旧对话。
+越界或无效选择保留当前局面和问答。浏览、`/show` 和 `/evidence` 不需要 LLM 配置；
+仅问答需要按上面的说明配置服务。`--browse` 只接受文件，不能与 `--event` 或 `--question` 同用。
 
 默认官方地址使用 `OPENAI_API_KEY`。通过 `--endpoint` 或 `KYOKU_OPENAI_ENDPOINT`
 覆盖地址时，只读取独立的 `AGENT_API_KEY`，不会回退到 `OPENAI_API_KEY`；
@@ -221,7 +243,8 @@ LLM 服务收到问题、自家暗牌、公开信息、牌效率和 Mortal 判�
 
 回答要求区分【计算】【Mortal】【推测】，不能把 Q 值当成概率或编造推荐原因；
 这些是提示词约束，不保证每句解释都正确，具体数字可以用 `/evidence` 核对。
-当前只支持固定局面，不提供整场自动找错、局面切换或押退风险计算。
+每次问答仅使用当前选定局面的证据，不向 LLM 提供整场缓存、实际后续动作或其他局面的对话。
+当前不提供整场自动找错或押退风险计算。
 
 配置、工具协议和错误约定见 [`docs/agent/agent.md`](docs/agent/agent.md)，
 测试及人工验收见 [`docs/agent/agent-tests.md`](docs/agent/agent-tests.md)。
@@ -281,11 +304,11 @@ game log / external formats
 
 ## Current status
 
-目前包含麻将领域模型、真实牌谱 Replay、确定性麻将分析、本地 Mortal 推理、单局面复盘命令及 Agent 问答。
+目前包含麻将领域模型、真实牌谱 Replay、确定性麻将分析、本地 Mortal 推理、单局面复盘、整场决策浏览及 Agent 问答。
 `mortal` 可以获取指定玩家逐事件的模型建议，运行时不依赖 Kyoku 分析层；
 `review` 在指定事件上汇总可见局面、Kyoku 切牌分析和 Mortal 判断。
 分析层已支持向听、基础牌效率、役种判断和计分；`agent` 通过 Responses API
-调用固定局面工具并生成中文解释，支持追问。更丰富的工具编排及 GUI 尚未实现。
+调用当前选定局面的工具并生成中文解释，支持追问和在整场缓存间切换。更丰富的工具编排及 GUI 尚未实现。
 
 ## Roadmap
 

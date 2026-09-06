@@ -38,7 +38,175 @@ fn cli_keeps_mortal_and_llm_configuration_separate() {
     assert_eq!(args.question.as_deref(), Some("why"));
     assert!(args.interactive);
     assert_eq!(args.player.get_id(), 2);
-    assert_eq!(args.event, 12);
+    assert_eq!(args.event, Some(12));
+}
+
+#[test]
+fn browse_requires_a_file_and_keeps_single_position_options_exclusive() {
+    let args = parse("--player 0 --browse log").unwrap().unwrap();
+    assert!(args.browse);
+    assert!(args.event.is_none());
+    assert!(args.interactive);
+    for input in [
+        "--player 0 --browse -",
+        "--player 0 --browse --event 2 log",
+        "--player 0 --browse --question why log",
+    ] {
+        assert!(parse(input).is_err(), "{input}");
+    }
+}
+
+fn points() -> Vec<kyoku::review::DecisionPoint> {
+    [2, 12]
+        .into_iter()
+        .map(|event_index| {
+            let mut review = review();
+            review.event_index = event_index;
+            kyoku::review::DecisionPoint {
+                review,
+                turn: 1,
+                actual: kyoku::review::RecordedAction::Passed,
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn browsing_switches_cached_positions_without_llm_and_handles_invalid_commands() {
+    let mut output = Vec::new();
+    let mut diagnostics = Vec::new();
+    browse::conversation(&points(), None,
+        &b"/prev\n/select 12\n/next\n/select 999\n/select 2 extra\n/select\n/nope\n/show\n/prev\n/list\n/quit\nignored\n"[..],
+        &mut output, &mut diagnostics, false).unwrap();
+    let output = String::from_utf8(output).unwrap();
+    assert_eq!(output.matches("G002 after event").count(), 2);
+    assert_eq!(output.matches("G012 after event").count(), 2);
+    assert_eq!(output.matches("问答上下文已重置").count(), 2);
+    assert!(!output.contains("ignored"));
+    let diagnostics = String::from_utf8(diagnostics).unwrap();
+    assert_eq!(diagnostics.matches("边界").count(), 2);
+    assert_eq!(diagnostics.matches("当前局面保持不变").count(), 3);
+    assert!(diagnostics.contains("未知命令"));
+    let mut output = Vec::new();
+    browse::conversation(&[], None, &b"question"[..], &mut output, Vec::new(), false).unwrap();
+    assert!(
+        String::from_utf8(output)
+            .unwrap()
+            .contains("共 0 个行动机会")
+    );
+    browse::conversation(&points(), None, &b""[..], Vec::new(), Vec::new(), false).unwrap();
+}
+
+#[test]
+fn switching_rebuilds_tool_evidence_without_llm_configuration() {
+    let invalid = AgentConfig {
+        endpoint: "invalid",
+        model: "",
+        api_key: None,
+    };
+    for config in [None, Some(&invalid)] {
+        let mut output = Vec::new();
+        let mut diagnostics = Vec::new();
+        browse::conversation(
+            &points(),
+            config,
+            &b"/evidence\n/next\n/evidence\n/select 2\n/evidence\n/quit\n"[..],
+            &mut output,
+            &mut diagnostics,
+            false,
+        )
+        .unwrap();
+        let output = String::from_utf8(output).unwrap();
+        assert_eq!(output.matches("\"event_index\": 2,").count(), 2);
+        assert_eq!(output.matches("\"event_index\": 12,").count(), 1);
+        assert!(diagnostics.is_empty());
+    }
+}
+
+#[test]
+fn browse_questions_reset_history_on_switch_but_keep_it_on_invalid_selection() {
+    use serde_json::{Value, json};
+    use std::{
+        io::BufReader,
+        net::TcpListener,
+        thread,
+        time::{Duration, Instant},
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let endpoint = format!("http://{}/v1/responses", listener.local_addr().unwrap());
+    let handle = thread::spawn(move || {
+        let call = json!({"status":"completed","output":[{"type":"function_call","status":"completed","call_id":"a","name":"get_review","arguments":"{}"}]}).to_string();
+        let answer = json!({"status":"completed","output":[{"type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"answer"}]}]}).to_string();
+        let mut requests = Vec::<Value>::new();
+        // 首问两次请求，同局面追问一次；每次切换后的首问都重新取证。
+        for body in [&call, &answer, &answer, &call, &answer, &call, &answer] {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline, "等待浏览问答请求超时");
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("{error}"),
+                }
+            };
+            stream.set_nonblocking(false).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = BufReader::new(&mut stream);
+            let mut length = None;
+            loop {
+                let mut line = String::new();
+                assert_ne!(reader.read_line(&mut line).unwrap(), 0);
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some((name, value)) = line.split_once(':')
+                    && name.eq_ignore_ascii_case("content-length")
+                {
+                    length = Some(value.trim().parse::<usize>().unwrap());
+                }
+            }
+            let mut bytes = vec![0; length.unwrap()];
+            reader.read_exact(&mut bytes).unwrap();
+            requests.push(serde_json::from_slice(&bytes).unwrap());
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+        }
+        requests
+    });
+    let config = AgentConfig {
+        endpoint: &endpoint,
+        model: "test",
+        api_key: None,
+    };
+    browse::conversation(&points(), Some(&config),
+        &b"first-position-question\n/select 999\n/select 2\nfollow-up\n/next\nsecond-position-question\n/prev\nreturn-question\n/quit\n"[..],
+        Vec::new(), Vec::new(), false).unwrap();
+    let requests = handle.join().unwrap();
+    assert_eq!(requests[2]["tool_choice"], "auto");
+    assert!(requests[2].to_string().contains("first-position-question"));
+    for (first, second, event_index) in [(0, 1, 2), (3, 4, 12), (5, 6, 2)] {
+        assert_eq!(requests[first]["input"].as_array().unwrap().len(), 1);
+        assert_eq!(requests[first]["tool_choice"]["name"], "get_review");
+        let tool = requests[second]["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["type"] == "function_call_output")
+            .unwrap();
+        let evidence: Value = serde_json::from_str(tool["output"].as_str().unwrap()).unwrap();
+        assert_eq!(evidence["review"]["event_index"], event_index);
+        assert!(evidence["review"].get("actual").is_none());
+        assert!(
+            !requests[second]
+                .to_string()
+                .contains("second-position-question")
+                || event_index == 12
+        );
+    }
 }
 
 fn review() -> kyoku::review::Review {
@@ -80,33 +248,69 @@ fn review() -> kyoku::review::Review {
 }
 
 #[test]
-fn interactive_evidence_quit_and_eof_need_no_http_request() {
-    // 无服务监听；只查看证据和退出不应尝试联网。
-    let mut session = AgentSession::new(
-        &review(),
-        &AgentConfig {
-            endpoint: "http://127.0.0.1:1/v1/responses",
-            model: "test",
-            api_key: None,
-        },
-    )
-    .unwrap();
+fn interactive_evidence_quit_and_eof_need_no_llm_configuration() {
+    let review = review();
+    let invalid = AgentConfig {
+        endpoint: "invalid",
+        model: "",
+        api_key: None,
+    };
+    for config in [None, Some(&invalid)] {
+        let mut session = None;
+        let mut output = Vec::new();
+        let mut diagnostics = Vec::new();
+        conversation(
+            &review,
+            config,
+            &mut session,
+            &b"\n/evidence\n/quit\nignored\n"[..],
+            &mut output,
+            &mut diagnostics,
+            false,
+        )
+        .unwrap();
+        let evidence: serde_json::Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(evidence, review_evidence(&review));
+        assert!(diagnostics.is_empty());
+        assert!(session.is_none());
+        output.clear();
+        conversation(
+            &review,
+            config,
+            &mut session,
+            &b""[..],
+            &mut output,
+            &mut diagnostics,
+            false,
+        )
+        .unwrap();
+        assert!(output.is_empty());
+    }
+}
+
+#[test]
+fn missing_llm_configuration_blocks_questions_but_not_subsequent_evidence() {
+    let mut session = None;
     let mut output = Vec::new();
     let mut diagnostics = Vec::new();
     conversation(
+        &review(),
+        None,
         &mut session,
-        &b"\n/evidence\n/quit\nignored\n"[..],
+        &b"why\n/evidence\n/quit\n"[..],
         &mut output,
         &mut diagnostics,
         false,
     )
     .unwrap();
+    assert!(session.is_none());
+    assert!(
+        String::from_utf8(diagnostics)
+            .unwrap()
+            .contains("OPENAI_MODEL")
+    );
     let evidence: serde_json::Value = serde_json::from_slice(&output).unwrap();
     assert_eq!(evidence["event_index"], 2);
-    assert!(diagnostics.is_empty());
-    output.clear();
-    conversation(&mut session, &b""[..], &mut output, &mut diagnostics, false).unwrap();
-    assert!(output.is_empty());
 }
 
 #[test]

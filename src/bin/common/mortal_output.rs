@@ -3,21 +3,20 @@ use std::io::{self, Write};
 use kyoku::mortal::{Action, Decision};
 use kyoku::replay::inspector::format_event;
 
-pub(super) fn write_decision(mut output: impl Write, mut decision: Decision) -> io::Result<()> {
+pub(super) fn write_decision(mut output: impl Write, decision: &Decision) -> io::Result<()> {
     writeln!(output, "Mortal: {}", format_event(&decision.recommended))?;
     writeln!(
         output,
         "shanten={:?} furiten={:?}",
         decision.shanten, decision.at_furiten
     )?;
-    decision
-        .candidates
-        .sort_by(|a, b| b.q_value.total_cmp(&a.q_value));
+    let mut candidates: Vec<_> = decision.candidates.iter().collect();
+    candidates.sort_by(|a, b| b.q_value.total_cmp(&a.q_value));
     writeln!(
         output,
         "Candidates (raw Q, descending; final Mortal action above takes precedence):"
     )?;
-    for candidate in &decision.candidates {
+    for candidate in candidates {
         let label = match candidate.action {
             Action::Discard(tile) => {
                 // 领域与 convlog 的 37 种实体牌编码一致。
