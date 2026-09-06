@@ -96,10 +96,81 @@ async function load(bridge: Bridge) {
   await screen.findByLabelText('牌谱进度');
 }
 
+async function openChat() {
+  await userEvent.click(screen.getByRole('tab', { name: '一起复盘' }));
+}
+
 beforeEach(() => {
   Element.prototype.scrollTo = vi.fn();
 });
 afterEach(cleanup);
+
+describe('复盘工具标签', () => {
+  it('默认只显示分析，键盘切换标签不会推进回放', async () => {
+    await load(api());
+    expect(screen.getAllByRole('tabpanel')).toHaveLength(1);
+    expect(screen.getByRole('tabpanel', { name: '决策分析' })).toBeTruthy();
+    expect(screen.queryByRole('log', { name: '复盘对话' })).toBeNull();
+    const analysis = screen.getByRole('tab', { name: '决策分析' });
+    analysis.focus();
+    await userEvent.keyboard('{ArrowRight}');
+    expect(screen.getByRole('tab', { name: '一起复盘' }).getAttribute('aria-selected')).toBe(
+      'true',
+    );
+    expect(screen.getByRole('tabpanel', { name: '一起复盘' })).toBeTruthy();
+    expect(screen.getAllByRole('tabpanel')).toHaveLength(1);
+    expect((screen.getByLabelText('牌谱进度') as HTMLInputElement).value).toBe('0');
+    await userEvent.keyboard('{Home}');
+    expect(document.activeElement).toBe(analysis);
+    expect(screen.getByRole('tabpanel', { name: '决策分析' })).toBeTruthy();
+  });
+
+  it('切换标签保留分析、回答、草稿和阅读位置', async () => {
+    const bridge = api();
+    await load(bridge);
+    await userEvent.click(screen.getAllByRole('button', { name: '分析此玩家' })[0]);
+    await screen.findByRole('button', { name: '分析已完成' });
+    await userEvent.click(screen.getByRole('button', { name: '下一决策 ›' }));
+    await openChat();
+    await userEvent.click(screen.getByText('这里的几个选择差在哪里？'));
+    await screen.findByText('【计算】测试回答');
+    await userEvent.type(screen.getByLabelText('复盘问题'), '还没发送的问题');
+    const messages = screen.getByRole('log', { name: '复盘对话' });
+    messages.scrollTop = 120;
+    const scrollTo = vi.fn();
+    messages.scrollTo = scrollTo;
+    await userEvent.click(screen.getByRole('tab', { name: '决策分析' }));
+    expect(screen.queryByRole('log', { name: '复盘对话' })).toBeNull();
+    expect(screen.getByRole('tabpanel', { name: '决策分析' }).textContent).toContain('切 二万');
+    await openChat();
+    expect(screen.getByText('【计算】测试回答')).toBeTruthy();
+    expect((screen.getByLabelText('复盘问题') as HTMLTextAreaElement).value).toBe('还没发送的问题');
+    expect(messages.scrollTop).toBe(120);
+    expect(scrollTo).not.toHaveBeenCalled();
+    expect(bridge.analyze).toHaveBeenCalledOnce();
+    expect(bridge.ask).toHaveBeenCalledOnce();
+  });
+
+  it('后台收到回答后，打开聊天会滚动到新消息', async () => {
+    const bridge = api();
+    const pending = deferred<string>();
+    vi.mocked(bridge.ask).mockReturnValueOnce(pending.promise);
+    await load(bridge);
+    await userEvent.click(screen.getAllByRole('button', { name: '分析此玩家' })[0]);
+    await screen.findByRole('button', { name: '分析已完成' });
+    await userEvent.click(screen.getByRole('button', { name: '下一决策 ›' }));
+    await openChat();
+    await userEvent.click(screen.getByText('这里的几个选择差在哪里？'));
+    await userEvent.click(screen.getByRole('tab', { name: '决策分析' }));
+    const scrollTo = vi.mocked(Element.prototype.scrollTo);
+    scrollTo.mockClear();
+    await act(async () => pending.resolve('后台收到的回答'));
+    expect(scrollTo).not.toHaveBeenCalled();
+    await openChat();
+    expect(screen.getByText('后台收到的回答')).toBeTruthy();
+    expect(scrollTo).toHaveBeenCalledOnce();
+  });
+});
 
 describe('天凤链接导入', () => {
   const link = 'https://tenhou.net/0/?log=2023010100gm-00a9-0000-123456ab&tw=2';
@@ -146,6 +217,7 @@ describe('天凤链接导入', () => {
     await userEvent.click(screen.getAllByRole('button', { name: '分析此玩家' })[0]);
     await screen.findByRole('button', { name: '分析已完成' });
     await userEvent.click(screen.getByRole('button', { name: '下一决策 ›' }));
+    await openChat();
     await userEvent.click(screen.getByText('这里的几个选择差在哪里？'));
     await screen.findByText('【计算】测试回答');
     await userEvent.click(screen.getByRole('button', { name: '链接导入' }));
@@ -200,12 +272,14 @@ describe('完整回放与问答边界', () => {
     const scrollIntoView = vi.fn();
     Element.prototype.scrollIntoView = scrollIntoView;
     await load(api());
+    await openChat();
     const messages = screen.getByRole('log', { name: '复盘对话' });
     const scrollTo = vi.fn();
     messages.scrollTo = scrollTo;
     await userEvent.click(screen.getAllByRole('button', { name: '分析此玩家' })[0]);
     await screen.findByRole('button', { name: '分析已完成' });
     await userEvent.click(screen.getByRole('button', { name: '下一决策 ›' }));
+    await openChat();
     await userEvent.click(screen.getByText('这里的几个选择差在哪里？'));
     await screen.findByText('【计算】测试回答');
     expect(scrollTo).toHaveBeenCalledWith({ top: messages.scrollHeight, behavior: 'smooth' });
@@ -214,6 +288,7 @@ describe('完整回放与问答边界', () => {
 
   it('切换局面清空对话后，侧栏回到引导内容顶部', async () => {
     await load(api());
+    await openChat();
     const messages = screen.getByRole('log', { name: '复盘对话' });
     messages.scrollTop = 200;
     await userEvent.click(screen.getByLabelText('下一事件'));
@@ -236,6 +311,7 @@ describe('完整回放与问答边界', () => {
 
   it('无决策时说明提问前提，有决策时才提供快捷问题', async () => {
     await load(api());
+    await openChat();
     expect(screen.getByText('先分析牌谱，再选择一个决策点。')).toBeTruthy();
     expect(screen.queryByRole('button', { name: /这里的几个选择差在哪里/ })).toBeNull();
     await userEvent.click(screen.getAllByRole('button', { name: '分析此玩家' })[0]);
@@ -262,6 +338,7 @@ describe('完整回放与问答边界', () => {
     await screen.findByRole('button', { name: '分析已完成' });
     await userEvent.click(screen.getByRole('button', { name: '下一决策 ›' }));
     expect(document.querySelector('.recommendation strong')?.textContent).toBe('切 二万');
+    await openChat();
     const input = screen.getByLabelText('复盘问题');
     await userEvent.type(input, '比较一下');
     fireEvent.keyDown(input, { code: 'ArrowRight' });
@@ -276,6 +353,7 @@ describe('完整回放与问答边界', () => {
     await userEvent.click(screen.getAllByRole('button', { name: '分析此玩家' })[0]);
     await screen.findByRole('button', { name: '分析已完成' });
     await userEvent.click(screen.getByRole('button', { name: '下一决策 ›' }));
+    await openChat();
     await userEvent.click(screen.getByText('这里的几个选择差在哪里？'));
     await waitFor(() => expect(bridge.ask).toHaveBeenCalledOnce());
     const oldConversation = vi.mocked(bridge.ask).mock.calls[0][3];
@@ -285,6 +363,7 @@ describe('完整回放与问答边界', () => {
     });
     expect(screen.queryByText('不应该出现的旧回答')).toBeNull();
     await userEvent.click(screen.getByLabelText('上一事件'));
+    await openChat();
     await userEvent.click(screen.getByText('这里的几个选择差在哪里？'));
     await screen.findByText('【计算】测试回答');
     expect(vi.mocked(bridge.ask).mock.calls[1][3]).not.toBe(oldConversation);

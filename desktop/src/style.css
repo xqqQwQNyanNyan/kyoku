@@ -815,15 +815,46 @@ input[type='range'] {
 }
 .review-sidebar {
   display: grid;
-  grid-template-rows: minmax(0, 0.85fr) minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   min-height: 0;
   min-width: 0;
   border-left: 1px solid var(--line);
 }
+.review-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  padding: 10px 12px;
+  background: #121c19;
+  border-bottom: 1px solid var(--line);
+}
+.review-tabs button {
+  padding: 10px 8px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+}
+.review-tabs button[aria-selected='true'] {
+  background: #d5bc8614;
+  border-color: #d5bc8638;
+  color: var(--accent);
+}
+.review-tabpanel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+.review-tabpanel[hidden] {
+  display: none;
+}
+.review-tabpanel > section {
+  flex: 1;
+}
 .analysis-panel {
   min-height: 0;
   min-width: 0;
-  border-bottom: 1px solid var(--line);
   display: flex;
   flex-direction: column;
   background: #15211c;

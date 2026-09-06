@@ -10,9 +10,14 @@ import { useWindowScale } from './useWindowScale';
 
 type Message = { role: 'user' | 'assistant'; text: string };
 const roundsPerPage = 7;
+const reviewTabs = [
+  { id: 'analysis', label: '决策分析' },
+  { id: 'chat', label: '一起复盘' },
+] as const;
 
 export default function App({ api = bridge }: { api?: Bridge }) {
   const scale = useWindowScale();
+  const [reviewTab, setReviewTab] = useState<'analysis' | 'chat'>('analysis');
   const [roundPage, setRoundPage] = useState(0);
   const [replay, setReplay] = useState<Replay | null>(null);
   const [filename, setFilename] = useState('');
@@ -36,6 +41,7 @@ export default function App({ api = bridge }: { api?: Bridge }) {
   const [chatError, setChatError] = useState('');
   const fileInput = useRef<HTMLInputElement>(null);
   const chatEnd = useRef<HTMLDivElement>(null);
+  const chatNeedsScroll = useRef(false);
   const conversation = useRef(crypto.randomUUID());
   const documentId = useRef<number | null>(null);
   const analysisJob = useRef(0);
@@ -212,14 +218,19 @@ export default function App({ api = bridge }: { api?: Bridge }) {
   });
 
   useEffect(() => {
+    chatNeedsScroll.current = true;
+  }, [messages, asking]);
+
+  useEffect(() => {
     const container = chatEnd.current?.parentElement;
-    if (!container) return;
+    if (!container || reviewTab !== 'chat' || !chatNeedsScroll.current) return;
+    chatNeedsScroll.current = false;
     if (messages.length === 0 && !asking) {
       container.scrollTop = 0;
     } else {
       container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
     }
-  }, [messages, asking]);
+  }, [messages, asking, reviewTab]);
 
   const openFile = () => fileInput.current?.click();
 
@@ -548,132 +559,188 @@ export default function App({ api = bridge }: { api?: Bridge }) {
             </section>
           </div>
           <aside className="review-sidebar" aria-label="复盘工具">
-            <Analysis
-              decision={decision}
-              ready={!!points}
-              busy={analyzing !== null}
-              selected={selected}
-              onSelect={setSelected}
-              onAnalyze={() => void analyze()}
-            />
-            <section className="chat-panel" aria-label="局面问答">
-              <div className="chat-heading">
-                <span className="agent-icon">✧</span>
-                <div>
-                  <h2>一起复盘</h2>
-                  <p>
-                    {decision ? `${frame.round} · 第 ${decision.turn} 手` : '围绕当前决策展开讨论'}
-                  </p>
-                </div>
-                <span className="local-badge">Agent</span>
-              </div>
-              <div className="chat-context">
-                <span className="status-dot" />
-                <span>仅使用所选玩家当时可见的信息</span>
-              </div>
-              <div className="messages" role="log" aria-label="复盘对话" aria-live="polite">
-                {messages.length === 0 && (
-                  <div className="chat-welcome">
-                    <h3>这一步，你在想什么？</h3>
-                    <p>
-                      对比候选切牌，理解模型倾向，
-                      <br />
-                      也可以说说你当时的考虑。
-                    </p>
-                    {decision && (
-                      <>
-                        <button
-                          disabled={asking}
-                          onClick={() =>
-                            void ask('比较这里的候选切牌，说明向听、进张和 Mortal 的倾向。')
-                          }
-                        >
-                          这里的几个选择差在哪里？ <span>↗</span>
-                        </button>
-                        <button
-                          disabled={asking}
-                          onClick={() =>
-                            void ask('Mortal 推荐了什么？哪些结论有计算依据，哪些只能推测？')
-                          }
-                        >
-                          帮我读懂 Mortal 的推荐 <span>↗</span>
-                        </button>
-                      </>
-                    )}
-                    <small>
-                      {!points
-                        ? '先分析牌谱，再选择一个决策点。'
-                        : !decision
-                          ? '用「下一决策」前往可提问的局面。'
-                          : '回答会区分计算、Mortal 与推测。'}
-                    </small>
-                  </div>
-                )}
-                {messages.map((message, i) => (
-                  <div className={`message ${message.role}`} key={i}>
-                    <span className="message-author">
-                      {message.role === 'user' ? '你' : 'KYOKU'}
-                    </span>
-                    <ReactMarkdown
-                      components={{
-                        a: ({ children }) => <span>{children}</span>,
-                        img: ({ alt }) => <span>{alt}</span>,
-                      }}
-                    >
-                      {message.text}
-                    </ReactMarkdown>
-                  </div>
-                ))}
-                {asking && (
-                  <div className="thinking">
-                    <span className="status-dot" />
-                    {answerContext === conversation.current
-                      ? '正在生成回答…'
-                      : '上一局面的请求仍在结束，可以继续浏览。'}
-                  </div>
-                )}
-                {chatError && (
-                  <div role="alert" className="chat-error">
-                    {chatError}
-                  </div>
-                )}
-                <div ref={chatEnd} />
-              </div>
-              <form
-                className="composer"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  void ask(question);
-                }}
-              >
-                <textarea
-                  aria-label="复盘问题"
-                  placeholder={decision ? '问问这个局面…' : '选择一个决策点后提问…'}
-                  value={question}
-                  disabled={!decision || asking}
-                  onChange={(e) => setQuestion(e.target.value)}
-                  rows={2}
-                  onFocus={() => setPlaying(false)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-                      e.preventDefault();
-                      void ask(question);
+            <div className="review-tabs" role="tablist" aria-label="复盘工具切换">
+              {reviewTabs.map((tab, i) => (
+                <button
+                  key={tab.id}
+                  id={`review-tab-${tab.id}`}
+                  type="button"
+                  role="tab"
+                  aria-selected={reviewTab === tab.id}
+                  aria-controls={`review-panel-${tab.id}`}
+                  tabIndex={reviewTab === tab.id ? 0 : -1}
+                  onClick={() => setReviewTab(tab.id)}
+                  onKeyDown={(event) => {
+                    let next: number;
+                    switch (event.key) {
+                      case 'ArrowLeft':
+                        next = (i + reviewTabs.length - 1) % reviewTabs.length;
+                        break;
+                      case 'ArrowRight':
+                        next = (i + 1) % reviewTabs.length;
+                        break;
+                      case 'Home':
+                        next = 0;
+                        break;
+                      case 'End':
+                        next = reviewTabs.length - 1;
+                        break;
+                      default:
+                        return;
                     }
+                    event.preventDefault();
+                    setReviewTab(reviewTabs[next].id);
+                    document.getElementById(`review-tab-${reviewTabs[next].id}`)?.focus();
                   }}
-                />
-                <div>
-                  <small>Enter 发送 · Shift Enter 换行</small>
-                  <button
-                    aria-label="发送问题"
-                    type="submit"
-                    disabled={!decision || asking || !question.trim()}
-                  >
-                    ↑
-                  </button>
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+            <div
+              className="review-tabpanel"
+              role="tabpanel"
+              id="review-panel-analysis"
+              aria-labelledby="review-tab-analysis"
+              hidden={reviewTab !== 'analysis'}
+            >
+              <Analysis
+                decision={decision}
+                ready={!!points}
+                busy={analyzing !== null}
+                selected={selected}
+                onSelect={setSelected}
+                onAnalyze={() => void analyze()}
+              />
+            </div>
+            <div
+              className="review-tabpanel"
+              role="tabpanel"
+              id="review-panel-chat"
+              aria-labelledby="review-tab-chat"
+              hidden={reviewTab !== 'chat'}
+            >
+              <section className="chat-panel" aria-label="局面问答">
+                <div className="chat-heading">
+                  <span className="agent-icon">✧</span>
+                  <div>
+                    <h2>一起复盘</h2>
+                    <p>
+                      {decision
+                        ? `${frame.round} · 第 ${decision.turn} 手`
+                        : '围绕当前决策展开讨论'}
+                    </p>
+                  </div>
+                  <span className="local-badge">Agent</span>
                 </div>
-              </form>
-              <p className="chat-footnote">切换局面会清空问答。模型解释可通过原始证据核对。</p>
-            </section>
+                <div className="chat-context">
+                  <span className="status-dot" />
+                  <span>仅使用所选玩家当时可见的信息</span>
+                </div>
+                <div className="messages" role="log" aria-label="复盘对话" aria-live="polite">
+                  {messages.length === 0 && (
+                    <div className="chat-welcome">
+                      <h3>这一步，你在想什么？</h3>
+                      <p>
+                        对比候选切牌，理解模型倾向，
+                        <br />
+                        也可以说说你当时的考虑。
+                      </p>
+                      {decision && (
+                        <>
+                          <button
+                            disabled={asking}
+                            onClick={() =>
+                              void ask('比较这里的候选切牌，说明向听、进张和 Mortal 的倾向。')
+                            }
+                          >
+                            这里的几个选择差在哪里？ <span>↗</span>
+                          </button>
+                          <button
+                            disabled={asking}
+                            onClick={() =>
+                              void ask('Mortal 推荐了什么？哪些结论有计算依据，哪些只能推测？')
+                            }
+                          >
+                            帮我读懂 Mortal 的推荐 <span>↗</span>
+                          </button>
+                        </>
+                      )}
+                      <small>
+                        {!points
+                          ? '先分析牌谱，再选择一个决策点。'
+                          : !decision
+                            ? '用「下一决策」前往可提问的局面。'
+                            : '回答会区分计算、Mortal 与推测。'}
+                      </small>
+                    </div>
+                  )}
+                  {messages.map((message, i) => (
+                    <div className={`message ${message.role}`} key={i}>
+                      <span className="message-author">
+                        {message.role === 'user' ? '你' : 'KYOKU'}
+                      </span>
+                      <ReactMarkdown
+                        components={{
+                          a: ({ children }) => <span>{children}</span>,
+                          img: ({ alt }) => <span>{alt}</span>,
+                        }}
+                      >
+                        {message.text}
+                      </ReactMarkdown>
+                    </div>
+                  ))}
+                  {asking && (
+                    <div className="thinking">
+                      <span className="status-dot" />
+                      {answerContext === conversation.current
+                        ? '正在生成回答…'
+                        : '上一局面的请求仍在结束，可以继续浏览。'}
+                    </div>
+                  )}
+                  {chatError && (
+                    <div role="alert" className="chat-error">
+                      {chatError}
+                    </div>
+                  )}
+                  <div ref={chatEnd} />
+                </div>
+                <form
+                  className="composer"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    void ask(question);
+                  }}
+                >
+                  <textarea
+                    aria-label="复盘问题"
+                    placeholder={decision ? '问问这个局面…' : '选择一个决策点后提问…'}
+                    value={question}
+                    disabled={!decision || asking}
+                    onChange={(e) => setQuestion(e.target.value)}
+                    rows={2}
+                    onFocus={() => setPlaying(false)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                        e.preventDefault();
+                        void ask(question);
+                      }
+                    }}
+                  />
+                  <div>
+                    <small>Enter 发送 · Shift Enter 换行</small>
+                    <button
+                      aria-label="发送问题"
+                      type="submit"
+                      disabled={!decision || asking || !question.trim()}
+                    >
+                      ↑
+                    </button>
+                  </div>
+                </form>
+                <p className="chat-footnote">切换局面会清空问答。模型解释可通过原始证据核对。</p>
+              </section>
+            </div>
           </aside>
         </main>
       )}
