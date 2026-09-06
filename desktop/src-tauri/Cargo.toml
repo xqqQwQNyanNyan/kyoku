@@ -1,0 +1,19 @@
+[package]
+name = "kyoku-desktop"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+kyoku = { path = "../.." }
+convlog = { git = "https://github.com/Equim-chan/mjai-reviewer.git" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dotenvy = "0.15.7"
+tauri = { version = "2", features = [] }
