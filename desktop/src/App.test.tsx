@@ -97,7 +97,7 @@ async function load(bridge: Bridge) {
 }
 
 beforeEach(() => {
-  Element.prototype.scrollIntoView = vi.fn();
+  Element.prototype.scrollTo = vi.fn();
 });
 afterEach(cleanup);
 
@@ -168,6 +168,50 @@ describe('天凤链接导入', () => {
 });
 
 describe('完整回放与问答边界', () => {
+  it('长牌局列表可以翻页，回放跳转后自动显示当前牌局所在页', async () => {
+    const bridge = api();
+    vi.mocked(bridge.importLog).mockResolvedValueOnce({
+      ...replay,
+      rounds: Array.from({ length: 18 }, (_, i) => ({
+        label: `第 ${i + 1} 局 · 0 本场`,
+        frame_index: i,
+      })),
+      frames: Array.from({ length: 18 }, (_, i) => ({ ...first, event_index: i + 1 })),
+    });
+    await load(bridge);
+    expect(screen.getByRole('button', { name: /第 1 局/ })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /第 8 局/ })).toBeNull();
+    await userEvent.click(screen.getByLabelText('下一页牌局'));
+    await userEvent.click(screen.getByRole('button', { name: /第 8 局/ }));
+    expect((screen.getByLabelText('牌谱进度') as HTMLInputElement).value).toBe('7');
+    fireEvent.change(screen.getByLabelText('牌谱进度'), { target: { value: '17' } });
+    expect(screen.getByRole('button', { name: /第 18 局/ }).getAttribute('aria-current')).toBe(
+      'step',
+    );
+    expect((screen.getByLabelText('下一页牌局') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText('牌谱进度'), { target: { value: '0' } });
+    expect(screen.getByRole('button', { name: /第 1 局/ }).getAttribute('aria-current')).toBe(
+      'step',
+    );
+    expect((screen.getByLabelText('上一页牌局') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('新回答只滚动聊天记录，不调用会移动祖先容器的 scrollIntoView', async () => {
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    await load(api());
+    const messages = screen.getByRole('log', { name: '复盘对话' });
+    const scrollTo = vi.fn();
+    messages.scrollTo = scrollTo;
+    await userEvent.click(screen.getAllByRole('button', { name: '分析此玩家' })[0]);
+    await screen.findByRole('button', { name: '分析已完成' });
+    await userEvent.click(screen.getByRole('button', { name: '下一决策 ›' }));
+    await userEvent.click(screen.getByText('这里的几个选择差在哪里？'));
+    await screen.findByText('【计算】测试回答');
+    expect(scrollTo).toHaveBeenCalledWith({ top: messages.scrollHeight, behavior: 'smooth' });
+    expect(scrollIntoView).not.toHaveBeenCalled();
+  });
+
   it('切换局面清空对话后，侧栏回到引导内容顶部', async () => {
     await load(api());
     const messages = screen.getByRole('log', { name: '复盘对话' });

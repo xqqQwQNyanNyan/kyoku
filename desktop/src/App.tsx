@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import ReactMarkdown from 'react-markdown';
 import type { Bridge, Decision, Replay } from './types';
 import { bridge, errorMessage } from './bridge';
@@ -6,10 +6,14 @@ import { Board, eventText } from './Board';
 import { Analysis } from './Analysis';
 import { Tile } from './Tile';
 import { SettingsPanel } from './Settings';
+import { useWindowScale } from './useWindowScale';
 
 type Message = { role: 'user' | 'assistant'; text: string };
+const roundsPerPage = 7;
 
 export default function App({ api = bridge }: { api?: Bridge }) {
+  const scale = useWindowScale();
+  const [roundPage, setRoundPage] = useState(0);
   const [replay, setReplay] = useState<Replay | null>(null);
   const [filename, setFilename] = useState('');
   const [index, setIndex] = useState(0);
@@ -41,6 +45,10 @@ export default function App({ api = bridge }: { api?: Bridge }) {
   const points = decisions[player];
   const decision = frame ? points?.find((d) => d.event_index === frame.event_index) : undefined;
   const activeRound = replay?.rounds.findLastIndex((round) => round.frame_index <= index) ?? -1;
+
+  useEffect(() => {
+    setRoundPage(Math.floor(Math.max(0, activeRound) / roundsPerPage));
+  }, [activeRound, replay]);
 
   function resetConversation() {
     conversation.current = crypto.randomUUID();
@@ -204,11 +212,12 @@ export default function App({ api = bridge }: { api?: Bridge }) {
   });
 
   useEffect(() => {
+    const container = chatEnd.current?.parentElement;
+    if (!container) return;
     if (messages.length === 0 && !asking) {
-      const container = chatEnd.current?.parentElement;
-      if (container) container.scrollTop = 0;
+      container.scrollTop = 0;
     } else {
-      chatEnd.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
     }
   }, [messages, asking]);
 
@@ -217,6 +226,7 @@ export default function App({ api = bridge }: { api?: Bridge }) {
   return (
     <div
       className="app"
+      style={{ '--app-scale': scale } as CSSProperties}
       onDragOver={(event) => {
         event.preventDefault();
       }}
@@ -372,19 +382,45 @@ export default function App({ api = bridge }: { api?: Bridge }) {
               <span className="muted">{replay.rounds.length} 局</span>
             </div>
             <div className="round-list">
-              {replay.rounds.map((round, i) => (
-                <button
-                  key={i}
-                  className={activeRound === i ? 'active' : ''}
-                  aria-current={activeRound === i ? 'step' : undefined}
-                  onClick={() => jump(round.frame_index)}
-                >
-                  <span>{round.label.split(' · ')[0]}</span>
-                  <small>{round.label.split(' · ')[1]}</small>
-                  <span className="round-arrow">›</span>
-                </button>
-              ))}
+              {replay.rounds
+                .slice(roundPage * roundsPerPage, (roundPage + 1) * roundsPerPage)
+                .map((round, offset) => {
+                  const i = roundPage * roundsPerPage + offset;
+                  return (
+                    <button
+                      key={i}
+                      className={activeRound === i ? 'active' : ''}
+                      aria-current={activeRound === i ? 'step' : undefined}
+                      onClick={() => jump(round.frame_index)}
+                    >
+                      <span>{round.label.split(' · ')[0]}</span>
+                      <small>{round.label.split(' · ')[1]}</small>
+                      <span className="round-arrow">›</span>
+                    </button>
+                  );
+                })}
             </div>
+            {replay.rounds.length > roundsPerPage && (
+              <div className="round-pages" aria-label="牌局列表翻页">
+                <button
+                  aria-label="上一页牌局"
+                  disabled={roundPage === 0}
+                  onClick={() => setRoundPage(roundPage - 1)}
+                >
+                  ‹
+                </button>
+                <span>
+                  {roundPage + 1} / {Math.ceil(replay.rounds.length / roundsPerPage)}
+                </span>
+                <button
+                  aria-label="下一页牌局"
+                  disabled={(roundPage + 1) * roundsPerPage >= replay.rounds.length}
+                  onClick={() => setRoundPage(roundPage + 1)}
+                >
+                  ›
+                </button>
+              </div>
+            )}
             <div className="nav-footer">
               <span className="eyebrow">REVIEW</span>
               <strong>{replay.names[player]}</strong>
