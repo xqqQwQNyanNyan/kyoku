@@ -1,0 +1,23 @@
+{
+  "downloaded_on": "2026-09-06",
+  "models": [
+    {
+      "file": "mortal_298k.pth",
+      "source": "https://huggingface.co/VoidShine/mortal-298k",
+      "revision": "dbbea7e3d34f99ec43fc4834ab7f2aaaed70b6ee",
+      "download_url": "https://huggingface.co/VoidShine/mortal-298k/resolve/dbbea7e3d34f99ec43fc4834ab7f2aaaed70b6ee/mortal_298k.pth",
+      "sha256": "bfb3a6c072aa0bfd4171a9cdc77cb6c02ae42cde920843f9e5784394f23447d8",
+      "checksum_source": "Hugging Face model API LFS metadata",
+      "size_bytes": 130774416
+    },
+    {
+      "file": "model-c3-best.pth",
+      "source": "https://github.com/Mateces/c3/releases/tag/v1.0",
+      "revision": "v1.0",
+      "download_url": "https://github.com/Mateces/c3/releases/download/v1.0/model-c3-best.pth",
+      "sha256": "ce8ae0cc300c0d9f1833b76d5d73e7f423008338c8454c7a402543f5b6f913fe",
+      "checksum_source": "GitHub release asset SHA-256",
+      "size_bytes": 138731342
+    }
+  ]
+}
