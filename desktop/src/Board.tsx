@@ -1,4 +1,4 @@
-import type { CSSProperties } from 'react';
+import { Fragment } from 'react';
 import type { Frame, Meld } from './types';
 import { Tile, tileName } from './Tile';
 
@@ -49,6 +49,8 @@ function MeldTiles({ meld, player }: { meld: Meld; player: number }) {
   return (
     <span
       className="meld"
+      role="group"
+      aria-label={eventNames[meld.kind]}
       title={`${eventNames[meld.kind]}${meld.from === null ? '' : ` · 来自玩家 ${meld.from + 1}`}`}
     >
       {tiles.map((tile, i) => (
@@ -83,7 +85,6 @@ export function Board({
     <div className="board" aria-label="当前牌桌">
       <div className="board-grid" />
       <div className="table-center">
-        <span className="eyebrow">KYOKU</span>
         <strong>{frame.round}</strong>
         <span>
           {frame.honba} 本场 <i>·</i> 供托 {frame.riichi_sticks}
@@ -117,63 +118,67 @@ export function Board({
             hand.push(drawn);
           }
         }
+        const active = frame.active_player === index && !frame.settled;
         return (
-          <div
-            key={index}
-            className={`seat seat-${relative} ${frame.active_player === index && !frame.settled ? 'active' : ''}`}
-          >
-            <div className="seat-label">
-              <span className={`wind ${frame.dealer === index ? 'dealer' : ''}`}>
-                {['東', '南', '西', '北'][(index - frame.dealer + 4) % 4]}
-              </span>
-              <span className="player-name">{names[index]}</span>
-              <b>{seat.score.toLocaleString()}</b>
-              {seat.riichi && <span className="riichi-tag">立直</span>}
-            </div>
-            <div className="seat-hand">
-              <div className="hand" aria-label={`${names[index]}的手牌`}>
-                {hand.map((tile, i) => (
-                  <Tile
-                    key={i}
-                    tile={visible ? tile : '?'}
-                    small={relative !== 0}
-                    className={drawn && i === hand.length - 1 ? 'drawn' : ''}
-                    selected={visible && selected === tile}
-                    onClick={relative === 0 ? () => onSelect(tile) : undefined}
-                  />
-                ))}
+          <Fragment key={index}>
+            <div className={`seat seat-${relative}`}>
+              <div className={`seat-hand ${seat.melds.length ? 'has-melds' : ''}`}>
+                <div className="hand" aria-label={`${names[index]}的手牌`}>
+                  {hand.map((tile, i) => (
+                    <Tile
+                      key={i}
+                      tile={visible ? tile : '?'}
+                      small={relative !== 0}
+                      className={drawn && i === hand.length - 1 ? 'drawn' : ''}
+                      selected={visible && selected === tile}
+                      onClick={relative === 0 ? () => onSelect(tile) : undefined}
+                    />
+                  ))}
+                </div>
+                <div className="melds" aria-label={`${names[index]}的副露`}>
+                  {seat.melds.map((meld, i) => (
+                    <MeldTiles key={i} meld={meld} player={index} />
+                  ))}
+                </div>
               </div>
-              <div className="melds">
-                {seat.melds.map((meld, i) => (
-                  <MeldTiles key={i} meld={meld} player={index} />
+              <div className="river" aria-label={`${names[index]}的牌河`}>
+                {Array.from({ length: Math.ceil(seat.discards.length / 6) }, (_, row) => (
+                  <div className="river-row" key={row}>
+                    {seat.discards.slice(row * 6, row * 6 + 6).map((d, i) => (
+                      <span
+                        key={i}
+                        className={`discard ${d.called ? 'called' : ''} ${d.tsumogiri ? 'tsumogiri' : ''}`}
+                        title={`${tileName(d.tile)}${d.tsumogiri ? ' · 摸切' : ' · 手切'}${d.called ? ' · 已被鸣走' : ''}${d.riichi ? ' · 立直宣言牌' : ''}`}
+                      >
+                        <Tile
+                          tile={d.tile}
+                          small
+                          className={d.riichi ? 'sideways' : ''}
+                          selected={selected === d.tile}
+                        />
+                      </span>
+                    ))}
+                  </div>
                 ))}
               </div>
             </div>
             <div
-              className="river"
-              aria-label={`${names[index]}的牌河`}
-              style={
-                {
-                  '--river-rows': Math.max(3, Math.ceil(seat.discards.length / 6)),
-                } as CSSProperties
-              }
+              className={`seat-label seat-label-${relative} ${active ? 'active' : ''}`}
+              role="group"
+              aria-label={`${names[index]}的点况`}
             >
-              {seat.discards.map((d, i) => (
-                <span
-                  key={i}
-                  className={`discard ${d.called ? 'called' : ''}`}
-                  title={`${tileName(d.tile)}${d.tsumogiri ? ' · 摸切' : ' · 手切'}${d.called ? ' · 已被鸣走' : ''}${d.riichi ? ' · 立直宣言牌' : ''}`}
-                >
-                  <Tile
-                    tile={d.tile}
-                    small
-                    className={`${d.riichi ? 'sideways' : ''} ${d.tsumogiri ? 'tsumogiri' : ''}`}
-                    selected={selected === d.tile}
-                  />
+              <div className="seat-identity">
+                <span className={`wind ${frame.dealer === index ? 'dealer' : ''}`}>
+                  {['東', '南', '西', '北'][(index - frame.dealer + 4) % 4]}
                 </span>
-              ))}
+                {seat.riichi && <span className="riichi-tag">立直</span>}
+              </div>
+              <span className="player-name" title={names[index]}>
+                {names[index]}
+              </span>
+              <b>{seat.score.toLocaleString()}</b>
             </div>
-          </div>
+          </Fragment>
         );
       })}
     </div>

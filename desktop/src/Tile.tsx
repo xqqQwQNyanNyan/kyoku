@@ -27,7 +27,6 @@ const honorFaces: Record<string, string> = {
   P: 'Haku',
   F: 'Hatsu',
   C: 'Chun',
-  '?': 'Back',
 };
 const suits: Record<string, string> = { m: 'Man', p: 'Pin', s: 'Sou' };
 
@@ -50,7 +49,11 @@ export function Tile({
   onClick?: () => void;
   className?: string;
 }) {
-  const contents = <img src={tileFace(tile)} alt="" aria-hidden="true" draggable={false} />;
+  const contents = (
+    <span className="tile-face" aria-hidden="true">
+      {tile !== '?' && <img src={tileFace(tile)} alt="" draggable={false} />}
+    </span>
+  );
   const classes = `tile ${small ? 'small' : ''} ${tile === '?' ? 'back' : ''} ${selected ? 'selected' : ''} ${className}`;
   return onClick ? (
     <button

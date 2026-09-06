@@ -253,12 +253,8 @@ h2 {
   transform: rotate(-7deg);
 }
 .welcome-art .tile {
-  width: 58px;
-  height: 80px;
-  border-radius: 6px;
-  box-shadow:
-    0 5px #b3aa8b,
-    0 15px 30px #0004;
+  --tile-width: 58px;
+  --tile-height: 80px;
 }
 .welcome-art .tile:nth-child(2) {
   transform: translateY(-12px) rotate(10deg);
@@ -429,55 +425,48 @@ input[type='checkbox'] {
   accent-color: #b8c6a0;
 }
 .board {
+  /* 四杠加两张手牌、横牌和所有间隔共占 79.73cqw，始终放得进 80cqw 的单行。 */
+  --table-tile-width: 3.8cqw;
   position: relative;
   aspect-ratio: 1;
   /* 同时受可用宽高约束，牌桌始终保持正方形。 */
   width: min(100%, calc(100cqh - 56px));
   flex-shrink: 0;
   container-type: inline-size;
-  background: #1e3b31;
+  background: #23483d;
   border: 1px solid #82ae8c21;
-  border-radius: 12px;
-  box-shadow:
-    inset 0 0 65px #0c21184a,
-    0 8px 30px #0002;
+  border-radius: 8px;
 }
 .board-grid {
   position: absolute;
-  inset: 7%;
-  border: 1px solid #9db79f0a;
-  border-radius: 50%;
+  inset: 17%;
+  background: #19392f;
+  border-radius: 4px;
 }
 .table-center {
   position: absolute;
-  width: 26%;
-  height: 27%;
-  top: 36.5%;
-  left: 37%;
-  background: #162d26;
+  width: 20%;
+  height: 20%;
+  top: 40%;
+  left: 40%;
+  background: #23483d;
   border: 1px solid #85b69225;
   border-radius: 6px;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-direction: column;
-  gap: 4px;
+  gap: 0.35cqw;
   color: #b5c3ac;
-  box-shadow: 0 2px 8px #0002;
-}
-.table-center .eyebrow {
-  font-size: 7px;
-  letter-spacing: 0.3em;
-  color: #9ba58b;
 }
 .table-center strong {
   font-family: serif;
-  font-size: 4.1cqw;
+  font-size: 3.1cqw;
   font-weight: 500;
   color: #e2d7b9;
 }
-.table-center > span:not(.eyebrow) {
-  font-size: 1.8cqw;
+.table-center > span {
+  font-size: 1.45cqw;
   color: #aab39c;
 }
 .table-center i {
@@ -486,25 +475,25 @@ input[type='checkbox'] {
   margin: 0 3px;
 }
 .draw-counter {
-  font-size: 1.8cqw;
+  font-size: 1.45cqw;
   color: #a1b697;
 }
 .draw-counter b {
   font-family: ui-monospace, monospace;
-  font-size: 3cqw;
+  font-size: 2.4cqw;
   color: #d5d7b9;
   margin-right: 2px;
 }
 .dora {
   display: flex;
-  gap: 2px;
+  gap: 0.15cqw;
 }
 .dora .tile.small {
-  width: 3.3cqw;
-  height: 4.6cqw;
+  --tile-width: 2.7cqw;
+  --tile-height: 3.6cqw;
 }
 .table-center small {
-  font-size: 1.4cqw;
+  font-size: 1.2cqw;
   color: #7d9682;
 }
 .seat {
@@ -521,55 +510,72 @@ input[type='checkbox'] {
 .seat-3 {
   transform: rotate(90deg);
 }
-/* 牌河不再随手牌、副露的高度移动，四家共享固定的桌面区域。 */
+/* 四边只排一行，角落留白，避免相邻玩家的牌互相侵入。 */
 .seat-hand {
   position: absolute;
-  bottom: 5.8%;
-  left: 16%;
-  width: 68%;
+  bottom: 3%;
+  left: 10%;
+  width: 80%;
   display: flex;
   align-items: flex-end;
   justify-content: center;
-  gap: 1cqw;
+  gap: 1.5cqw;
   pointer-events: auto;
 }
-.seat-0 .seat-hand {
-  left: 6%;
-  width: 88%;
+.seat-hand.has-melds {
+  justify-content: space-between;
 }
+/* 点况放在牌河区域四角，独立于旋转的牌面，四家文字都保持正向。 */
 .seat-label {
   position: absolute;
-  bottom: 1%;
-  left: 20%;
-  width: 60%;
-  height: 3.6cqw;
-  pointer-events: auto;
+  width: 12%;
+  height: 9%;
   display: flex;
-  gap: 6px;
+  flex-direction: column;
   align-items: center;
+  justify-content: center;
+  gap: 0.25cqw;
   color: #b3c2b0;
-  font-size: 1.8cqw;
-  padding: 0 0.6cqw;
+  font-size: 1.7cqw;
+  padding: 0.4cqw;
+  border: 1px solid transparent;
   border-radius: 4px;
 }
-.seat.active .seat-label {
-  background: #d5bc8630;
-  box-shadow: inset 0 0 0 1px #d5bc8680;
+.seat-label-0 {
+  left: 69%;
+  top: 72%;
+}
+.seat-label-1 {
+  left: 69%;
+  top: 19%;
+}
+.seat-label-2 {
+  left: 19%;
+  top: 19%;
+}
+.seat-label-3 {
+  left: 19%;
+  top: 72%;
+}
+.seat-label.active {
+  background: #d5bc8618;
+  border-color: #d5bc8660;
   color: #eee4c9;
 }
-.seat-2 .seat-label {
-  /* 牌面保持对家朝向，点况文字面向阅读者。 */
-  transform: rotate(180deg);
+.seat-identity {
+  display: flex;
+  align-items: center;
+  gap: 0.4cqw;
 }
 .wind {
   display: inline-grid;
   place-items: center;
-  height: 3.3cqw;
-  width: 3.3cqw;
-  font-size: 2.1cqw;
+  height: 2.3cqw;
+  width: 2.3cqw;
+  font-size: 1.7cqw;
   background: #294236;
   color: #9cac91;
-  border-radius: 3px;
+  border-radius: 2px;
 }
 .wind.dealer {
   color: #dcc589;
@@ -579,101 +585,101 @@ input[type='checkbox'] {
   text-overflow: ellipsis;
   overflow: hidden;
   white-space: nowrap;
-  max-width: 37%;
+  max-width: 100%;
 }
 .seat-label b {
   font-family: ui-monospace, monospace;
-  font-size: 2.4cqw;
+  font-size: 2.1cqw;
   font-weight: 500;
-  margin-left: auto;
+  line-height: 1.1;
 }
 .riichi-tag {
   color: #ecc7b8;
-  background: #984b4433;
-  font-size: 1.6cqw;
-  padding: 2px 4px;
-  border-radius: 3px;
+  font-size: 1.5cqw;
 }
 .hand {
   display: flex;
+  flex-shrink: 0;
   justify-content: center;
-  gap: 0.15cqw;
+  gap: 0.12cqw;
 }
-.hand .tile {
-  width: 5.7cqw;
-  height: 7.9cqw;
-}
-.hand .tile.small {
-  width: 3.7cqw;
-  height: 5.15cqw;
+/* 手牌、副露、牌河始终等大；横牌只交换占位宽高，局面变化不会改变尺寸。 */
+.seat-hand .tile,
+.river .tile {
+  --tile-width: var(--table-tile-width);
+  --tile-height: calc(var(--table-tile-width) * 4 / 3);
 }
 .tile.drawn {
-  margin-left: 6px;
+  margin-left: 0.8cqw;
 }
 .melds {
   display: flex;
-  align-items: center;
-  gap: 1cqw;
+  flex-shrink: 0;
+  justify-content: flex-end;
+  align-items: flex-end;
+  gap: 0.8cqw;
 }
 .melds:empty {
   display: none;
 }
 .meld {
+  position: relative;
   display: inline-flex;
-  align-items: center;
-  gap: 1px;
+  flex-shrink: 0;
+  align-items: flex-end;
+  gap: 0.12cqw;
 }
 .meld-kind {
+  position: absolute;
+  bottom: -1.8cqw;
+  right: 0;
   font-size: 1.4cqw;
   color: #b9c1a2;
-  margin-left: 2px;
-}
-.meld .tile.small {
-  width: 3cqw;
-  height: 4.2cqw;
 }
 .river {
-  /* 长牌河在预留区域内缩放，不能侵入中央信息或手牌。 */
-  --river-tile-width: min(3.6cqw, calc((20cqw / var(--river-rows) - 0.3cqw) / 1.38));
   position: absolute;
-  top: 65%;
-  left: 36%;
+  top: 60.7%;
+  left: 40%;
   width: 26%;
-  display: grid;
-  grid-template-columns: repeat(6, var(--river-tile-width));
-  gap: 0.3cqw;
-  justify-content: center;
+  display: flex;
+  flex-direction: column;
+  gap: 0.08cqw;
   pointer-events: auto;
 }
-.river .tile.small {
-  width: var(--river-tile-width);
-  height: calc(var(--river-tile-width) * 1.38);
+.river-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.08cqw;
 }
 .discard {
-  display: grid;
-  place-items: center;
+  display: flex;
+  flex-shrink: 0;
 }
 .discard.called {
-  opacity: 0.3;
-  outline: 1px dashed #e2e0b5;
-  border-radius: 2px;
+  opacity: 0.25;
 }
 .tile {
+  --tile-width: 32px;
+  --tile-height: 44px;
+  position: relative;
   display: inline-flex;
-  align-items: center;
-  justify-content: center;
   flex-shrink: 0;
-  width: 32px;
-  height: 44px;
+  width: var(--tile-width);
+  height: var(--tile-height);
   padding: 0;
-  background: linear-gradient(145deg, #fffefa, #f2f0e7);
-  border: 1px solid #dedbd1;
-  border-radius: 3px;
-  box-shadow:
-    inset 0 1px 1px #fff,
-    0 2px #b9b4a3,
-    0 3px 3px #0004;
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
   vertical-align: middle;
+}
+.tile-face {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  background: #f4f2e9;
+  border: 1px solid #cccfc4;
+  border-radius: 2px;
+  overflow: hidden;
 }
 .tile img {
   display: block;
@@ -683,34 +689,43 @@ input[type='checkbox'] {
   pointer-events: none;
   user-select: none;
 }
-.tile.small {
-  width: 22px;
-  height: 30px;
-  border-radius: 2px;
+.tile:where(.small) {
+  --tile-width: 22px;
+  --tile-height: 30px;
 }
-.tile.back {
-  background: #e9b340;
-  border-color: #d0a044;
-  box-shadow:
-    inset 0 1px 1px #ffdc79,
-    0 2px #a58137,
-    0 3px 3px #0003;
+.tile.back .tile-face {
+  background: #48685c;
+  border-color: #799082;
 }
 .tile.sideways {
-  transform: rotate(90deg) scale(0.84);
+  width: var(--tile-height);
+  height: var(--tile-width);
 }
-.tile.tsumogiri {
-  opacity: 0.68;
+.tile.sideways .tile-face {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: var(--tile-width);
+  height: var(--tile-height);
+  transform: translate(-50%, -50%) rotate(90deg);
+}
+.discard.tsumogiri .tile-face {
+  background: #c6b798;
+  border-color: #b1a589;
 }
 .tile.selected {
   outline: 2px solid #e3bb68;
   outline-offset: 1px;
-  background: #f7e5b0;
+}
+.tile.selected .tile-face {
+  border-color: #e3bb68;
 }
 button.tile:hover:not(:disabled) {
-  background: #fff9e4;
-  border-color: #f4dba1;
-  transform: translateY(-3px);
+  background: transparent;
+}
+button.tile:hover:not(:disabled) .tile-face {
+  background: #fff4cc;
+  border-color: #e3bb68;
 }
 .table-caption {
   width: 100%;
@@ -727,10 +742,29 @@ button.tile:hover:not(:disabled) {
   text-overflow: ellipsis;
   overflow: hidden;
 }
-.table-caption .muted {
+.table-legend {
+  display: flex;
+  gap: 12px;
   font-size: 9px;
-  color: #688173;
+  color: #91a899;
   flex-shrink: 0;
+}
+.table-legend > span {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.table-legend i {
+  width: 7px;
+  height: 9px;
+  border-radius: 1px;
+}
+.legend-tsumogiri {
+  background: #c6b798;
+}
+.legend-called {
+  background: #f4f2e9;
+  opacity: 0.25;
 }
 .transport {
   padding: 4px 22px 8px;
@@ -904,8 +938,8 @@ tr.chosen {
   font-size: 11px;
 }
 .tile-action .tile.small {
-  width: 17px;
-  height: 24px;
+  --tile-width: 17px;
+  --tile-height: 24px;
 }
 .detail-line {
   color: #789080;

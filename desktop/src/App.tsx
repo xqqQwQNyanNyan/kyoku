@@ -468,7 +468,16 @@ export default function App({ api = bridge }: { api?: Bridge }) {
                   <span className="event-caption" data-testid="event-caption">
                     {eventText(frame, replay.names, player, reveal)}
                   </span>
-                  <span className="muted">半透明牌：摸切 · 虚线牌：已被鸣走</span>
+                  <span className="table-legend">
+                    <span>
+                      <i className="legend-tsumogiri" />
+                      摸切
+                    </span>
+                    <span>
+                      <i className="legend-called" />
+                      已被鸣走
+                    </span>
+                  </span>
                 </div>
               </section>
             </div>
