@@ -1,13 +1,17 @@
 use std::env;
 use std::error::Error;
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::path::PathBuf;
 
 use convlog::{tenhou::Log, tenhou_to_mjai};
 use kyoku::mahjong::player_index::PlayerIndex;
-use kyoku::mortal::{Action, Decision, Mortal, MortalConfig};
+use kyoku::mortal::{Mortal, MortalConfig};
 use kyoku::replay::{inspector::format_event, replayer::Replayer};
+
+#[path = "common/mortal_output.rs"]
+mod mortal_output;
+use mortal_output::write_decision;
 
 const USAGE: &str = "Usage: cargo run --bin mortal -- --player <0..3> [OPTIONS] <tenhou-json|->
 
@@ -88,56 +92,6 @@ fn run() -> Result<(), Box<dyn Error>> {
         "\n{decisions} decisions shown for P{}",
         args.player.get_id()
     );
-    Ok(())
-}
-
-fn write_decision(mut output: impl Write, mut decision: Decision) -> io::Result<()> {
-    writeln!(output, "Mortal: {}", format_event(&decision.recommended))?;
-    writeln!(
-        output,
-        "shanten={:?} furiten={:?}",
-        decision.shanten, decision.at_furiten
-    )?;
-    decision
-        .candidates
-        .sort_by(|a, b| b.q_value.total_cmp(&a.q_value));
-    writeln!(
-        output,
-        "Candidates (raw Q, descending; final Mortal action above takes precedence):"
-    )?;
-    for candidate in &decision.candidates {
-        let label = match candidate.action {
-            Action::Discard(tile) => {
-                // 领域与 convlog 的 37 种实体牌编码一致。
-                format!(
-                    "discard {}",
-                    convlog::Tile::try_from(tile.as_u8()).expect("valid domain tile")
-                )
-            }
-            Action::Kan if decision.kan_candidates.len() == 1 => {
-                let tile = convlog::Tile::try_from(decision.kan_candidates[0].tile.as_u8())
-                    .expect("valid domain tile kind");
-                // 候选只有牌种，不能据此区分暗杠和加杠。
-                format!("Kan {tile}")
-            }
-            action => format!("{action:?}"),
-        };
-        let source = if candidate.action == Action::Kan {
-            " (main)"
-        } else {
-            ""
-        };
-        writeln!(output, "  {label:<14} Q={:.5}{source}", candidate.q_value)?;
-    }
-    // 单候选不存在“杠哪个”的比较，展示主层评价即可。
-    if decision.kan_candidates.len() > 1 {
-        writeln!(output, "  Kan selection (separate evaluation):")?;
-        for candidate in &decision.kan_candidates {
-            let tile =
-                convlog::Tile::try_from(candidate.tile.as_u8()).expect("valid domain tile kind");
-            writeln!(output, "    {tile} Q={:.5}", candidate.q_value)?;
-        }
-    }
     Ok(())
 }
 

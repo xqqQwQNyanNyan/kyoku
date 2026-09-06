@@ -39,7 +39,7 @@ Agent
 GUI
 ```
 
-目前已实现局面重建、确定性麻将分析和本地 Mortal 推理；Agent 与 GUI 尚未接入。
+目前已实现局面重建、确定性麻将分析、本地 Mortal 推理和单局面复盘汇总；Agent 与 GUI 尚未接入。
 
 ### Mahjong core
 
@@ -165,6 +165,28 @@ Q 值混排。CLI 对单个杠牌种候选只显示主层 `Kan` 的 Q；多个�
 
 牌是否合法、当前状态是什么、某个确定性指标是多少，仍然由 Rust 这一层负责。
 
+### Single-position review
+
+`review` 将同一事件后的玩家可见局面、切牌效率和 Mortal 判断汇总展示：
+
+```bash
+cargo run --bin review -- --player 0 --event 2 fixtures/tenhou/ranked_game.json
+cargo run --bin review -- --player 1 --event 30 fixtures/tenhou/complex_nakis.json
+```
+
+运行前按上面的 Mortal 说明准备本地环境。输入支持本地 Tenhou JSON 和标准输入 `-`，
+`--player` 与 `--event` 必填；事件编号与 `replay`、`mortal` 一致，表示事件应用后的局面。
+支持相同的 `--python`、`--runtime`、`--model` 路径覆盖参数。
+
+程序接口为 `kyoku::review::review_at`，返回结构化 `Review`；命令行只负责格式化。
+结果包含自家暗牌、四家公开信息、Mortal 当前切牌候选的向听与进张、模型身份和原始判断，
+不暴露对手暗牌。不可见枚数不是实际牌山剩余枚数，完成牌形也不代表可以合法和牌。
+无行动机会仍返回局面；吃碰、和牌或跳过等决策保留 Mortal 输出，只有切牌候选附带牌效率。
+每次查询独立加载一次模型，暂不提供常驻复盘会话或自然语言解释。
+
+接口和行为约定见 [`docs/review/review.md`](docs/review/review.md)，
+验证说明见 [`docs/review/review-tests.md`](docs/review/review-tests.md)。
+
 ### Agent
 
 Agent 负责把这些工具组合起来。
@@ -222,8 +244,9 @@ game log / external formats
 
 ## Current status
 
-目前包含麻将领域模型、真实牌谱 Replay、确定性麻将分析和本地 Mortal 推理命令。
-当前可以从 Tenhou 牌谱获取指定玩家逐事件的模型建议，运行时不依赖 Kyoku 分析层。
+目前包含麻将领域模型、真实牌谱 Replay、确定性麻将分析、本地 Mortal 推理及单局面复盘命令。
+`mortal` 可以获取指定玩家逐事件的模型建议，运行时不依赖 Kyoku 分析层；
+`review` 在指定事件上汇总可见局面、Kyoku 切牌分析和 Mortal 判断。
 分析层已支持向听、基础牌效率、役种判断和计分；Agent 的工具编排、
 自然语言解释和 GUI 尚未实现。
 

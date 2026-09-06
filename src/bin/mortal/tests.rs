@@ -1,6 +1,6 @@
 use super::*;
 use kyoku::mahjong::tile::TileKind;
-use kyoku::mortal::{Candidate, KanCandidate};
+use kyoku::mortal::{Action, Candidate, Decision, KanCandidate};
 
 fn render(kan_candidates: Vec<KanCandidate>) -> String {
     let decision = Decision {
