@@ -39,7 +39,7 @@ Agent
 GUI
 ```
 
-现在首先在做最下面的基础：正确地表示并重建一局麻将。
+目前已实现局面重建、确定性麻将分析和本地 Mortal 推理；Agent 与 GUI 尚未接入。
 
 ### Mahjong core
 
@@ -110,7 +110,42 @@ cargo run --bin replay -- '<log-id>'
 
 ### Mortal
 
-Mortal 会作为一个外部的打法判断工具接入。
+Mortal 已作为独立的本地 Python 进程接入，当前支持四人 Mortal V4 的 CPU 推理。
+Rust 按顺序发送 mjai 事件，并获取推荐动作、候选动作 Q 值、引擎向听数及振听状态。
+对手起手牌和摸牌会遮蔽，后续仍沿真实牌谱推进，不自动执行模型建议。
+
+第一次使用需要 Python 3.11+（推荐 3.12）、Rust、Git 和 curl：
+
+```bash
+bash scripts/setup-mortal.sh /path/to/python3.12
+cargo run --bin mortal -- --player 0 --event 2 fixtures/tenhou/ranked_game.json
+cargo run --bin mortal -- --player 0 fixtures/tenhou/ranked_game.json
+```
+
+准备脚本将 Python 虚拟环境、固定版本的官方 Mortal 源码及模型放在根目录的
+`mortal/` 下，并编译 `libriichi`。这些本地依赖被 Git 忽略，目录说明和许可记录可提交；
+具体结构见 [`mortal/README.md`](mortal/README.md)。支持 macOS 和 Linux，需要联网下载依赖和约 125 MiB
+的模型。默认使用 [Yuchen1457/mortal-582500 社区四麻权重](https://huggingface.co/Yuchen1457/mortal-582500)，
+下载后校验 SHA-256；这不是 Mortal 官网的官方权重，不据此声称相同棋力。
+Mortal 源码与模型的许可及来源分别见[官方仓库](https://github.com/Equim-chan/Mortal)
+和模型发布页。
+
+`--player` 是整场不变的玩家索引 `0..3`；`--event` 与 `replay` 共用零基全局事件编号，
+表示该事件应用后的决策，之前的事件仍完整送入引擎。省略它则输出整场该玩家的判断。
+输入支持本地 Tenhou JSON 或标准输入 `-`；`--python`、`--runtime`、`--model` 可以
+覆盖默认路径。命令输出实际模型文件的 SHA-256，便于确认复盘使用了哪个模型。
+
+程序接口为 `kyoku::mortal::{Mortal, MortalConfig}`：`start` 加载一次模型，`react`
+逐事件返回 `Option<Decision>`，`finish` 关闭进程并检查退出状态。没有决策机会时返回
+`None`；主动跳过鸣牌则返回推荐动作为 `convlog::Event::None` 的 `Some(Decision)`。
+启动或响应超过 60 秒、进程提前退出、JSON 或动作掩码不合法时会返回错误，失败会话
+不可继续使用。调用方仍需用 Replay 校验输入事件；推理适配不代替领域状态机。
+
+Q 值是原始模型输出，不是概率或期望点数。杠牌种选择保留独立评价，不与主动作的
+Q 值混排。当前不计算整场评分、顺位预测或自动识别失误，也不依赖 GRP 权重。
+
+接口、事件协议和错误边界见 [`docs/mortal/mortal.md`](docs/mortal/mortal.md)，
+自动测试及真实模型验证见 [`docs/mortal/mortal-tests.md`](docs/mortal/mortal-tests.md)。
 
 它适合回答：
 
@@ -179,11 +214,10 @@ game log / external formats
 
 ## Current status
 
-项目目前主要集中在麻将领域模型和牌谱 Replay。
-
-基础状态模型已经开始成形，正在继续完善从 mjai 事件重建完整牌局的能力。
-
-在 Replay 能够通过真实牌谱稳定验证之后，再继续向麻将分析、Mortal 和 Agent 层推进。
+目前包含麻将领域模型、真实牌谱 Replay、确定性麻将分析和本地 Mortal 推理命令。
+当前可以从 Tenhou 牌谱获取指定玩家逐事件的模型建议，运行时不依赖 Kyoku 分析层。
+分析层已支持向听、基础牌效率、役种判断和计分；Agent 的工具编排、
+自然语言解释和 GUI 尚未实现。
 
 ## Roadmap
 

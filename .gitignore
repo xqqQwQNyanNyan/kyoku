@@ -23,5 +23,10 @@ Icon?
 .apdisk
 
 /tmp/
+# Mortal 的本地依赖与权重；目录内的说明和许可记录可以提交。
+/mortal/runtime/
+/mortal/.venv/
+/mortal/models/*.pth
+/mortal/models/*.part
 /docs/
 /fixtures/
