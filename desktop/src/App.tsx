@@ -8,6 +8,7 @@ import { Tile } from './Tile';
 import { SettingsPanel } from './Settings';
 import { useWindowScale } from './useWindowScale';
 import { ImportDialog } from './ImportDialog';
+import { Select } from './Select';
 
 type Message = { role: 'user' | 'assistant'; text: string };
 const roundsPerPage = 7;
@@ -276,20 +277,15 @@ export default function App({ api = bridge }: { api?: Bridge }) {
           )}
         </div>
         {replay && (
-          <label className="perspective">
-            复盘玩家{' '}
-            <select
-              aria-label="复盘玩家"
-              value={player}
-              onChange={(e) => changePlayer(Number(e.target.value))}
-            >
-              {replay.names.map((name, i) => (
-                <option key={i} value={i}>
-                  {name}
-                </option>
-              ))}
-            </select>
-          </label>
+          <div className="perspective">
+            <span>复盘玩家</span>
+            <Select
+              label="复盘玩家"
+              value={String(player)}
+              options={replay.names.map((name, i) => ({ value: String(i), label: name }))}
+              onChange={(value) => changePlayer(Number(value))}
+            />
+          </div>
         )}
         <button className="import-button" disabled={loading} onClick={openImport}>
           {loading ? '正在读取…' : '＋ 导入牌谱'}

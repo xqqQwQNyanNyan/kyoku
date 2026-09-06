@@ -181,6 +181,20 @@ describe('复盘工具标签', () => {
   });
 });
 
+describe('复盘玩家选择', () => {
+  it('键盘选择玩家不推进回放，确认后更新复盘视角', async () => {
+    await load(api());
+    const picker = screen.getByRole('combobox', { name: '复盘玩家' });
+    await userEvent.click(picker);
+    expect(screen.getByRole('option', { name: '自己' }).getAttribute('aria-selected')).toBe('true');
+    await userEvent.keyboard('{ArrowDown}{Enter}');
+    expect(picker.textContent).toContain('下家');
+    expect(screen.queryByRole('listbox')).toBeNull();
+    expect((screen.getByLabelText('牌谱进度') as HTMLInputElement).value).toBe('0');
+    expect(screen.getByRole('group', { name: '下家的点况' })).toBeTruthy();
+  });
+});
+
 describe('统一导入入口', () => {
   it('主页和顶栏打开同一个来源选择，关闭后保留当前牌谱', async () => {
     const bridge = api();
@@ -228,11 +242,12 @@ describe('统一导入入口', () => {
     await userEvent.click(screen.getByRole('button', { name: '＋ 导入牌谱' }));
     await userEvent.click(screen.getByRole('button', { name: /示例牌谱/ }));
     const select = screen.getByRole('combobox', { name: '选择示例牌谱' });
+    await userEvent.click(select);
     expect(screen.getAllByRole('option')).toHaveLength(21);
-    await userEvent.selectOptions(select, 'rinshan.json');
+    await userEvent.click(screen.getByRole('option', { name: '岭上摸牌' }));
     await userEvent.click(screen.getByRole('button', { name: '导入示例' }));
     await screen.findByRole('alert');
-    expect((select as HTMLSelectElement).value).toBe('rinshan.json');
+    expect(select.textContent).toContain('岭上摸牌');
     expect(screen.getByRole('dialog')).toBeTruthy();
     expect(bridge.importLink).not.toHaveBeenCalled();
     await userEvent.click(screen.getByRole('button', { name: '导入示例' }));
@@ -244,10 +259,8 @@ describe('统一导入入口', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
     await userEvent.click(screen.getByRole('button', { name: '＋ 导入牌谱' }));
     await userEvent.click(screen.getByRole('button', { name: /示例牌谱/ }));
-    await userEvent.selectOptions(
-      screen.getByRole('combobox', { name: '选择示例牌谱' }),
-      'double_ron.json',
-    );
+    await userEvent.click(screen.getByRole('combobox', { name: '选择示例牌谱' }));
+    await userEvent.click(screen.getByRole('option', { name: '双响' }));
     await userEvent.click(screen.getByRole('button', { name: '导入示例' }));
     await screen.findByText('double_ron.json');
     expect(bridge.importLog).toHaveBeenLastCalledWith(

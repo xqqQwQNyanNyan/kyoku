@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { examples } from './examples';
+import { Select } from './Select';
 import exampleLicense from '../../fixtures/tenhou/LICENSE?url';
 
 export function ImportDialog({
@@ -117,19 +118,19 @@ export function ImportDialog({
           }}
         >
           <label htmlFor="example-log">选择示例牌谱</label>
-          <select
+          <Select
             id="example-log"
+            label="选择示例牌谱"
             autoFocus
             value={exampleName}
             disabled={busy}
-            onChange={(event) => setExampleName(event.target.value)}
-          >
-            {examples.map((item) => (
-              <option key={item.filename} value={item.filename}>
-                {item.title}（{item.filename}）
-              </option>
-            ))}
-          </select>
+            options={examples.map((item) => ({
+              value: item.filename,
+              label: item.title,
+              description: item.filename,
+            }))}
+            onChange={setExampleName}
+          />
           <div className="import-actions">
             <small>共 {examples.length} 份样本，部分仅含一局或数局。</small>
             <button className="primary" type="submit" disabled={busy || !example}>
