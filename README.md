@@ -39,7 +39,7 @@ Agent
 GUI
 ```
 
-目前已实现局面重建、确定性麻将分析、本地 Mortal 推理和单局面复盘汇总；Agent 与 GUI 尚未接入。
+目前已实现局面重建、确定性麻将分析、本地 Mortal 推理、单局面复盘汇总及命令行 Agent 问答；GUI 尚未接入。
 
 ### Mahjong core
 
@@ -189,7 +189,44 @@ cargo run --bin review -- --player 1 --event 30 fixtures/tenhou/complex_nakis.js
 
 ### Agent
 
-Agent 负责把这些工具组合起来。
+`agent` 已接入 OpenAI Responses API，可以围绕指定局面提问和追问。
+先按 Mortal 的说明准备本地环境。`agent` 自动读取当前工作目录的 `.env`；
+在项目根目录把 `.env.example` 复制为 `.env`，填写服务地址、模型名和密钥即可。
+中转站使用 `KYOKU_OPENAI_ENDPOINT`、`OPENAI_MODEL`、`AGENT_API_KEY`；
+官方服务省略地址覆盖，使用 `OPENAI_MODEL` 和 `OPENAI_API_KEY`。
+模型须支持 Responses 工具调用。配置优先级为命令行参数、已有环境变量、`.env`；
+`.env` 已被 Git 忽略，示例文件不含真实密钥。
+
+```bash
+cargo run --bin agent -- --player 0 --event 2 \
+  --question '比较这里的候选切牌，说明向听、进张和 Mortal 的倾向。' \
+  fixtures/tenhou/ranked_game.json
+
+# 不带 --question 就进入交互模式；同一局面只运行一次 Mortal。
+cargo run --bin agent -- --player 0 --event 2 fixtures/tenhou/ranked_game.json
+```
+
+交互中可以继续问“这就是牌山剩余枚数吗？”，输入 `/evidence` 查看原始 JSON 证据，
+输入 `/quit` 退出。`--question` 搭配 `--interactive` 可以先回答一问再继续交互。
+牌谱从标准输入 `-` 读取时，只支持单次 `--question`。
+
+默认官方地址使用 `OPENAI_API_KEY`。通过 `--endpoint` 或 `KYOKU_OPENAI_ENDPOINT`
+覆盖地址时，只读取独立的 `AGENT_API_KEY`，不会回退到 `OPENAI_API_KEY`；
+本地无认证服务可不设置 `AGENT_API_KEY`，自定义远程服务则需设置。
+
+首次回答前必须通过 `get_review` 工具取得当前局面的证据；追问复用这份证据及对话历史。
+LLM 服务收到问题、自家暗牌、公开信息、牌效率和 Mortal 判断，不会收到完整牌谱、
+对手暗牌或未来事件。会话仅保存在本地进程内存中，请求使用 `store: false`；这不等于
+服务商承诺零数据留存。不要将密钥写进命令行参数或提交到仓库。
+
+回答要求区分【计算】【Mortal】【推测】，不能把 Q 值当成概率或编造推荐原因；
+这些是提示词约束，不保证每句解释都正确，具体数字可以用 `/evidence` 核对。
+当前只支持固定局面，不提供整场自动找错、局面切换或押退风险计算。
+
+配置、工具协议和错误约定见 [`docs/agent/agent.md`](docs/agent/agent.md)，
+测试及人工验收见 [`docs/agent/agent-tests.md`](docs/agent/agent-tests.md)。
+
+Agent 负责把这些工具组合起来，后续会逐步扩展工具编排能力。
 
 例如用户问：
 
@@ -244,11 +281,11 @@ game log / external formats
 
 ## Current status
 
-目前包含麻将领域模型、真实牌谱 Replay、确定性麻将分析、本地 Mortal 推理及单局面复盘命令。
+目前包含麻将领域模型、真实牌谱 Replay、确定性麻将分析、本地 Mortal 推理、单局面复盘命令及 Agent 问答。
 `mortal` 可以获取指定玩家逐事件的模型建议，运行时不依赖 Kyoku 分析层；
 `review` 在指定事件上汇总可见局面、Kyoku 切牌分析和 Mortal 判断。
-分析层已支持向听、基础牌效率、役种判断和计分；Agent 的工具编排、
-自然语言解释和 GUI 尚未实现。
+分析层已支持向听、基础牌效率、役种判断和计分；`agent` 通过 Responses API
+调用固定局面工具并生成中文解释，支持追问。更丰富的工具编排及 GUI 尚未实现。
 
 ## Roadmap
 
