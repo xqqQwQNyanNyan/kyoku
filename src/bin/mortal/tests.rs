@@ -1,6 +1,6 @@
 use super::*;
 use kyoku::mahjong::tile::TileKind;
-use kyoku::mortal::{Candidate, KanCandidate};
+use kyoku::mortal::{Action, Candidate, Decision, KanCandidate};
 
 fn render(kan_candidates: Vec<KanCandidate>) -> String {
     let decision = Decision {
@@ -20,7 +20,7 @@ fn render(kan_candidates: Vec<KanCandidate>) -> String {
         at_furiten: None,
     };
     let mut output = Vec::new();
-    write_decision(&mut output, decision).unwrap();
+    write_decision(&mut output, &decision).unwrap();
     String::from_utf8(output).unwrap()
 }
 

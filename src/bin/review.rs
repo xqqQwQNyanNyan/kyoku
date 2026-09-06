@@ -6,20 +6,25 @@ use std::path::PathBuf;
 
 use convlog::{tenhou::Log, tenhou_to_mjai};
 use kyoku::mahjong::player_index::PlayerIndex;
-use kyoku::mortal::{Mortal, MortalConfig};
-use kyoku::replay::{inspector::format_event, replayer::Replayer};
+use kyoku::mortal::MortalConfig;
+use kyoku::review::{review_at, review_game};
+use review_output::write_review;
 
+#[path = "common/decision_output.rs"]
+mod decision_output;
 #[path = "common/mortal_output.rs"]
 mod mortal_output;
-use mortal_output::write_decision;
+#[path = "common/review_output.rs"]
+mod review_output;
 
-const USAGE: &str = "Usage: cargo run --bin mortal -- --player <0..3> [OPTIONS] <tenhou-json|->
+const USAGE: &str =
+    "Usage: cargo run --bin review -- --player <0..3> [--event N] [OPTIONS] <tenhou-json|->
 
-Replay a four-player Tenhou log and print Mortal decisions after each event.
+Review the visible position, discard efficiency and Mortal decision after event N.
+Without --event, list every decision in the game.
 Event indices are zero-based, matching the replay command.
 
 Options:
-  --event N          evaluate only the decision after event N (replay all earlier events)
   --python PATH      Python with torch/numpy (default: mortal/.venv/bin/python)
   --runtime PATH     compiled official Mortal checkout (default: mortal/runtime)
   --model PATH       V4 checkpoint (default: mortal/models/mortal_582500.pth)
@@ -28,7 +33,7 @@ Options:
 
 fn main() {
     if let Err(error) = run() {
-        eprintln!("mortal: {error}");
+        eprintln!("review: {error}");
         std::process::exit(1);
     }
 }
@@ -45,53 +50,20 @@ fn run() -> Result<(), Box<dyn Error>> {
     } else {
         fs::read_to_string(&args.input)?
     };
-    let log = Log::from_json_str(&json)?;
-    let events = tenhou_to_mjai(&log)?;
-    if args.event.is_some_and(|index| index >= events.len()) {
-        return Err("--event is outside the event log".into());
-    }
+    let events = tenhou_to_mjai(&Log::from_json_str(&json)?)?;
     let config = MortalConfig {
         python: &args.python,
         runtime: &args.runtime,
         checkpoint: &args.model,
     };
-    let mut mortal = Mortal::start(&config, args.player)?;
-    println!(
-        "Model: {} (V{}, sha256={})",
-        mortal.model().tag,
-        mortal.model().version,
-        mortal.model().sha256
-    );
-    let mut replayer = Replayer::new();
-    let mut decisions = 0;
-    for (index, event) in events.iter().enumerate() {
-        replayer
-            .apply(event)
-            .map_err(|error| format!("replay at G{index:03}: {error}"))?;
-        let decision = mortal
-            .react(event)
-            .map_err(|error| format!("inference at G{index:03}: {error}"))?;
-        if args.event.is_none_or(|target| target == index) {
-            if let Some(decision) = decision {
-                println!("\nG{index:03} after {}", format_event(event));
-                write_decision(io::stdout().lock(), &decision)?;
-                decisions += 1;
-            } else if args.event.is_some() {
-                println!(
-                    "G{index:03}: no decision opportunity for P{}",
-                    args.player.get_id()
-                );
-            }
-        }
-        if args.event == Some(index) {
-            break;
-        }
+    if let Some(event) = args.event {
+        let review = review_at(&events, args.player, event, &config)?;
+        write_review(io::stdout().lock(), &review)?;
+    } else {
+        eprintln!("正在推理整场牌谱，模型只加载一次…");
+        let game = review_game(&events, args.player, &config)?;
+        decision_output::write_decisions(io::stdout().lock(), game.decisions())?;
     }
-    mortal.finish()?;
-    println!(
-        "\n{decisions} decisions shown for P{}",
-        args.player.get_id()
-    );
     Ok(())
 }
 
@@ -103,10 +75,6 @@ struct Args {
     model: PathBuf,
     input: String,
 }
-
-#[cfg(test)]
-#[path = "mortal/tests.rs"]
-mod tests;
 
 impl Args {
     fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Option<Self>, Box<dyn Error>> {
@@ -150,3 +118,7 @@ impl Args {
         }))
     }
 }
+
+#[cfg(test)]
+#[path = "review/tests.rs"]
+mod tests;
