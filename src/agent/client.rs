@@ -136,3 +136,20 @@ fn transport(error: ureq::Error) -> AgentError {
         },
     }
 }
+
+pub(super) fn validate_chat_history(message: Value) -> Result<Vec<Value>, AgentError> {
+    let finish = if message["tool_calls"]
+        .as_array()
+        .is_some_and(|c| !c.is_empty())
+    {
+        "tool_calls"
+    } else {
+        "stop"
+    };
+    let normalized =
+        chat::response(json!({"choices": [{"finish_reason": finish, "message": message}]}))?;
+    normalized["output"]
+        .as_array()
+        .cloned()
+        .ok_or(invalid("missing chat output"))
+}

@@ -3,6 +3,7 @@
 mod config;
 mod log_link;
 mod replay;
+mod sessions;
 mod settings;
 
 use convlog::Event;
@@ -60,12 +61,6 @@ struct Game {
     id: u64,
     events: Vec<Event>,
     reviews: Mutex<[Option<Arc<GameReview>>; 4]>,
-    conversation: Mutex<Option<Conversation>>,
-}
-
-struct Conversation {
-    key: (u8, usize, String),
-    session: AgentSession,
 }
 
 impl Desktop {
@@ -120,7 +115,6 @@ fn finish_import(
         id,
         events,
         reviews: Mutex::new(std::array::from_fn(|_| None)),
-        conversation: Mutex::new(None),
     }));
     Ok(Imported { id, data })
 }
@@ -189,6 +183,7 @@ struct Question {
     event_index: usize,
     conversation_id: String,
     text: String,
+    context_label: String,
 }
 
 #[tauri::command]
@@ -196,7 +191,7 @@ async fn ask(
     question: Question,
     state: tauri::State<'_, Desktop>,
     app: tauri::AppHandle,
-) -> Result<String, UiError> {
+) -> Result<sessions::SessionView, UiError> {
     PlayerIndex::try_from(question.player)
         .map_err(|_| UiError::new("player", "玩家编号必须为 0..3"))?;
     if question.conversation_id.is_empty() || question.conversation_id.len() > 128 {
@@ -213,32 +208,78 @@ async fn ask(
         let point = review
             .at_event(question.event_index)
             .ok_or_else(|| UiError::new("no_decision", "请切换到该玩家的决策点再提问"))?;
-        let key = (
-            question.player,
-            question.event_index,
-            question.conversation_id,
-        );
-        let mut conversation = game
-            .conversation
-            .try_lock()
-            .map_err(|_| UiError::new("busy", "上一条回答仍在生成，请稍候重试"))?;
-        if conversation.as_ref().is_none_or(|c| c.key != key) {
-            let config = app.state::<settings::SettingsStore>().load()?;
-            // 只从 Review 建立证据；完整回放与实际后续动作不会交给 Agent。
-            let session = AgentSession::new(&point.review, &config.borrowed())
-                .map_err(|error| UiError::new("agent", error.to_string()))?;
-            *conversation = Some(Conversation { key, session });
-        }
-        match conversation.as_mut() {
-            Some(c) => c
-                .session
-                .ask(&question.text)
-                .map_err(|error| UiError::new("agent", error.to_string())),
-            None => Err(UiError::new("state", "问答会话未建立")),
-        }
+        let config = app.state::<settings::SettingsStore>().load()?;
+        let session = AgentSession::new(&point.review, &config.borrowed())
+            .map_err(|error| UiError::new("agent", error.to_string()))?;
+        let store = app.state::<sessions::SessionStore>();
+        store.create(
+            &question.conversation_id,
+            question.context_label,
+            session.archive().clone(),
+        )?;
+        store.ask(
+            &question.conversation_id,
+            &question.text,
+            &config.borrowed(),
+        )
     })
     .await
     .map_err(|_| UiError::new("task", "问答任务异常结束"))?
+}
+
+#[tauri::command]
+async fn list_sessions(app: tauri::AppHandle) -> Result<sessions::SessionList, UiError> {
+    tauri::async_runtime::spawn_blocking(move || app.state::<sessions::SessionStore>().list())
+        .await
+        .map_err(|_| UiError::new("task", "读取历史会话任务异常结束"))?
+}
+
+#[tauri::command]
+async fn get_session(id: String, app: tauri::AppHandle) -> Result<sessions::SessionView, UiError> {
+    tauri::async_runtime::spawn_blocking(move || app.state::<sessions::SessionStore>().get(&id))
+        .await
+        .map_err(|_| UiError::new("task", "读取会话任务异常结束"))?
+}
+
+#[tauri::command]
+async fn continue_session(
+    id: String,
+    text: String,
+    app: tauri::AppHandle,
+) -> Result<sessions::SessionView, UiError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let config = app.state::<settings::SettingsStore>().load()?;
+        app.state::<sessions::SessionStore>()
+            .ask(&id, &text, &config.borrowed())
+    })
+    .await
+    .map_err(|_| UiError::new("task", "问答任务异常结束；问题已保存在历史会话中"))?
+}
+
+#[tauri::command]
+async fn import_session(
+    json: String,
+    app: tauri::AppHandle,
+) -> Result<sessions::SessionView, UiError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<sessions::SessionStore>().import(&json)
+    })
+    .await
+    .map_err(|_| UiError::new("task", "导入会话任务异常结束"))?
+}
+
+#[tauri::command]
+async fn export_session(id: String, app: tauri::AppHandle) -> Result<String, UiError> {
+    let directory = app
+        .path()
+        .download_dir()
+        .map_err(|_| UiError::new("session_io", "无法定位下载目录"))?;
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<sessions::SessionStore>()
+            .export(&id, &directory)
+    })
+    .await
+    .map_err(|_| UiError::new("task", "导出会话任务异常结束"))?
 }
 
 #[tauri::command]
@@ -318,6 +359,9 @@ fn main() {
                 app.path().app_config_dir()?,
                 config::development_home(),
             ));
+            app.manage(sessions::SessionStore::new(
+                app.path().app_data_dir()?.join("sessions"),
+            ));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -325,6 +369,11 @@ fn main() {
             import_link,
             analyze_game,
             ask,
+            list_sessions,
+            get_session,
+            continue_session,
+            import_session,
+            export_session,
             get_settings,
             save_settings,
             test_connection,
@@ -347,7 +396,6 @@ mod tests {
             id: 2,
             events: Vec::new(),
             reviews: Mutex::new(std::array::from_fn(|_| None)),
-            conversation: Mutex::new(None),
         }));
         assert_eq!(state.game(1).err().unwrap().code, "stale_game");
         assert_eq!(state.game(2).unwrap().id, 2);

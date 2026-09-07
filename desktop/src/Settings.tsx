@@ -2,15 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { errorMessage } from './bridge';
 import type { Bridge, RuntimeStatus, Settings, SettingsInput } from './types';
 
-export function SettingsPanel({
-  api,
-  onClose,
-  onSaved,
-}: {
-  api: Bridge;
-  onClose: () => void;
-  onSaved: () => void;
-}) {
+export function SettingsPanel({ api, onClose }: { api: Bridge; onClose: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const running = useRef(false);
   const [saved, setSaved] = useState<Settings | null>(null);
@@ -73,8 +65,7 @@ export function SettingsPanel({
         const result = await api.saveSettings(input);
         setSaved(result);
         setInput({ endpoint: result.endpoint, model: result.model, api_key: '', clear_key: false });
-        setNotice('设置已保存，下次提问将使用新配置。');
-        onSaved();
+        setNotice('设置已保存，新会话使用新配置，历史会话会保留。');
       }
     } catch (e) {
       setError(errorMessage(e));

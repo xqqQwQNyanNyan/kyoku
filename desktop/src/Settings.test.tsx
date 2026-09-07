@@ -17,6 +17,11 @@ function api(): Bridge {
     importLink: vi.fn(),
     analyze: vi.fn(),
     ask: vi.fn(),
+    listSessions: vi.fn(),
+    getSession: vi.fn(),
+    continueSession: vi.fn(),
+    importSession: vi.fn(),
+    exportSession: vi.fn(),
     getSettings: vi.fn().mockResolvedValue(stored),
     saveSettings: vi.fn().mockResolvedValue(stored),
     testConnection: vi.fn().mockResolvedValue(undefined),
@@ -38,10 +43,9 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
-it('加载设置不回显密钥，保存时可保留原密钥并重置问答', async () => {
+it('加载设置不回显密钥，保存时可保留原密钥', async () => {
   const bridge = api();
-  const onSaved = vi.fn();
-  render(<SettingsPanel api={bridge} onClose={vi.fn()} onSaved={onSaved} />);
+  render(<SettingsPanel api={bridge} onClose={vi.fn()} />);
   await screen.findByPlaceholderText('已有密钥，留空保留');
   expect((screen.getByLabelText('API Key') as HTMLInputElement).value).toBe('');
   await userEvent.clear(screen.getByLabelText('模型名'));
@@ -53,13 +57,12 @@ it('加载设置不回显密钥，保存时可保留原密钥并重置问答', a
     api_key: '',
     clear_key: false,
   });
-  await screen.findByText('设置已保存，下次提问将使用新配置。');
-  expect(onSaved).toHaveBeenCalledOnce();
+  await screen.findByText('设置已保存，新会话使用新配置，历史会话会保留。');
 });
 
 it('换地址提示重新填写密钥；测试使用草稿而不会保存', async () => {
   const bridge = api();
-  render(<SettingsPanel api={bridge} onClose={vi.fn()} onSaved={vi.fn()} />);
+  render(<SettingsPanel api={bridge} onClose={vi.fn()} />);
   await screen.findByPlaceholderText('已有密钥，留空保留');
   await userEvent.clear(screen.getByLabelText('服务地址'));
   await userEvent.type(screen.getByLabelText('服务地址'), 'https://another.example/v1/responses');
@@ -78,20 +81,18 @@ it('换地址提示重新填写密钥；测试使用草稿而不会保存', asyn
 
 it('保存失败保留输入和现有问答，允许重试', async () => {
   const bridge = api();
-  const onSaved = vi.fn();
   bridge.saveSettings = vi.fn().mockRejectedValue({ message: '无法访问钥匙串' });
-  render(<SettingsPanel api={bridge} onClose={vi.fn()} onSaved={onSaved} />);
+  render(<SettingsPanel api={bridge} onClose={vi.fn()} />);
   await screen.findByPlaceholderText('已有密钥，留空保留');
   await userEvent.type(screen.getByLabelText('API Key'), 'retry-key');
   await userEvent.click(screen.getByRole('button', { name: '保存设置' }));
   await screen.findByText('无法访问钥匙串');
   expect((screen.getByLabelText('API Key') as HTMLInputElement).value).toBe('retry-key');
-  expect(onSaved).not.toHaveBeenCalled();
 });
 
 it('可删除密钥并独立检查本地引擎', async () => {
   const bridge = api();
-  render(<SettingsPanel api={bridge} onClose={vi.fn()} onSaved={vi.fn()} />);
+  render(<SettingsPanel api={bridge} onClose={vi.fn()} />);
   await screen.findByLabelText('删除已保存的密钥');
   await userEvent.click(screen.getByLabelText('删除已保存的密钥'));
   expect((screen.getByLabelText('API Key') as HTMLInputElement).disabled).toBe(true);
@@ -108,7 +109,7 @@ it('允许填写 Chat Completions 地址、测试连接并保存', async () => {
   const bridge = api();
   const endpoint = 'https://service.example/v1/chat/completions';
   bridge.saveSettings = vi.fn().mockResolvedValue({ ...stored, endpoint });
-  render(<SettingsPanel api={bridge} onClose={vi.fn()} onSaved={vi.fn()} />);
+  render(<SettingsPanel api={bridge} onClose={vi.fn()} />);
   await screen.findByPlaceholderText('已有密钥，留空保留');
   await userEvent.clear(screen.getByLabelText('服务地址'));
   await userEvent.type(screen.getByLabelText('服务地址'), endpoint);
@@ -119,7 +120,7 @@ it('允许填写 Chat Completions 地址、测试连接并保存', async () => {
     expect.objectContaining({ endpoint, api_key: 'chat-key' }),
   );
   await userEvent.click(screen.getByRole('button', { name: '保存设置' }));
-  await screen.findByText('设置已保存，下次提问将使用新配置。');
+  await screen.findByText('设置已保存，新会话使用新配置，历史会话会保留。');
   expect(bridge.saveSettings).toHaveBeenCalledWith(
     expect.objectContaining({ endpoint, api_key: 'chat-key' }),
   );

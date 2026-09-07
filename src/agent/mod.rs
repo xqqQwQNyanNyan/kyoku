@@ -14,6 +14,9 @@ mod client;
 mod comparison;
 mod evidence;
 mod output;
+mod session;
+
+pub use session::{SessionArchive, SessionFormatError};
 
 pub use evidence::review_evidence;
 
@@ -185,7 +188,7 @@ impl fmt::Display for AgentError {
             }
             Self::HistoryLimit => write!(
                 f,
-                "conversation exceeded {MAX_HISTORY_BYTES} bytes; start a new session"
+                "conversation or execution trace reached capacity; start a new session"
             ),
         }
     }
@@ -202,6 +205,7 @@ pub struct AgentSession {
     evidence: Value,
     history: Vec<Value>,
     has_evidence: bool,
+    archive: SessionArchive,
 }
 
 impl AgentSession {
@@ -220,6 +224,7 @@ impl AgentSession {
             evidence: context.evidence.clone(),
             history: Vec::new(),
             has_evidence: false,
+            archive: SessionArchive::new(context.evidence.clone(), config),
         })
     }
 
@@ -230,17 +235,41 @@ impl AgentSession {
 
     /// 提问或追问。首次必须成功取得工具证据，最多请求模型六次。
     pub fn ask(&mut self, question: &str) -> Result<String, AgentError> {
-        let client = &self.client;
-        let (answer, history) = answer(
+        if serde_json::to_vec(&self.archive)
+            .map_err(|_| AgentError::HistoryLimit)?
+            .len()
+            > 16 * 1024 * 1024
+        {
+            return Err(AgentError::HistoryLimit);
+        }
+        let mut trace = Vec::new();
+        let result = answer_traced(
             &self.evidence,
             &self.history,
             self.has_evidence,
             question,
-            |input, needs_evidence| client.respond(input, needs_evidence),
-        )?;
-        self.history = history;
-        self.has_evidence = true;
-        Ok(answer)
+            |input, needs_evidence| self.client.respond(input, needs_evidence),
+            &mut trace,
+        );
+        match result {
+            Ok((answer, history)) => {
+                self.history = history;
+                self.has_evidence = true;
+                self.archive
+                    .record(question, Some(&answer), None, trace, &self.history);
+                Ok(answer)
+            }
+            Err(error) => {
+                self.archive.record(
+                    question,
+                    None,
+                    Some(error.to_string()),
+                    trace,
+                    &self.history,
+                );
+                Err(error)
+            }
+        }
     }
 }
 
@@ -279,12 +308,31 @@ fn execute_tool(evidence: &Value, name: &str, arguments: &str) -> (Value, bool) 
     (json!({"ok": true, "review": evidence}), true)
 }
 
+#[cfg(test)]
 fn answer(
+    evidence: &Value,
+    history: &[Value],
+    has_evidence: bool,
+    question: &str,
+    respond: impl FnMut(&[Value], bool) -> Result<Value, AgentError>,
+) -> Result<(String, Vec<Value>), AgentError> {
+    answer_traced(
+        evidence,
+        history,
+        has_evidence,
+        question,
+        respond,
+        &mut Vec::new(),
+    )
+}
+
+fn answer_traced(
     evidence: &Value,
     history: &[Value],
     mut has_evidence: bool,
     question: &str,
     mut respond: impl FnMut(&[Value], bool) -> Result<Value, AgentError>,
+    trace: &mut Vec<Value>,
 ) -> Result<(String, Vec<Value>), AgentError> {
     let question = question.trim();
     if question.is_empty() || question.len() > MAX_QUESTION_BYTES {
@@ -312,7 +360,12 @@ fn answer(
     let mut accepted = staged.clone();
     for _ in 0..MAX_REQUESTS {
         check_history(&staged)?;
+        if json!(trace).to_string().len() > 8 * 1024 * 1024 {
+            return Err(AgentError::HistoryLimit);
+        }
+        trace.push(json!({"kind": "request", "input": staged, "needs_evidence": !has_evidence}));
         let response = respond(&staged, !has_evidence)?;
+        trace.push(json!({"kind": "response", "output": response}));
         if response["status"] != "completed" {
             return Err(AgentError::IncompleteResponse);
         }
@@ -340,6 +393,7 @@ fn answer(
                     let (result, success) = execute_tool(evidence, name, arguments);
                     comparison::remember(&mut verified, &result);
                     has_evidence |= success;
+                    trace.push(json!({"kind": "tool", "call_id": id, "name": name, "arguments": arguments, "result": result}));
                     tool_results.push(json!({"type": "function_call_output", "call_id": id, "output": result.to_string()}));
                 }
                 Some("message") => {
@@ -377,6 +431,7 @@ fn answer(
                 }
                 Err(reason) if corrections < 2 => {
                     corrections += 1;
+                    trace.push(json!({"kind": "validation", "error": reason}));
                     staged.push(json!({"role": "developer", "content": format!("回答校验失败：{reason} 请按原问题重新回答；无依据的结论应删去或说明证据不足。") }));
                 }
                 Err(_) => {

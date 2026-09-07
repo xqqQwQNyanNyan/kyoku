@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
-import ReactMarkdown from 'react-markdown';
 import type { Bridge, Decision, Replay } from './types';
 import { bridge, errorMessage } from './bridge';
 import { Board, eventText } from './Board';
@@ -9,8 +8,8 @@ import { SettingsPanel } from './Settings';
 import { useWindowScale } from './useWindowScale';
 import { ImportDialog } from './ImportDialog';
 import { Select } from './Select';
+import { ChatPanel, HistoryDialog, useSessions } from './Sessions';
 
-type Message = { role: 'user' | 'assistant'; text: string };
 const roundsPerPage = 7;
 const reviewTabs = [
   { id: 'analysis', label: '决策分析' },
@@ -35,19 +34,13 @@ export default function App({ api = bridge }: { api?: Bridge }) {
   const [showImport, setShowImport] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [error, setError] = useState('');
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [question, setQuestion] = useState('');
-  const [answerContext, setAnswerContext] = useState<string | null>(null);
-  const asking = answerContext !== null;
-  const [chatError, setChatError] = useState('');
+  const workspace = useSessions(api);
+  const [showHistory, setShowHistory] = useState(false);
+  const asking = Object.keys(workspace.pending).length > 0;
   const fileInput = useRef<HTMLInputElement>(null);
-  const chatEnd = useRef<HTMLDivElement>(null);
-  const chatNeedsScroll = useRef(false);
-  const conversation = useRef(crypto.randomUUID());
   const documentId = useRef<number | null>(null);
   const analysisJob = useRef(0);
   const importBusy = useRef(false);
-  const questionBusy = useRef(false);
   const frame = replay?.frames[index];
   const points = decisions[player];
   const decision = frame ? points?.find((d) => d.event_index === frame.event_index) : undefined;
@@ -57,19 +50,11 @@ export default function App({ api = bridge }: { api?: Bridge }) {
     setRoundPage(Math.floor(Math.max(0, activeRound) / roundsPerPage));
   }, [activeRound, replay]);
 
-  function resetConversation() {
-    conversation.current = crypto.randomUUID();
-    setMessages([]);
-    setQuestion('');
-    setChatError('');
-    setSelected(null);
-  }
-
   function selectFrame(next: number) {
     if (!replay) return;
     next = Math.max(0, Math.min(replay.frames.length - 1, next));
     if (next !== index) {
-      resetConversation();
+      setSelected(null);
       setIndex(next);
     }
   }
@@ -82,7 +67,7 @@ export default function App({ api = bridge }: { api?: Bridge }) {
   function changePlayer(next: number) {
     if (next === player) return;
     setPlaying(false);
-    resetConversation();
+    setSelected(null);
     setPlayer(next);
   }
 
@@ -96,7 +81,7 @@ export default function App({ api = bridge }: { api?: Bridge }) {
       const loaded = await read();
       documentId.current = loaded.id;
       analysisJob.current += 1;
-      resetConversation();
+      setSelected(null);
       setReplay(loaded);
       setFilename(name);
       setIndex(0);
@@ -146,32 +131,6 @@ export default function App({ api = bridge }: { api?: Bridge }) {
     }
   }
 
-  async function ask(text: string) {
-    text = text.trim();
-    if (!replay || !frame || !decision || !text || questionBusy.current) return;
-    const key = conversation.current;
-    questionBusy.current = true;
-    setAnswerContext(key);
-    setPlaying(false);
-    setChatError('');
-    setQuestion('');
-    setMessages((current) => [...current, { role: 'user', text }]);
-    try {
-      const answer = await api.ask(replay.id, player, frame.event_index, key, text);
-      if (conversation.current === key)
-        setMessages((current) => [...current, { role: 'assistant', text: answer }]);
-    } catch (error) {
-      if (conversation.current === key) {
-        setChatError(errorMessage(error));
-        setQuestion(text);
-        setMessages((current) => current.slice(0, -1));
-      }
-    } finally {
-      questionBusy.current = false;
-      setAnswerContext(null);
-    }
-  }
-
   function nextDecision(direction: -1 | 1) {
     if (!replay || !frame || !points) return;
     const point =
@@ -193,7 +152,7 @@ export default function App({ api = bridge }: { api?: Bridge }) {
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
-      if (showSettings || showImport) return;
+      if (showSettings || showImport || showHistory) return;
       if (!replay || event.altKey || event.ctrlKey || event.metaKey || event.isComposing) return;
       if (
         (event.target as HTMLElement).closest(
@@ -218,20 +177,17 @@ export default function App({ api = bridge }: { api?: Bridge }) {
     return () => window.removeEventListener('keydown', onKey);
   });
 
-  useEffect(() => {
-    chatNeedsScroll.current = true;
-  }, [messages, asking]);
-
-  useEffect(() => {
-    const container = chatEnd.current?.parentElement;
-    if (!container || reviewTab !== 'chat' || !chatNeedsScroll.current) return;
-    chatNeedsScroll.current = false;
-    if (messages.length === 0 && !asking) {
-      container.scrollTop = 0;
-    } else {
-      container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
-    }
-  }, [messages, asking, reviewTab]);
+  const scope = `${replay?.id}/${player}/${frame?.event_index}`;
+  const chatId = workspace.idFor(scope);
+  const chatSource =
+    replay && frame && decision
+      ? {
+          game: replay.id,
+          player,
+          event: frame.event_index,
+          label: `${filename} · ${replay.names[player]} · ${frame.round} · 第 ${decision.turn} 手 · G${frame.event_index}`,
+        }
+      : undefined;
 
   const openFile = () => fileInput.current?.click();
 
@@ -244,7 +200,7 @@ export default function App({ api = bridge }: { api?: Bridge }) {
       }}
       onDrop={(event) => {
         event.preventDefault();
-        if (!showSettings) void importFile(event.dataTransfer.files[0]);
+        if (!showSettings && !showHistory) void importFile(event.dataTransfer.files[0]);
       }}
     >
       <input
@@ -293,6 +249,14 @@ export default function App({ api = bridge }: { api?: Bridge }) {
         <button
           onClick={() => {
             setPlaying(false);
+            setShowHistory(true);
+          }}
+        >
+          历史会话
+        </button>
+        <button
+          onClick={() => {
+            setPlaying(false);
             setShowSettings(true);
           }}
           disabled={asking}
@@ -300,13 +264,10 @@ export default function App({ api = bridge }: { api?: Bridge }) {
           设置
         </button>
       </header>
-      {showSettings && (
-        <SettingsPanel
-          api={api}
-          onClose={() => setShowSettings(false)}
-          onSaved={resetConversation}
-        />
+      {showHistory && (
+        <HistoryDialog api={api} workspace={workspace} onClose={() => setShowHistory(false)} />
       )}
+      {showSettings && <SettingsPanel api={api} onClose={() => setShowSettings(false)} />}
       {error && !showImport && (
         <div role="alert" className="error-banner">
           <span>{error}</span>
@@ -588,126 +549,15 @@ export default function App({ api = bridge }: { api?: Bridge }) {
               aria-labelledby="review-tab-chat"
               hidden={reviewTab !== 'chat'}
             >
-              <section className="chat-panel" aria-label="局面问答">
-                <div className="chat-heading">
-                  <span className="agent-icon">✧</span>
-                  <div>
-                    <h2>一起复盘</h2>
-                    <p>
-                      {decision
-                        ? `${frame.round} · 第 ${decision.turn} 手`
-                        : '围绕当前决策展开讨论'}
-                    </p>
-                  </div>
-                  <span className="local-badge">Agent</span>
-                </div>
-                <div className="chat-context">
-                  <span className="status-dot" />
-                  <span>仅使用所选玩家当时可见的信息</span>
-                </div>
-                <div className="messages" role="log" aria-label="复盘对话" aria-live="polite">
-                  {messages.length === 0 && (
-                    <div className="chat-welcome">
-                      <h3>这一步，你在想什么？</h3>
-                      <p>
-                        对比候选切牌，理解模型倾向，
-                        <br />
-                        也可以说说你当时的考虑。
-                      </p>
-                      {decision && (
-                        <>
-                          <button
-                            disabled={asking}
-                            onClick={() =>
-                              void ask('比较这里的候选切牌，说明向听、进张和 Mortal 的倾向。')
-                            }
-                          >
-                            这里的几个选择差在哪里？ <span>↗</span>
-                          </button>
-                          <button
-                            disabled={asking}
-                            onClick={() =>
-                              void ask('Mortal 推荐了什么？哪些结论有计算依据，哪些只能推测？')
-                            }
-                          >
-                            帮我读懂 Mortal 的推荐 <span>↗</span>
-                          </button>
-                        </>
-                      )}
-                      <small>
-                        {!points
-                          ? '先分析牌谱，再选择一个决策点。'
-                          : !decision
-                            ? '用「下一决策」前往可提问的局面。'
-                            : '回答会区分计算、Mortal 与推测。'}
-                      </small>
-                    </div>
-                  )}
-                  {messages.map((message, i) => (
-                    <div className={`message ${message.role}`} key={i}>
-                      <span className="message-author">
-                        {message.role === 'user' ? '你' : 'KYOKU'}
-                      </span>
-                      <ReactMarkdown
-                        components={{
-                          a: ({ children }) => <span>{children}</span>,
-                          img: ({ alt }) => <span>{alt}</span>,
-                        }}
-                      >
-                        {message.text}
-                      </ReactMarkdown>
-                    </div>
-                  ))}
-                  {asking && (
-                    <div className="thinking">
-                      <span className="status-dot" />
-                      {answerContext === conversation.current
-                        ? '正在生成回答…'
-                        : '上一局面的请求仍在结束，可以继续浏览。'}
-                    </div>
-                  )}
-                  {chatError && (
-                    <div role="alert" className="chat-error">
-                      {chatError}
-                    </div>
-                  )}
-                  <div ref={chatEnd} />
-                </div>
-                <form
-                  className="composer"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    void ask(question);
-                  }}
-                >
-                  <textarea
-                    aria-label="复盘问题"
-                    placeholder={decision ? '问问这个局面…' : '选择一个决策点后提问…'}
-                    value={question}
-                    disabled={!decision || asking}
-                    onChange={(e) => setQuestion(e.target.value)}
-                    rows={2}
-                    onFocus={() => setPlaying(false)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-                        e.preventDefault();
-                        void ask(question);
-                      }
-                    }}
-                  />
-                  <div>
-                    <small>Enter 发送 · Shift Enter 换行</small>
-                    <button
-                      aria-label="发送问题"
-                      type="submit"
-                      disabled={!decision || asking || !question.trim()}
-                    >
-                      ↑
-                    </button>
-                  </div>
-                </form>
-                <p className="chat-footnote">切换局面会清空问答。模型解释可通过原始证据核对。</p>
-              </section>
+              <ChatPanel
+                workspace={workspace}
+                id={chatId}
+                source={chatSource}
+                ready={!!points}
+                visible={reviewTab === 'chat' && !showHistory}
+                onFocus={() => setPlaying(false)}
+                onNew={() => workspace.newSession(scope)}
+              />
             </div>
           </aside>
         </main>

@@ -294,3 +294,40 @@ fn chat_rejects_incomplete_refused_and_malformed_messages() {
     ));
     handle.join().unwrap();
 }
+
+#[test]
+fn chat_archive_restores_tool_messages_and_provider_reasoning() {
+    let tool = json!({"role":"assistant", "content":null, "reasoning_content":"provider-state", "tool_calls":[{"id":"saved-call","type":"function","function":{"name":"get_review","arguments":"{}"}}]});
+    let reply = |text: &str| {
+        json!({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":json!({"sections":[{"source":"limitation","text":text,"facts":[]}]}).to_string()}}]}).to_string()
+    };
+    let (endpoint, server) = server_at(
+        "/v1/chat/completions",
+        vec![
+            (
+                200,
+                json!({"choices":[{"finish_reason":"tool_calls","message":tool}]}).to_string(),
+            ),
+            (200, reply("第一轮")),
+            (200, reply("第二轮")),
+        ],
+    );
+    let config = AgentConfig {
+        endpoint: &endpoint,
+        model: "test",
+        api_key: None,
+    };
+    let mut session = AgentSession::new(&review(), &config).unwrap();
+    session.ask("先解释").unwrap();
+    let json = serde_json::to_string(session.archive()).unwrap();
+    let archive = SessionArchive::from_json(&json).unwrap();
+    let mut resumed = AgentSession::from_archive(&archive, &config).unwrap();
+    resumed.ask("再解释").unwrap();
+    let requests = server.join().unwrap();
+    assert_eq!(requests[2]["messages"][2], tool);
+    assert_eq!(requests[2]["messages"][3]["role"], "tool");
+    assert_eq!(requests[2]["messages"].as_array().unwrap().len(), 6);
+    let mut tampered: Value = serde_json::from_str(&json).unwrap();
+    tampered["history"][1]["_chat_message"]["role"] = json!("system");
+    assert!(SessionArchive::from_json(&tampered.to_string()).is_err());
+}

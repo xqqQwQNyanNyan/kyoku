@@ -91,7 +91,13 @@ export interface Bridge {
     event: number,
     conversation: string,
     text: string,
-  ): Promise<string>;
+    context_label: string,
+  ): Promise<SessionView>;
+  listSessions(): Promise<{ sessions: SessionSummary[]; warnings: string[] }>;
+  getSession(id: string): Promise<SessionView>;
+  continueSession(id: string, text: string): Promise<SessionView>;
+  importSession(json: string): Promise<SessionView>;
+  exportSession(id: string): Promise<string>;
 }
 
 export interface Settings {
@@ -113,4 +119,39 @@ export interface RuntimeStatus {
   available: boolean;
   checked: boolean;
   model: string;
+}
+
+export interface SessionTurn {
+  question: string;
+  answer: string | null;
+  error: string | null;
+  trace: { kind: string; [key: string]: unknown }[];
+}
+export interface SessionView {
+  id: string;
+  title: string;
+  context_label: string;
+  created_at: number;
+  updated_at: number;
+  busy: boolean;
+  pending_question: string | null;
+  archive: {
+    version: number;
+    instructions: string;
+    tools: unknown[];
+    endpoint: string;
+    model: string;
+    evidence: Evidence;
+    history: unknown[];
+    turns: SessionTurn[];
+  };
+}
+export interface SessionSummary {
+  id: string;
+  title: string;
+  context_label: string;
+  updated_at: number;
+  busy: boolean;
+  interrupted: boolean;
+  failed: boolean;
 }

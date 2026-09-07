@@ -9,8 +9,13 @@ export const bridge: Bridge = {
   importLog: (json) => invoke('import_log', { json }),
   importLink: (link) => invoke('import_link', { link }),
   analyze: (id, player) => invoke('analyze_game', { id, player }),
-  ask: (id, player, event_index, conversation_id, text) =>
-    invoke('ask', { question: { id, player, event_index, conversation_id, text } }),
+  ask: (id, player, event_index, conversation_id, text, context_label) =>
+    invoke('ask', { question: { id, player, event_index, conversation_id, text, context_label } }),
+  listSessions: () => invoke('list_sessions'),
+  getSession: (id) => invoke('get_session', { id }),
+  continueSession: (id, text) => invoke('continue_session', { id, text }),
+  importSession: (json) => invoke('import_session', { json }),
+  exportSession: (id) => invoke('export_session', { id }),
 };
 
 export function errorMessage(error: unknown): string {
