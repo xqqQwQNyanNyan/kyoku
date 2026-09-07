@@ -40,6 +40,7 @@ export interface Frame {
 export interface Replay {
   id: number;
   game_key: string;
+  name?: string;
   mortal_supported: boolean;
   names: string[];
   frames: Frame[];
@@ -87,6 +88,7 @@ export interface Bridge {
   importLog(json: string, name: string): Promise<Replay>;
   importLink(link: string): Promise<Replay>;
   listReplays(): Promise<ReplayList>;
+  renameReplay(key: string, name: string): Promise<SavedReplay>;
   openReplay(key: string): Promise<Replay>;
   openDataDirectory(): Promise<void>;
   majsoulStatus(): Promise<boolean>;

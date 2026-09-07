@@ -261,7 +261,9 @@ impl SessionStore {
     fn resolve_game(&self, mut document: SessionDocument) -> Result<SessionDocument, UiError> {
         if let Some(game) = &mut document.game {
             if game.events.is_empty() {
-                *game = self.library.get(&game.key)?.game;
+                let saved = self.library.get(&game.key)?;
+                document.context_label = saved.name;
+                *game = saved.game;
             }
             document
                 .position

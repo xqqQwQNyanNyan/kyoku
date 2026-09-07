@@ -15,6 +15,7 @@ use std::{
 };
 
 const MAX_FILE_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_NAME_CHARS: usize = 80;
 static FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 include!(concat!(env!("OUT_DIR"), "/replay_examples.rs"));
 
@@ -73,7 +74,7 @@ fn name_for_file(name: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
         .chars()
-        .take(80)
+        .take(MAX_NAME_CHARS)
         .collect();
     if title.is_empty() {
         "未命名牌谱".into()
@@ -155,7 +156,7 @@ impl ReplayLibrary {
         game: &SessionGame,
         name: &str,
         origin: ReplayOrigin,
-    ) -> Result<(), UiError> {
+    ) -> Result<String, UiError> {
         if name.len() > 2048 {
             return Err(UiError::new("replay_name", "牌谱名称不能超过 2 KiB"));
         }
@@ -171,7 +172,7 @@ impl ReplayLibrary {
                         "已有牌谱内容不匹配，原文件已保留",
                     ));
                 }
-                return Ok(());
+                return Ok(existing.name);
             }
         }
         // 来自旧 session 的事件也必须能重建牌桌，才能替换其内嵌牌谱。
@@ -187,24 +188,39 @@ impl ReplayLibrary {
                 .as_millis() as u64,
             game: game.clone(),
         };
-        let bytes = serde_json::to_vec(&record).map_err(|_| io_error())?;
-        if bytes.len() as u64 > MAX_FILE_BYTES {
-            return Err(UiError::new("replay_size", "保存的牌谱不能超过 32 MiB"));
-        }
         let path = self.path(&game.key, origin == ReplayOrigin::Example)?;
-        let directory = path.parent().ok_or_else(io_error)?;
-        fs::create_dir_all(directory).map_err(|_| io_error())?;
-        let temporary = directory.join(format!(
-            ".{}-{}.tmp",
-            std::process::id(),
-            FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-        ));
-        write_new(&temporary, &bytes)?;
-        if fs::rename(&temporary, &path).is_err() {
-            let _ = fs::remove_file(temporary);
-            return Err(io_error());
+        write_record(&path, &record)?;
+        Ok(record.name)
+    }
+
+    /// 只修改显示名称，保留内容标识、文件位置和所有 session 引用。
+    pub fn rename(&self, key: &str, name: &str) -> Result<ReplaySummary, UiError> {
+        let name = name.trim();
+        if name.is_empty()
+            || name.chars().count() > MAX_NAME_CHARS
+            || name.chars().any(char::is_control)
+        {
+            return Err(UiError::new(
+                "replay_name",
+                "牌谱名称需为 1–80 个字符，且不能换行",
+            ));
         }
-        Ok(())
+        let _guard = lock(&self.gate)?;
+        let mut record = self.get(key)?;
+        let example_path = self.path(key, true)?;
+        let path = if example_path.try_exists().map_err(|_| io_error())? {
+            example_path
+        } else {
+            self.path(key, false)?
+        };
+        record.name = name_for_file(name);
+        write_record(&path, &record)?;
+        Ok(ReplaySummary {
+            key: record.game.key,
+            name: record.name,
+            origin: record.origin,
+            saved_at: record.saved_at,
+        })
     }
 
     pub fn get(&self, key: &str) -> Result<SavedReplay, UiError> {
@@ -289,6 +305,26 @@ impl ReplayLibrary {
         }
         Ok(())
     }
+}
+
+fn write_record(path: &Path, record: &SavedReplay) -> Result<(), UiError> {
+    let bytes = serde_json::to_vec(record).map_err(|_| io_error())?;
+    if bytes.len() as u64 > MAX_FILE_BYTES {
+        return Err(UiError::new("replay_size", "保存的牌谱不能超过 32 MiB"));
+    }
+    let directory = path.parent().ok_or_else(io_error)?;
+    fs::create_dir_all(directory).map_err(|_| io_error())?;
+    let temporary = directory.join(format!(
+        ".{}-{}.tmp",
+        std::process::id(),
+        FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    write_new(&temporary, &bytes)?;
+    if fs::rename(&temporary, path).is_err() {
+        let _ = fs::remove_file(temporary);
+        return Err(io_error());
+    }
+    Ok(())
 }
 
 fn read(path: &Path) -> Result<SavedReplay, UiError> {

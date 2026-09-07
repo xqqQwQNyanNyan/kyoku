@@ -124,6 +124,7 @@ function api(): Bridge {
       .mockResolvedValue({ bundled: true, available: true, checked: false, model: 'Mortal V4' }),
     importLog: vi.fn().mockResolvedValue(replay),
     listReplays: vi.fn().mockResolvedValue({ replays: [], warnings: [], directory: '/data/kyoku' }),
+    renameReplay: vi.fn(),
     openReplay: vi.fn().mockResolvedValue(replay),
     openDataDirectory: vi.fn().mockResolvedValue(undefined),
     importLink: vi.fn().mockResolvedValue(replay),
@@ -913,6 +914,88 @@ describe('独立会话与历史上下文', () => {
 });
 
 describe('本地牌谱库', () => {
+  it('从顶栏直接改名，保留浏览位置，取消时不保存', async () => {
+    const bridge = api();
+    vi.mocked(bridge.importLog).mockResolvedValue({ ...replay, name: '原名称.json' });
+    vi.mocked(bridge.renameReplay)
+      .mockRejectedValueOnce({ message: '名称保存失败' })
+      .mockImplementation(async (key, name) => ({ key, name, origin: 'file', saved_at: 1 }));
+    await load(bridge);
+    await userEvent.click(screen.getByLabelText('下一事件'));
+    await userEvent.click(screen.getByRole('button', { name: '重命名当前牌谱' }));
+    expect((screen.getByLabelText('牌谱名称') as HTMLInputElement).value).toBe('原名称');
+    fireEvent.change(screen.getByLabelText('牌谱名称'), { target: { value: '🀄'.repeat(81) } });
+    expect(Array.from((screen.getByLabelText('牌谱名称') as HTMLInputElement).value)).toHaveLength(
+      80,
+    );
+    fireEvent.change(screen.getByLabelText('牌谱名称'), { target: { value: '   ' } });
+    expect((screen.getByRole('button', { name: '保存名称' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    fireEvent.change(screen.getByLabelText('牌谱名称'), { target: { value: '  新的名称  ' } });
+    await userEvent.click(screen.getByRole('button', { name: '保存名称' }));
+    await screen.findByText('名称保存失败');
+    expect((screen.getByLabelText('牌谱名称') as HTMLInputElement).value).toBe('  新的名称  ');
+    await userEvent.click(screen.getByRole('button', { name: '保存名称' }));
+    await screen.findByText('新的名称', { selector: '.document-title' });
+    expect(bridge.renameReplay).toHaveBeenLastCalledWith(replay.game_key, '新的名称');
+    expect(screen.queryByRole('dialog', { name: '重命名牌谱' })).toBeNull();
+    expect((screen.getByLabelText('牌谱进度') as HTMLInputElement).value).toBe('1');
+    expect(bridge.listReplays).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole('button', { name: '重命名当前牌谱' }));
+    fireEvent.change(screen.getByLabelText('牌谱名称'), { target: { value: '不保存的名称' } });
+    await userEvent.click(screen.getByRole('button', { name: '取消' }));
+    expect(screen.getByText('新的名称', { selector: '.document-title' })).toBeTruthy();
+    expect(bridge.renameReplay).toHaveBeenCalledTimes(2);
+  });
+
+  it('改名限制字符数，失败保留输入，成功同步当前牌谱并保持浏览位置', async () => {
+    const bridge = api();
+    let record = { key: replay.game_key, name: '原名称', origin: 'file' as const, saved_at: 1 };
+    vi.mocked(bridge.importLog).mockResolvedValue({ ...replay, name: record.name });
+    vi.mocked(bridge.listReplays).mockImplementation(async () => ({
+      directory: '/data/kyoku',
+      warnings: [],
+      replays: [record],
+    }));
+    vi.mocked(bridge.renameReplay)
+      .mockRejectedValueOnce({ message: '保存名称失败' })
+      .mockImplementation(async (_key, name) => {
+        record = { ...record, name };
+        return record;
+      });
+    await load(bridge);
+    expect(screen.getByText('原名称', { selector: '.document-title' })).toBeTruthy();
+    await userEvent.click(screen.getByLabelText('下一事件'));
+    await userEvent.click(screen.getByRole('button', { name: '牌谱库' }));
+    await userEvent.click(await screen.findByRole('button', { name: '重命名牌谱：原名称' }));
+    fireEvent.change(screen.getByLabelText('牌谱名称'), { target: { value: '🀄'.repeat(81) } });
+    expect(Array.from((screen.getByLabelText('牌谱名称') as HTMLInputElement).value)).toHaveLength(
+      80,
+    );
+    fireEvent.change(screen.getByLabelText('牌谱名称'), { target: { value: '   ' } });
+    expect((screen.getByRole('button', { name: '保存名称' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    fireEvent.change(screen.getByLabelText('牌谱名称'), { target: { value: '  复盘记录  ' } });
+    await userEvent.click(screen.getByRole('button', { name: '保存名称' }));
+    await screen.findByText('保存名称失败');
+    expect((screen.getByLabelText('牌谱名称') as HTMLInputElement).value).toBe('  复盘记录  ');
+    await userEvent.click(screen.getByRole('button', { name: '保存名称' }));
+    await screen.findByRole('button', { name: '打开牌谱：复盘记录' });
+    expect(bridge.renameReplay).toHaveBeenLastCalledWith(replay.game_key, '复盘记录');
+    expect(screen.getByText('复盘记录', { selector: '.document-title' })).toBeTruthy();
+    expect((screen.getByLabelText('牌谱进度') as HTMLInputElement).value).toBe('1');
+    await userEvent.click(screen.getByRole('button', { name: '重命名牌谱：复盘记录' }));
+    await userEvent.keyboard('{Escape}');
+    expect(screen.queryByLabelText('牌谱名称')).toBeNull();
+    expect(screen.getByRole('dialog', { name: '牌谱库' })).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: '关闭牌谱库' }));
+    await userEvent.click(screen.getByRole('button', { name: '牌谱库' }));
+    await screen.findByRole('button', { name: '打开牌谱：复盘记录' });
+    expect(bridge.openReplay).not.toHaveBeenCalled();
+  });
+
   it('筛选并离线打开保存的牌谱，同时找回关联会话', async () => {
     const bridge = api();
     vi.mocked(bridge.listReplays).mockResolvedValue({
@@ -931,16 +1014,16 @@ describe('本地牌谱库', () => {
     cleanup();
     render(<App api={bridge} />);
     await userEvent.click(screen.getByRole('button', { name: '牌谱库' }));
-    await screen.findByRole('button', { name: /我的半庄/ });
+    await screen.findByRole('button', { name: /打开牌谱：我的半庄/ });
     await userEvent.click(screen.getByRole('button', { name: '打开数据文件夹' }));
     expect(bridge.openDataDirectory).toHaveBeenCalledOnce();
     await userEvent.click(screen.getByRole('combobox', { name: '牌谱来源' }));
     await userEvent.click(screen.getByRole('option', { name: '我的牌谱' }));
-    expect(screen.queryByRole('button', { name: /示例一局/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /打开牌谱：示例一局/ })).toBeNull();
     await userEvent.type(screen.getByLabelText('搜索牌谱'), '不存在');
-    expect(screen.queryByRole('button', { name: /我的半庄/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /打开牌谱：我的半庄/ })).toBeNull();
     await userEvent.clear(screen.getByLabelText('搜索牌谱'));
-    await userEvent.click(screen.getByRole('button', { name: /我的半庄/ }));
+    await userEvent.click(screen.getByRole('button', { name: /打开牌谱：我的半庄/ }));
     await screen.findByLabelText('牌谱进度');
     expect(screen.queryByRole('dialog')).toBeNull();
     await openChat();
@@ -968,7 +1051,7 @@ describe('本地牌谱库', () => {
     await screen.findByText('无法读取牌谱库');
     await userEvent.click(screen.getByRole('button', { name: '刷新' }));
     await screen.findByText('坏文件已保留');
-    await userEvent.click(screen.getByRole('button', { name: /已移走的牌谱/ }));
+    await userEvent.click(screen.getByRole('button', { name: /打开牌谱：已移走的牌谱/ }));
     await screen.findByText('关联的牌谱文件不存在');
     expect((screen.getByLabelText('牌谱进度') as HTMLInputElement).value).toBe('1');
     await userEvent.click(screen.getByRole('button', { name: '关闭牌谱库' }));

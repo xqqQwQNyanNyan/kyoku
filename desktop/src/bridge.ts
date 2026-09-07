@@ -9,6 +9,7 @@ export const bridge: Bridge = {
   importLog: (json, name) => invoke('import_log', { json, name }),
   importLink: (link) => invoke('import_link', { link }),
   listReplays: () => invoke('list_replays'),
+  renameReplay: (key, name) => invoke('rename_replay', { key, name }),
   openReplay: (key) => invoke('open_replay', { key }),
   openDataDirectory: () => invoke('open_data_directory'),
   majsoulStatus: () => invoke('majsoul_status'),

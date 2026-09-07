@@ -5,18 +5,21 @@ import { replayName } from './display';
 import { Select } from './Select';
 
 const origins = { example: '示例牌谱', file: '本地导入', link: '链接下载', session: '来自会话' };
+const MAX_NAME_CHARS = 80;
 
 export function ReplayLibrary({
   api,
   busy,
   error,
   onOpen,
+  onRenamed,
   onClose,
 }: {
   api: Bridge;
   busy: boolean;
   error: string;
   onOpen: (replay: SavedReplay) => Promise<void>;
+  onRenamed: (replay: SavedReplay) => void;
   onClose: () => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
@@ -27,6 +30,9 @@ export function ReplayLibrary({
   const [filter, setFilter] = useState('all');
   const [search, setSearch] = useState('');
   const [openingDirectory, setOpeningDirectory] = useState(false);
+  const [editing, setEditing] = useState<SavedReplay | null>(null);
+  const [name, setName] = useState('');
+  const [saving, setSaving] = useState(false);
   useEffect(() => {
     dialog.current?.showModal();
   }, []);
@@ -67,6 +73,27 @@ export function ReplayLibrary({
       setOpeningDirectory(false);
     }
   }
+  async function rename() {
+    if (!editing || saving || busy || !name.trim()) return;
+    setSaving(true);
+    setFailure('');
+    try {
+      const renamed = await api.renameReplay(editing.key, name.trim());
+      setList(
+        (list) =>
+          list && {
+            ...list,
+            replays: list.replays.map((item) => (item.key === renamed.key ? renamed : item)),
+          },
+      );
+      onRenamed(renamed);
+      setEditing(null);
+    } catch (error) {
+      setFailure(errorMessage(error));
+    } finally {
+      setSaving(false);
+    }
+  }
   return (
     <dialog
       ref={dialog}
@@ -74,7 +101,7 @@ export function ReplayLibrary({
       aria-labelledby="replay-library-title"
       onCancel={(event) => {
         event.preventDefault();
-        if (!busy) onClose();
+        if (!busy && !saving) onClose();
       }}
     >
       <div className="library-heading">
@@ -85,7 +112,7 @@ export function ReplayLibrary({
         <button onClick={() => void openDirectory()} disabled={openingDirectory}>
           打开数据文件夹
         </button>
-        <button aria-label="关闭牌谱库" onClick={onClose} disabled={busy}>
+        <button aria-label="关闭牌谱库" onClick={onClose} disabled={busy || saving}>
           ×
         </button>
       </div>
@@ -106,10 +133,51 @@ export function ReplayLibrary({
             { value: 'example', label: '示例牌谱' },
           ]}
         />
-        <button disabled={loading || busy} onClick={() => setRevision((value) => value + 1)}>
+        <button
+          disabled={loading || busy || !!editing}
+          onClick={() => setRevision((value) => value + 1)}
+        >
           刷新
         </button>
       </div>
+      {editing && (
+        <form
+          className="library-name-editor"
+          key={editing.key}
+          onSubmit={(event) => {
+            event.preventDefault();
+            void rename();
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') {
+              event.preventDefault();
+              event.stopPropagation();
+              if (!saving) setEditing(null);
+            }
+            if (event.key === 'Enter' && event.nativeEvent.isComposing) event.preventDefault();
+          }}
+        >
+          <label htmlFor="replay-name">牌谱名称</label>
+          <input
+            id="replay-name"
+            autoFocus
+            value={name}
+            disabled={saving}
+            onChange={(event) =>
+              setName(Array.from(event.target.value).slice(0, MAX_NAME_CHARS).join(''))
+            }
+          />
+          <small>
+            {Array.from(name).length}/{MAX_NAME_CHARS}
+          </small>
+          <button type="submit" disabled={saving || busy || !name.trim()}>
+            保存名称
+          </button>
+          <button type="button" disabled={saving} onClick={() => setEditing(null)}>
+            取消
+          </button>
+        </form>
+      )}
       {(error || failure) && (
         <p role="alert" className="import-error">
           {error || failure}
@@ -125,20 +193,37 @@ export function ReplayLibrary({
           <p role="status">正在读取牌谱库…</p>
         ) : replays.length ? (
           replays.map((replay) => (
-            <button
-              key={replay.key}
-              className="library-record"
-              disabled={busy}
-              onClick={() => void onOpen(replay)}
-            >
-              <div>
-                <strong title={replayName(replay.name)}>{replayName(replay.name)}</strong>
-                <small>
-                  {origins[replay.origin]} · {new Date(replay.saved_at).toLocaleDateString()}
-                </small>
-              </div>
-              <span aria-hidden="true">↗</span>
-            </button>
+            <div className="library-entry" key={replay.key}>
+              <button
+                className="library-record"
+                aria-label={`打开牌谱：${replayName(replay.name)}`}
+                disabled={busy || saving}
+                onClick={() => void onOpen(replay)}
+              >
+                <div>
+                  <strong title={replayName(replay.name)}>{replayName(replay.name)}</strong>
+                  <small>
+                    {origins[replay.origin]} · {new Date(replay.saved_at).toLocaleDateString()}
+                  </small>
+                </div>
+                <span aria-hidden="true">↗</span>
+              </button>
+              <button
+                className="library-rename"
+                aria-label={`重命名牌谱：${replayName(replay.name)}`}
+                title="重命名牌谱"
+                disabled={busy || saving}
+                onClick={() => {
+                  setEditing(replay);
+                  setName(replayName(replay.name));
+                  setFailure('');
+                }}
+              >
+                <svg aria-hidden="true" viewBox="0 0 24 24">
+                  <path d="m15 5 4 4M4 20l5-1L20 8a2.8 2.8 0 0 0-4-4L5 15l-1 5Z" />
+                </svg>
+              </button>
+            </div>
           ))
         ) : (
           <p>

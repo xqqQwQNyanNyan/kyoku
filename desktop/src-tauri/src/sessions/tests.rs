@@ -67,6 +67,12 @@ fn local_sessions_share_replays_and_exports_restore_without_the_original_library
     assert_eq!(store.library.list().unwrap().warnings.len(), 0);
     let replay_files = directory.0.join("data/replays/imported");
     assert_eq!(fs::read_dir(&replay_files).unwrap().count(), 1);
+    store.library.rename(&game.key, "已改名的牌谱").unwrap();
+    for id in ["one", "two"] {
+        let opened = store.open_game(id).unwrap();
+        assert_eq!(opened.context_label, "已改名的牌谱");
+        assert_eq!(opened.game.unwrap().key, game.key);
+    }
     let exports = Directory::new();
     let export = store.export("one", &exports.0).unwrap();
     let portable = fs::read_to_string(&export).unwrap();

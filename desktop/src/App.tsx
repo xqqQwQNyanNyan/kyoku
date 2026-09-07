@@ -11,6 +11,7 @@ import { Select } from './Select';
 import { replayName } from './display';
 import { ChatPanel, HistoryDialog, useSessions } from './Sessions';
 import { ReplayLibrary } from './ReplayLibrary';
+import { RenameReplayDialog } from './RenameReplayDialog';
 
 const roundsPerPage = 7;
 const reviewTabs = [
@@ -39,6 +40,7 @@ export default function App({ api = bridge }: { api?: Bridge }) {
   const workspace = useSessions(api);
   const [showHistory, setShowHistory] = useState(false);
   const [showLibrary, setShowLibrary] = useState(false);
+  const [showRename, setShowRename] = useState(false);
   const asking = Object.keys(workspace.pending).length > 0;
   const fileInput = useRef<HTMLInputElement>(null);
   const documentId = useRef<number | null>(null);
@@ -87,7 +89,7 @@ export default function App({ api = bridge }: { api?: Bridge }) {
       analysisJob.current += 1;
       setSelected(null);
       setReplay(loaded);
-      setFilename(name);
+      setFilename(loaded.name ?? name);
       setIndex(
         Math.max(
           0,
@@ -162,7 +164,7 @@ export default function App({ api = bridge }: { api?: Bridge }) {
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
-      if (showSettings || showImport || showHistory || showLibrary) return;
+      if (showSettings || showImport || showHistory || showLibrary || showRename) return;
       if (!replay || event.altKey || event.ctrlKey || event.metaKey || event.isComposing) return;
       if (
         (event.target as HTMLElement).closest(
@@ -264,7 +266,7 @@ export default function App({ api = bridge }: { api?: Bridge }) {
       }}
       onDrop={(event) => {
         event.preventDefault();
-        if (!showSettings && !showHistory && !showLibrary)
+        if (!showSettings && !showHistory && !showLibrary && !showRename)
           void importFile(event.dataTransfer.files[0]);
       }}
     >
@@ -287,14 +289,32 @@ export default function App({ api = bridge }: { api?: Bridge }) {
             <span>日麻牌谱复盘</span>
           </div>
         </div>
-        <div className="document-title">
-          {replay ? (
-            <>
-              <span className="status-dot" />
-              {replayName(filename)}
-            </>
-          ) : (
-            '从一份牌谱，重新看懂每一步。'
+        <div className="document-heading">
+          <div className="document-title" title={replay ? replayName(filename) : undefined}>
+            {replay ? (
+              <>
+                <span className="status-dot" />
+                {replayName(filename)}
+              </>
+            ) : (
+              '从一份牌谱，重新看懂每一步。'
+            )}
+          </div>
+          {replay && (
+            <button
+              className="document-rename"
+              aria-label="重命名当前牌谱"
+              title="重命名牌谱"
+              disabled={loading}
+              onClick={() => {
+                setPlaying(false);
+                setShowRename(true);
+              }}
+            >
+              <svg aria-hidden="true" viewBox="0 0 24 24">
+                <path d="m15 5 4 4M4 20l5-1L20 8a2.8 2.8 0 0 0-4-4L5 15l-1 5Z" />
+              </svg>
+            </button>
           )}
         </div>
         {replay && (
@@ -348,12 +368,26 @@ export default function App({ api = bridge }: { api?: Bridge }) {
         />
       )}
       {showSettings && <SettingsPanel api={api} onClose={() => setShowSettings(false)} />}
+      {showRename && replay && (
+        <RenameReplayDialog
+          api={api}
+          gameKey={replay.game_key}
+          currentName={filename}
+          onRenamed={(record) => {
+            if (record.key === replay.game_key) setFilename(record.name);
+          }}
+          onClose={() => setShowRename(false)}
+        />
+      )}
       {showLibrary && (
         <ReplayLibrary
           api={api}
           busy={loading}
           error={error}
           onOpen={(record) => importReplay(record.name, () => api.openReplay(record.key))}
+          onRenamed={(record) => {
+            if (record.key === replay?.game_key) setFilename(record.name);
+          }}
           onClose={() => setShowLibrary(false)}
         />
       )}

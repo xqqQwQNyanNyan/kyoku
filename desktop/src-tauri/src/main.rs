@@ -105,6 +105,7 @@ impl Desktop {
 struct Imported {
     id: u64,
     game_key: String,
+    name: String,
     #[serde(flatten)]
     data: replay::ReplayData,
 }
@@ -118,9 +119,9 @@ async fn import_log(
 ) -> Result<Imported, UiError> {
     let id = state.sequence.fetch_add(1, Ordering::SeqCst) + 1;
     let library = app.state::<Arc<library::ReplayLibrary>>().inner().clone();
-    let (events, data) = tauri::async_runtime::spawn_blocking(move || {
+    let (events, data, name) = tauri::async_runtime::spawn_blocking(move || {
         let (events, data) = library::parse_input(&json)?;
-        library.save(
+        let name = library.save(
             &sessions::SessionGame {
                 key: sessions::SessionGame::key(&events)?,
                 events: events.clone(),
@@ -128,11 +129,11 @@ async fn import_log(
             &name,
             library::ReplayOrigin::File,
         )?;
-        Ok::<_, UiError>((events, data))
+        Ok::<_, UiError>((events, data, name))
     })
     .await
     .map_err(|_| UiError::new("task", "读取牌谱任务异常结束"))??;
-    finish_import(&state, id, events, data)
+    finish_import(&state, id, events, data, name)
 }
 
 #[tauri::command]
@@ -144,10 +145,10 @@ async fn import_link(
     let id = state.sequence.fetch_add(1, Ordering::SeqCst) + 1;
     let account = Arc::clone(&state.majsoul);
     let library = app.state::<Arc<library::ReplayLibrary>>().inner().clone();
-    let (events, data) = tauri::async_runtime::spawn_blocking(move || {
+    let (events, data, name) = tauri::async_runtime::spawn_blocking(move || {
         let json = log_link::download(&link, &account)?;
         let (events, data) = replay::parse(&json)?;
-        library.save(
+        let name = library.save(
             &sessions::SessionGame {
                 key: sessions::SessionGame::key(&events)?,
                 events: events.clone(),
@@ -155,11 +156,11 @@ async fn import_link(
             &link,
             library::ReplayOrigin::Link,
         )?;
-        Ok::<_, UiError>((events, data))
+        Ok::<_, UiError>((events, data, name))
     })
     .await
     .map_err(|_| UiError::new("task", "下载牌谱任务异常结束"))??;
-    finish_import(&state, id, events, data)
+    finish_import(&state, id, events, data, name)
 }
 
 #[tauri::command]
@@ -178,20 +179,34 @@ async fn list_replays(app: tauri::AppHandle) -> Result<library::ReplayList, UiEr
 }
 
 #[tauri::command]
+async fn rename_replay(
+    key: String,
+    name: String,
+    app: tauri::AppHandle,
+) -> Result<library::ReplaySummary, UiError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<library::ReplayLibrary>>()
+            .rename(&key, &name)
+    })
+    .await
+    .map_err(|_| UiError::new("task", "修改牌谱名称任务异常结束"))?
+}
+
+#[tauri::command]
 async fn open_replay(
     key: String,
     state: tauri::State<'_, Desktop>,
     app: tauri::AppHandle,
 ) -> Result<Imported, UiError> {
     let id = state.sequence.fetch_add(1, Ordering::SeqCst) + 1;
-    let (events, data) = tauri::async_runtime::spawn_blocking(move || {
+    let (events, data, name) = tauri::async_runtime::spawn_blocking(move || {
         let saved = app.state::<Arc<library::ReplayLibrary>>().get(&key)?;
         let data = replay::replay(&saved.game.events)?;
-        Ok::<_, UiError>((saved.game.events, data))
+        Ok::<_, UiError>((saved.game.events, data, saved.name))
     })
     .await
     .map_err(|_| UiError::new("task", "打开已保存牌谱任务异常结束"))??;
-    finish_import(&state, id, events, data)
+    finish_import(&state, id, events, data, name)
 }
 
 #[tauri::command]
@@ -240,6 +255,7 @@ fn finish_import(
     id: u64,
     events: Vec<Event>,
     data: replay::ReplayData,
+    name: String,
 ) -> Result<Imported, UiError> {
     let mut current = lock(&state.game)?;
     if state.sequence.load(Ordering::SeqCst) != id {
@@ -253,7 +269,12 @@ fn finish_import(
         events,
         reviews: Mutex::new(std::array::from_fn(|_| None)),
     }));
-    Ok(Imported { id, game_key, data })
+    Ok(Imported {
+        id,
+        game_key,
+        name,
+        data,
+    })
 }
 
 #[derive(Serialize)]
@@ -464,6 +485,7 @@ async fn open_session_game(
         Imported {
             id: current.id,
             game_key: current.key.clone(),
+            name: document.context_label.clone(),
             data,
         }
     } else {
@@ -472,6 +494,7 @@ async fn open_session_game(
             sequence.ok_or_else(|| UiError::new("state", "缺少牌谱编号"))?,
             game.events,
             data,
+            document.context_label.clone(),
         )?
     };
     Ok(OpenedSessionGame {
@@ -615,6 +638,7 @@ fn main() {
             import_log,
             import_link,
             list_replays,
+            rename_replay,
             open_replay,
             open_data_directory,
             majsoul_status,

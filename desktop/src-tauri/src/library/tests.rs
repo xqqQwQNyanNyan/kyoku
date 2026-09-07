@@ -91,6 +91,53 @@ fn examples_are_installed_once_with_license_and_share_content_keys() {
 }
 
 #[test]
+fn rename_preserves_content_and_survives_restart_and_duplicate_imports() {
+    let directory = Directory::new();
+    let library = ReplayLibrary::new(directory.0.clone());
+    let game = game();
+    library
+        .save(&game, "原名.json", ReplayOrigin::Example)
+        .unwrap();
+    let path = library.path(&game.key, true).unwrap();
+    let before: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    let renamed = library.rename(&game.key, "  东一局的押引  ").unwrap();
+    assert_eq!(renamed.name, "东一局的押引");
+    assert_eq!(renamed.key, game.key);
+    let mut after: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    after["name"] = before["name"].clone();
+    assert_eq!(before, after);
+    let reopened = ReplayLibrary::new(directory.0.clone());
+    assert_eq!(reopened.get(&game.key).unwrap().name, "东一局的押引");
+    assert_eq!(
+        reopened
+            .save(&game, "原名.json", ReplayOrigin::File)
+            .unwrap(),
+        "东一局的押引"
+    );
+    reopened.initialize().unwrap();
+    assert_eq!(reopened.get(&game.key).unwrap().name, "东一局的押引");
+    assert_eq!(
+        reopened
+            .rename(&game.key, &"🀄".repeat(80))
+            .unwrap()
+            .name
+            .chars()
+            .count(),
+        80
+    );
+    let unchanged = fs::read(&path).unwrap();
+    for name in ["".into(), "  ".into(), "一\n二".into(), "🀄".repeat(81)] {
+        assert!(reopened.rename(&game.key, &name).is_err());
+        assert_eq!(fs::read(&path).unwrap(), unchanged);
+    }
+    fs::write(&path, "broken").unwrap();
+    assert!(reopened.rename(&game.key, "不能覆盖损坏文件").is_err());
+    assert_eq!(fs::read_to_string(&path).unwrap(), "broken");
+}
+
+#[test]
 fn invalid_missing_and_corrupt_files_do_not_replace_existing_records() {
     let directory = Directory::new();
     let library = ReplayLibrary::new(directory.0.clone());
