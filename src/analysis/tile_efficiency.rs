@@ -132,7 +132,7 @@ pub fn discard_efficiency(
 }
 
 // 假设分支复用同一套牌效率计算，枚数由分支的可见信息提供。
-pub(super) fn analyze_discard(
+pub(crate) fn analyze_discard(
     hand: &Hand,
     discard: Tile,
     unseen: impl Fn(TileKind) -> u8,

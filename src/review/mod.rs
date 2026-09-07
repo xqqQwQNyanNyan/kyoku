@@ -16,7 +16,10 @@ use crate::mortal::{Action, Decision, ModelInfo, Mortal, MortalConfig, MortalErr
 use crate::replay::replayer::{ReplayError, Replayer};
 
 mod game;
+mod history;
 pub use game::{DecisionPoint, GameReview, RecordedAction, review_game};
+pub(crate) use history::public_history;
+pub use history::{PublicAction, PublicEvent};
 
 /// 指定玩家在一个事件应用后的复盘结果，不包含对手暗牌或后续事件。
 #[derive(Debug)]
@@ -47,6 +50,8 @@ pub struct VisiblePosition {
     pub concealed: Vec<Tile>,
     /// 按整场固定玩家索引 0..3 排列，不含任何玩家的暗牌。
     pub players: [PublicPlayer; 4],
+    /// 当前局公开事件前缀；None 表示调用方只提供快照，没有完整历史。
+    pub history: Option<Vec<PublicEvent>>,
 }
 
 /// 每位玩家公开可见的信息。
@@ -134,10 +139,12 @@ pub fn review_at(
     }
     mortal.finish().map_err(ReviewError::Finish)?;
     let discards = analyze_discards(state, player, event_index, decision.as_ref())?;
+    let mut position = visible_position(state, player);
+    position.history = public_history(history);
     Ok(Review {
         event_index,
         player,
-        position: visible_position(state, player),
+        position,
         model,
         decision,
         discards,
@@ -146,6 +153,7 @@ pub fn review_at(
 
 fn visible_position(state: &RoundState, player: PlayerIndex) -> VisiblePosition {
     VisiblePosition {
+        history: None,
         round: state.round(),
         honba: state.honba(),
         riichi_sticks: state.riichi_sticks(),

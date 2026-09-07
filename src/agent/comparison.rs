@@ -3,18 +3,16 @@
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::evidence::discard_evidence;
+use super::{
+    evidence::discard_evidence,
+    position::{Snapshot, bad_position, kind_name, parse_tile},
+};
 use crate::{
     analysis::{
         DrawCandidates,
-        discard_comparison::{ComparisonContext, ComparisonError, DiscardBranch},
+        discard_comparison::{ComparisonContext, ComparisonError, DiscardBranch, DrawBranch},
     },
-    mahjong::{
-        hand::Hand,
-        meld::Meld,
-        player_index::PlayerIndex,
-        tile::{Tile, TileKind},
-    },
+    mahjong::tile::Tile,
     replay::inspector::format_tile,
 };
 
@@ -24,36 +22,6 @@ struct Arguments {
     first: String,
     second: String,
     draw: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct Position {
-    concealed: Vec<String>,
-    dora_indicators: Vec<String>,
-    players: Vec<PublicPlayer>,
-    remaining_draws: u8,
-}
-
-#[derive(Deserialize)]
-struct PublicPlayer {
-    player: u8,
-    riichi: String,
-    melds: Vec<PublicMeld>,
-    discards: Vec<PublicDiscard>,
-}
-
-#[derive(Deserialize)]
-struct PublicDiscard {
-    tile: String,
-    called: bool,
-}
-
-#[derive(Deserialize)]
-struct PublicMeld {
-    kind: String,
-    tiles: Vec<String>,
-    called: Option<String>,
-    from: Option<u8>,
 }
 
 pub(super) fn definition() -> Value {
@@ -83,6 +51,135 @@ pub(super) fn execute(evidence: &Value, arguments: &str) -> Value {
         Ok(result) => result,
         Err((code, message)) => json!({"ok": false, "error": {"code": code, "message": message}}),
     }
+}
+
+pub(super) fn all_definition() -> Value {
+    let mut definition = definition();
+    definition["name"] = json!("compare_improvements");
+    definition["description"] = json!(
+        "完整枚举两个切牌之后的全部可用摸牌种类，返回每个分支的摘要：draw、unseen、completed_shape、best_shanten、best_unseen、best_discard_names，以及双方占优的覆盖枚数。不是摸牌概率、总体收益或最优策略；具体进张和全部后续切牌用 compare_discards 的 draw 参数展开。"
+    );
+    definition["parameters"]["properties"]
+        .as_object_mut()
+        .unwrap()
+        .remove("draw");
+    definition["parameters"]["required"] = json!(["first", "second"]);
+    definition
+}
+
+pub(super) fn execute_all(evidence: &Value, arguments: &str) -> Value {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Pair {
+        first: String,
+        second: String,
+    }
+    let run_all = || -> Result<Value, ToolError> {
+        let args: Pair = serde_json::from_str(arguments).map_err(|_| {
+            (
+                "invalid_arguments",
+                "需要 first 和 second 两个切牌字段。".into(),
+            )
+        })?;
+        let mut result = run(
+            evidence,
+            &json!({"first": args.first, "second": args.second, "draw": null}).to_string(),
+        )?;
+        let snapshot = Snapshot::read(evidence)?;
+        if snapshot.position.remaining_draws == 0
+            || snapshot.position.players[snapshot.player].riichi != "not_declared"
+        {
+            return Err((
+                "unsupported_state",
+                "完整改良比较不支持立直宣言后或牌山已耗尽的局面。".into(),
+            ));
+        }
+        let first = parse_tile(&args.first).ok_or_else(bad_position)?;
+        let second = parse_tile(&args.second).ok_or_else(bad_position)?;
+        let context = ComparisonContext::new(snapshot.hand, &snapshot.additional_visible)
+            .map_err(analysis_error)?;
+        let mut first_draws = serde_json::Map::new();
+        let mut second_draws = serde_json::Map::new();
+        let mut outcomes = serde_json::Map::new();
+        let mut weights = [0u16; 3];
+        for (unseen, comparison) in context.compare_all(first, second).map_err(analysis_error)? {
+            let first = compact_followup(
+                comparison
+                    .first
+                    .followup
+                    .as_ref()
+                    .ok_or_else(bad_position)?,
+                unseen,
+            );
+            let second = compact_followup(
+                comparison
+                    .second
+                    .followup
+                    .as_ref()
+                    .ok_or_else(bad_position)?,
+                unseen,
+            );
+            let rank = |value: &Value| {
+                if value["completed_shape"] == true {
+                    (-1, 0)
+                } else {
+                    (
+                        value["best_shanten"].as_i64().unwrap(),
+                        -value["best_unseen"].as_i64().unwrap(),
+                    )
+                }
+            };
+            let winner = match rank(&first).cmp(&rank(&second)) {
+                std::cmp::Ordering::Less => 0,
+                std::cmp::Ordering::Greater => 1,
+                std::cmp::Ordering::Equal => 2,
+            };
+            let draw = first["draw"].as_str().unwrap().to_owned();
+            weights[winner] += u16::from(unseen);
+            outcomes.insert(draw.clone(), json!({"unseen": unseen, "favored_by_direct_efficiency": (["first", "second", "equal"][winner])}));
+            first_draws.insert(draw.clone(), first);
+            second_draws.insert(draw, second);
+        }
+        let key = format!("{}_{}_all", args.first, args.second);
+        result["key"] = json!(key);
+        result["reference"] = json!(format!("/comparisons/{key}"));
+        result["comparison"]["first"]["improvements"] = json!(first_draws);
+        result["comparison"]["second"]["improvements"] = json!(second_draws);
+        result["comparison"]["coverage"] = json!({
+            "by_draw": outcomes, "first_favored_unseen": weights[0], "second_favored_unseen": weights[1],
+            "equal_metrics_unseen": weights[2], "total_unseen": weights.iter().sum::<u16>(),
+            "is_probability": false, "equal_metrics_is_not_equal_strategy_value": true,
+        });
+        result["comparison"]["scope"]["all_available_draw_kinds"] = json!(true);
+        // 当前切牌的直接进张差，不能被误读为全部未来摸牌分支的差异。
+        let comparison = result["comparison"]
+            .as_object_mut()
+            .ok_or_else(bad_position)?;
+        let initial_difference = comparison.remove("difference").ok_or_else(bad_position)?;
+        comparison.insert("initial_discard_difference".into(), initial_difference);
+        Ok(result)
+    };
+    match run_all() {
+        Ok(result) => result,
+        Err((code, message)) => json!({"ok":false,"error":{"code":code,"message":message}}),
+    }
+}
+
+fn compact_followup(followup: &DrawBranch, unseen: u8) -> Value {
+    let shanten = followup.next_discards.iter().map(|d| d.shanten).min();
+    let best_unseen = followup
+        .next_discards
+        .iter()
+        .filter(|d| Some(d.shanten) == shanten)
+        .map(|d| d.total_unseen)
+        .max();
+    json!({
+        "draw":kind_name(followup.draw), "unseen":unseen, "completed_shape":followup.completed_shape,
+        "best_shanten":shanten, "best_unseen":best_unseen,
+        "best_discard_names":followup.next_discards.iter()
+            .filter(|d| Some(d.shanten) == shanten && Some(d.total_unseen) == best_unseen)
+            .map(|d| format_tile(d.discard)).collect::<Vec<_>>(),
+    })
 }
 
 type ToolError = (&'static str, String);
@@ -128,21 +225,9 @@ fn run(evidence: &Value, arguments: &str) -> Result<Value, ToolError> {
             "只能比较当前 discards 已提供的切牌；缺少候选不代表该动作非法。".into(),
         ));
     }
-    let player = evidence["player"]
-        .as_u64()
-        .filter(|&p| p < 4)
-        .ok_or_else(bad_position)? as usize;
-    let position: Position =
-        serde_json::from_value(evidence["position"].clone()).map_err(|_| bad_position())?;
-    if position.players.len() != 4
-        || position
-            .players
-            .iter()
-            .enumerate()
-            .any(|(i, p)| p.player as usize != i)
-    {
-        return Err(bad_position());
-    }
+    let snapshot = Snapshot::read(evidence)?;
+    let player = snapshot.player;
+    let position = &snapshot.position;
     let phase = &evidence["position"]["phase"];
     if !matches!(phase["kind"].as_str(), Some("after_draw" | "after_call"))
         || phase["player"] != player
@@ -158,29 +243,7 @@ fn run(evidence: &Value, arguments: &str) -> Result<Value, ToolError> {
                 .into(),
         ));
     }
-    let hand = Hand::new(
-        parse_tiles(&position.concealed)?,
-        position.players[player]
-            .melds
-            .iter()
-            .map(parse_meld)
-            .collect::<Result<_, _>>()?,
-    )
-    .map_err(|_| bad_position())?;
-    let mut visible = parse_tiles(&position.dora_indicators)?;
-    for (index, public) in position.players.iter().enumerate() {
-        for discard in &public.discards {
-            if !discard.called {
-                visible.push(parse_tile(&discard.tile).ok_or_else(bad_position)?);
-            }
-        }
-        if index != player {
-            for meld in &public.melds {
-                visible.extend(parse_tiles(&meld.tiles)?);
-            }
-        }
-    }
-    let comparison = ComparisonContext::new(hand, &visible)
+    let comparison = ComparisonContext::new(snapshot.hand, &snapshot.additional_visible)
         .and_then(|context| context.compare(first, second, draw))
         .map_err(analysis_error)?;
     let first_draws = draws(&comparison.first.efficiency.candidates);
@@ -261,74 +324,6 @@ fn draws(candidates: &DrawCandidates) -> &[crate::analysis::TileAvailability] {
     match candidates {
         DrawCandidates::Effective(tiles) | DrawCandidates::Winning(tiles) => tiles,
     }
-}
-
-fn parse_tile(name: &str) -> Option<Tile> {
-    (0..=Tile::MAX_VALUE)
-        .filter_map(Tile::new)
-        .find(|&tile| format_tile(tile) == name)
-}
-
-fn kind_name(kind: TileKind) -> String {
-    format_tile(
-        Tile::try_from(kind.as_u8()).unwrap_or_else(|_| unreachable!("牌种必然是合法普通牌")),
-    )
-}
-
-fn parse_tiles(names: &[String]) -> Result<Vec<Tile>, ToolError> {
-    names
-        .iter()
-        .map(|name| parse_tile(name).ok_or_else(bad_position))
-        .collect()
-}
-
-fn parse_meld(meld: &PublicMeld) -> Result<Meld, ToolError> {
-    let mut tiles = parse_tiles(&meld.tiles)?;
-    tiles.sort_unstable();
-    if meld.kind == "ankan" {
-        if meld.called.is_some() || meld.from.is_some() {
-            return Err(bad_position());
-        }
-        return Ok(Meld::Ankan {
-            tiles: tiles.try_into().map_err(|_| bad_position())?,
-        });
-    }
-    let called = meld
-        .called
-        .as_deref()
-        .and_then(parse_tile)
-        .ok_or_else(bad_position)?;
-    let from = PlayerIndex::new(meld.from.ok_or_else(bad_position)?).ok_or_else(bad_position)?;
-    Ok(match meld.kind.as_str() {
-        "chi" => Meld::Chi {
-            tiles: tiles.try_into().map_err(|_| bad_position())?,
-            called,
-            from,
-        },
-        "pon" => Meld::Pon {
-            tiles: tiles.try_into().map_err(|_| bad_position())?,
-            called,
-            from,
-        },
-        "daiminkan" => Meld::Daiminkan {
-            tiles: tiles.try_into().map_err(|_| bad_position())?,
-            called,
-            from,
-        },
-        "kakan" => Meld::Kakan {
-            tiles: tiles.try_into().map_err(|_| bad_position())?,
-            called,
-            from,
-        },
-        _ => return Err(bad_position()),
-    })
-}
-
-fn bad_position() -> ToolError {
-    (
-        "invalid_position",
-        "局面快照缺少有效的手牌或公开信息。".into(),
-    )
 }
 
 fn analysis_error(error: ComparisonError) -> ToolError {

@@ -256,7 +256,7 @@ pub fn shanten(counts: &[u8; TILE_KIND_COUNT]) -> i8 {
 }
 
 /// 返回完整领域手牌的最小向听数，并把已有副露计作固定面子。
-pub(super) fn hand_shanten(hand: &Hand) -> i8 {
+pub(crate) fn hand_shanten(hand: &Hand) -> i8 {
     let counts = concealed_counts(hand);
     let ordinary = ordinary_shanten_with_constraint(&counts, hand.melds(), &standard_constraint())
         .unwrap_or_else(|| unreachable!("a valid hand can always use the standard constraint"));

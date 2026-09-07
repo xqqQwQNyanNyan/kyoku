@@ -24,6 +24,7 @@ fn review() -> Review {
         event_index: 12,
         player: PlayerIndex::new(0).unwrap(),
         position: VisiblePosition {
+            history: None,
             round: RoundId::new(Wind::South, 2).unwrap(),
             honba: 1,
             riichi_sticks: 2,
@@ -380,11 +381,14 @@ fn server_at(
 mod chat;
 
 #[test]
-fn connection_test_requires_a_valid_tool_call_without_sending_review_data() {
-    let (endpoint, handle) = server(vec![(
-        200,
-        response(vec![call("probe", "get_review", "{}")]).to_string(),
-    )]);
+fn connection_test_requires_a_valid_tool_roundtrip_without_sending_review_data() {
+    let (endpoint, handle) = server(vec![
+        (
+            200,
+            response(vec![call("probe", "get_review", "{}")]).to_string(),
+        ),
+        (200, response(vec![message("连接成功")]).to_string()),
+    ]);
     AgentConfig {
         endpoint: &endpoint,
         model: "test-model",
@@ -393,16 +397,21 @@ fn connection_test_requires_a_valid_tool_call_without_sending_review_data() {
     .test_connection()
     .unwrap();
     let requests = handle.join().unwrap();
-    assert_eq!(requests.len(), 1);
+    assert_eq!(requests.len(), 2);
     assert_eq!(requests[0]["store"], false);
-    assert_eq!(requests[0]["tool_choice"]["name"], "get_review");
+    assert_eq!(requests[0]["tool_choice"], "auto");
+    assert_eq!(requests[0]["tools"].as_array().unwrap().len(), 1);
     assert_eq!(requests[0]["input"].as_array().unwrap().len(), 1);
+    let result = requests[1]["input"].as_array().unwrap().last().unwrap();
+    assert_eq!(result["type"], "function_call_output");
+    assert_eq!(result["call_id"], "probe");
     assert_eq!(
-        requests[0]["input"],
-        json!([{
-            "role":"user", "content":"连接测试：请调用 get_review，不必回答。"
-        }])
+        serde_json::from_str::<Value>(result["output"].as_str().unwrap()).unwrap(),
+        json!({"ok":true,"connection_test":true})
     );
+    for request in requests {
+        assert!(!request["input"].to_string().contains("concealed"));
+    }
 }
 
 #[test]
@@ -423,6 +432,67 @@ fn connection_test_rejects_successful_http_with_incompatible_output() {
         ));
         handle.join().unwrap();
     }
+}
+
+#[test]
+fn connection_test_rejects_an_incomplete_or_invalid_second_response() {
+    for second in [
+        (
+            400,
+            json!({"error":{"code":"invalid_request_error","message":"missing reasoning_content"}})
+                .to_string(),
+        ),
+        (200, json!({"status":"incomplete","output":[]}).to_string()),
+        (
+            200,
+            response(vec![call("again", "get_review", "{}")]).to_string(),
+        ),
+        (200, response(vec![]).to_string()),
+    ] {
+        let (endpoint, handle) = server(vec![
+            (
+                200,
+                response(vec![call("probe", "get_review", "{}")]).to_string(),
+            ),
+            second,
+        ]);
+        assert!(
+            AgentConfig {
+                endpoint: &endpoint,
+                model: "test",
+                api_key: None
+            }
+            .test_connection()
+            .is_err()
+        );
+        assert_eq!(handle.join().unwrap().len(), 2);
+    }
+}
+
+#[test]
+fn http_error_includes_provider_diagnostics_but_redacts_authentication() {
+    let (endpoint, handle) = server(vec![(
+        400,
+        json!({"error":{
+            "code":"invalid_request_error", "param":"tool_choice",
+            "message":"Thinking mode does not support this tool_choice; key=private-test-key",
+            "request":"private-request-body"
+        }})
+        .to_string(),
+    )]);
+    let error = AgentConfig {
+        endpoint: &endpoint,
+        model: "test",
+        api_key: Some("private-test-key"),
+    }
+    .test_connection()
+    .unwrap_err();
+    let rendered = format!("{error} {error:?}");
+    assert!(rendered.contains("Thinking mode does not support this tool_choice"));
+    assert!(rendered.contains("invalid_request_error"));
+    assert!(!rendered.contains("private-test-key"));
+    assert!(!rendered.contains("private-request-body"));
+    assert_eq!(handle.join().unwrap().len(), 1);
 }
 
 #[test]
@@ -448,17 +518,14 @@ fn http_session_handles_tool_roundtrip_followup_and_rolls_back_failed_turn() {
     assert_eq!(session.ask("第一问").unwrap(), "【说明】首次解释");
     let history = session.history.clone();
     let error = session.ask("失败的问题").unwrap_err();
-    assert!(matches!(error, AgentError::Http { status: 429 }));
+    assert!(matches!(error, AgentError::Http { status: 429, .. }));
     assert!(!error.to_string().contains("do-not-print"));
     assert_eq!(session.history, history);
     assert_eq!(session.ask("第二问").unwrap(), "【说明】追问解释");
     let requests = handle.join().unwrap();
     assert_eq!(requests[0]["model"], "test-model");
     assert_eq!(requests[0]["store"], false);
-    assert_eq!(
-        requests[0]["tool_choice"],
-        json!({"type": "function", "name": "get_review"})
-    );
+    assert_eq!(requests[0]["tool_choice"], json!("auto"));
     assert_eq!(
         requests[0]["include"],
         json!(["reasoning.encrypted_content"])
@@ -815,33 +882,7 @@ fn invalid_answer_gets_bounded_correction_and_failed_turn_rolls_back() {
 #[test]
 #[ignore = "使用本机 LLM 配置发送公开 fixture，可能产生调用费用"]
 fn live_issue9_two_turn_explanation() {
-    let mut file_config = std::collections::HashMap::new();
-    if let Ok(entries) = dotenvy::from_path_iter(".env") {
-        for entry in entries {
-            let (key, value) = entry.unwrap_or_else(|_| panic!("无法解析本机 .env"));
-            file_config.entry(key).or_insert(value);
-        }
-    }
-    let read = |key: &str| {
-        std::env::var(key)
-            .ok()
-            .or_else(|| file_config.get(key).cloned())
-    };
-    let endpoint = read("KYOKU_OPENAI_ENDPOINT");
-    let key = read(if endpoint.is_some() {
-        "AGENT_API_KEY"
-    } else {
-        "OPENAI_API_KEY"
-    });
-    let model = read("OPENAI_MODEL").expect("需要配置 OPENAI_MODEL");
-    let client = client::Client::new(&AgentConfig {
-        endpoint: endpoint
-            .as_deref()
-            .unwrap_or("https://api.openai.com/v1/responses"),
-        model: &model,
-        api_key: key.as_deref(),
-    })
-    .unwrap();
+    let client = live_client();
     let log =
         convlog::tenhou::Log::from_json_str(include_str!("../../fixtures/tenhou/ranked_game.json"))
             .unwrap();
@@ -1047,9 +1088,9 @@ fn comparison_roundtrip_and_restored_citations_work_in_both_protocols() {
         let requests = handle.join().unwrap();
         assert_eq!(requests.len(), 4);
         let definition = if chat {
-            &requests[0]["tools"][1]["function"]
+            &requests[1]["tools"][1]["function"]
         } else {
-            &requests[0]["tools"][1]
+            &requests[1]["tools"][1]
         };
         assert_eq!(definition["name"], "compare_discards");
         assert_eq!(definition["strict"], true);
@@ -1070,4 +1111,275 @@ fn comparison_roundtrip_and_restored_citations_work_in_both_protocols() {
         }
         assert!(SessionArchive::from_json(&tampered.to_string()).is_err());
     }
+}
+
+#[test]
+fn analysis_tools_roundtrip_without_mortal_and_survive_session_restore() {
+    let log =
+        convlog::tenhou::Log::from_json_str(include_str!("../../fixtures/tenhou/ranked_game.json"))
+            .unwrap();
+    let events = convlog::tenhou_to_mjai(&log).unwrap();
+    let context = AgentContext::from_events(&events, PlayerIndex::new(0).unwrap(), 2).unwrap();
+    let reply = json!({"sections":[{"source":"calculation","text":"当前与玩家1同点。","facts":[
+        {"path":"/analyses/score_target_1/point_gap_target_minus_self","value":0}
+    ]}]})
+    .to_string();
+    for chat in [false, true] {
+        let tool_response = |id: &str, name: &str, args: &str| {
+            if chat {
+                json!({"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":id,"type":"function","function":{"name":name,"arguments":args}}]}}]}).to_string()
+            } else {
+                response(vec![call(id, name, args)]).to_string()
+            }
+        };
+        let text_response = if chat {
+            json!({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":reply}}]}).to_string()
+        } else {
+            response(vec![raw_message(&reply)]).to_string()
+        };
+        let (endpoint, handle) = server_at(
+            if chat {
+                "/v1/chat/completions"
+            } else {
+                "/v1/responses"
+            },
+            vec![
+                (200, tool_response("review", "get_review", "{}")),
+                (
+                    200,
+                    tool_response("score", "analyze_score_targets", r#"{"target":1}"#),
+                ),
+                (200, text_response.clone()),
+                (200, text_response),
+            ],
+        );
+        let config = AgentConfig {
+            endpoint: &endpoint,
+            model: "test",
+            api_key: None,
+        };
+        let mut session = AgentSession::with_context(&context, &config).unwrap();
+        let answer = session.ask("和玩家1的点差如何？").unwrap();
+        let saved = serde_json::to_value(session.archive()).unwrap();
+        let archive = SessionArchive::from_json(&saved.to_string()).unwrap();
+        let mut restored = AgentSession::from_archive(&archive, &config).unwrap();
+        assert_eq!(restored.ask("再说一次").unwrap(), answer);
+        let requests = handle.join().unwrap();
+        let names: Vec<_> = requests[1]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| {
+                if chat {
+                    d["function"]["name"].as_str().unwrap()
+                } else {
+                    d["name"].as_str().unwrap()
+                }
+            })
+            .collect();
+        for name in [
+            "compare_improvements",
+            "analyze_hand",
+            "analyze_yaku_route",
+            "analyze_defense",
+            "analyze_actions",
+            "analyze_score_targets",
+        ] {
+            assert!(names.contains(&name));
+        }
+        assert_eq!(requests[3]["tool_choice"], "auto");
+        let mut changed = saved.clone();
+        for item in changed["history"].as_array_mut().unwrap() {
+            if item["type"] == "function_call_output" && item["call_id"] == "score" {
+                let mut value: Value =
+                    serde_json::from_str(item["output"].as_str().unwrap()).unwrap();
+                value["analysis"]["point_gap_target_minus_self"] = json!(10000);
+                item["output"] = json!(value.to_string());
+            }
+        }
+        assert!(SessionArchive::from_json(&changed.to_string()).is_err());
+    }
+}
+
+fn live_client() -> client::Client {
+    let mut file_config = std::collections::HashMap::new();
+    if let Ok(entries) = dotenvy::from_path_iter(".env") {
+        for entry in entries {
+            let (key, value) = entry.unwrap_or_else(|_| panic!("无法解析本机 .env"));
+            file_config.entry(key).or_insert(value);
+        }
+    }
+    let read = |key: &str| {
+        std::env::var(key)
+            .ok()
+            .or_else(|| file_config.get(key).cloned())
+    };
+    let endpoint = read("KYOKU_OPENAI_ENDPOINT");
+    let key = read(if endpoint.is_some() {
+        "AGENT_API_KEY"
+    } else {
+        "OPENAI_API_KEY"
+    });
+    let model = read("OPENAI_MODEL").expect("需要配置 OPENAI_MODEL");
+    client::Client::new(&AgentConfig {
+        endpoint: endpoint
+            .as_deref()
+            .unwrap_or("https://api.openai.com/v1/responses"),
+        model: &model,
+        api_key: key.as_deref(),
+    })
+    .unwrap()
+}
+
+/// 公开牌谱的端到端手动验收；只输出通过校验的答案、调用名和校验错误。
+#[test]
+#[ignore = "使用本机 LLM 配置发送公开 fixture，可能产生调用费用"]
+fn live_strategy_tools_on_real_decisions() {
+    let client = live_client();
+    let log =
+        convlog::tenhou::Log::from_json_str(include_str!("../../fixtures/tenhou/ranked_game.json"))
+            .unwrap();
+    let events = convlog::tenhou_to_mjai(&log).unwrap();
+    let tenpai_log =
+        convlog::tenhou::Log::from_json_str(include_str!("../../fixtures/tenhou/four_reach.json"))
+            .unwrap();
+    let tenpai_events = convlog::tenhou_to_mjai(&tenpai_log).unwrap();
+    let mut replay = Replayer::new();
+    let mut tenpai = None;
+    for (event_index, event) in tenpai_events.iter().enumerate() {
+        replay.apply(event).unwrap();
+        let Some(state) = replay.state() else {
+            continue;
+        };
+        let RoundPhase::AfterDraw { player, .. } = state.phase() else {
+            continue;
+        };
+        if state.player(player).riichi() != RiichiState::NotDeclared
+            || !state.player(player).hand().melds().is_empty()
+            || state.remaining_draws() < 4
+        {
+            continue;
+        }
+        for &tile in state.player(player).hand().concealed() {
+            let mut hand = state.player(player).hand().clone();
+            hand.discard(tile).unwrap();
+            if crate::analysis::shanten::hand_shanten(&hand) == 0 {
+                tenpai = Some((event_index, player, tile));
+                break;
+            }
+        }
+        if tenpai.is_some() {
+            break;
+        }
+    }
+    let (tenpai_event, tenpai_player, discard) = tenpai.expect("fixture 应包含门前听牌决策");
+    let config = crate::mortal::MortalConfig {
+        python: std::path::Path::new("mortal/.venv/bin/python"),
+        runtime: std::path::Path::new("mortal/runtime"),
+        checkpoint: std::path::Path::new("mortal/models/mortal_582500.pth"),
+    };
+    let cases=[("ranked_game", &events, PlayerIndex::new(0).unwrap(), 2,vec!["完整比较切2p和3m的所有下一张摸牌：双方分别有多少不可见枚数的分支占优、多少指标相同？举一个具体差异，但不要把覆盖统计解释成整体收益。".to_owned()]),
+        ("four_reach", &tenpai_events, tenpai_player, tenpai_event,vec![
+            format!("分析切{}后的完整待牌、舍牌振听和默听/立直条件打点。另外请单独核验这手牌到二杯口还有几向听。",crate::replay::inspector::format_tile(discard)),
+            format!("检查手中牌分别针对各家的防守依据，并计算超过玩家{}需要的荣和与自摸条件；如果已经排在他前面请直接说明。",(tenpai_player.get_id()+1)%4),
+            "请用动作比较检查当前立直和不立直的选择：有哪些可用的立直宣言牌，具体付出什么代价？".to_owned(),
+        ])];
+    let mut used = std::collections::HashSet::new();
+    for (label, events, player, event_index, questions) in cases {
+        let review = crate::review::review_at(events, player, event_index, &config).unwrap();
+        let evidence = review_evidence(&review);
+        let mut history = Vec::new();
+        for question in questions {
+            let mut trace = Vec::new();
+            let result = answer_traced(
+                &evidence,
+                &history,
+                !history.is_empty(),
+                &question,
+                |input, forced| client.respond(input, forced),
+                &mut trace,
+            );
+            for step in trace {
+                if step["kind"] == "validation" {
+                    eprintln!("回答校验：{}", step["error"]);
+                }
+                if step["kind"] == "tool" {
+                    eprintln!("工具 {} 成功={}", step["name"], step["result"]["ok"]);
+                    if step["result"]["ok"] == true {
+                        used.insert(step["name"].as_str().unwrap().to_owned());
+                    }
+                }
+            }
+            let (text, next) = result.unwrap();
+            println!(
+                "{label} 玩家{} G{event_index}：{question}\n{text}\n",
+                player.get_id()
+            );
+            history = next;
+        }
+    }
+    for name in [
+        "compare_improvements",
+        "analyze_hand",
+        "analyze_yaku_route",
+        "analyze_defense",
+        "analyze_score_targets",
+        "analyze_actions",
+    ] {
+        assert!(used.contains(name), "缺少工具验收：{name}");
+    }
+}
+
+#[test]
+#[ignore = "使用本机 LLM 配置复测公开听牌样本，可能产生调用费用"]
+fn live_scoring_and_action_followup() {
+    let client = live_client();
+    let log =
+        convlog::tenhou::Log::from_json_str(include_str!("../../fixtures/tenhou/four_reach.json"))
+            .unwrap();
+    let events = convlog::tenhou_to_mjai(&log).unwrap();
+    let review = crate::review::review_at(
+        &events,
+        PlayerIndex::new(2).unwrap(),
+        58,
+        &crate::mortal::MortalConfig {
+            python: std::path::Path::new("mortal/.venv/bin/python"),
+            runtime: std::path::Path::new("mortal/runtime"),
+            checkpoint: std::path::Path::new("mortal/models/mortal_582500.pth"),
+        },
+    )
+    .unwrap();
+    let evidence = review_evidence(&review);
+    let mut history = Vec::new();
+    let mut tools = std::collections::HashSet::new();
+    for question in [
+        "切3p后听什么？默听和立直的条件打点有什么区别？",
+        "再用动作比较核对当前可用的立直宣言牌，并解释立直与不立直的取舍。",
+    ] {
+        let mut trace = Vec::new();
+        let result = answer_traced(
+            &evidence,
+            &history,
+            !history.is_empty(),
+            question,
+            |input, forced| client.respond(input, forced),
+            &mut trace,
+        );
+        for step in trace {
+            if step["kind"] == "validation" {
+                eprintln!("回答校验：{}", step["error"]);
+            }
+            if step["kind"] == "tool" {
+                eprintln!("工具 {} 成功={}", step["name"], step["result"]["ok"]);
+                if step["result"]["ok"] == true {
+                    tools.insert(step["name"].as_str().unwrap().to_owned());
+                }
+            }
+        }
+        let (text, next) = result.unwrap();
+        println!("{question}\n{text}\n");
+        history = next;
+    }
+    assert!(tools.contains("analyze_hand"));
+    assert!(tools.contains("analyze_actions"));
 }

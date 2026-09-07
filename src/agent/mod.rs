@@ -14,14 +14,16 @@ mod client;
 mod comparison;
 mod evidence;
 mod output;
+mod position;
 mod session;
+mod strategy;
 
 pub use session::{SessionArchive, SessionFormatError};
 
 pub use evidence::review_evidence;
 
 const INSTRUCTIONS: &str = include_str!("prompt.txt");
-const MAX_REQUESTS: usize = 6;
+const MAX_REQUESTS: usize = 10;
 const MAX_HISTORY_BYTES: usize = 1024 * 1024;
 const MAX_QUESTION_BYTES: usize = 16 * 1024;
 
@@ -60,6 +62,7 @@ impl AgentContext {
         }
         let state = replay.state().ok_or(ReviewError::NoRound { event_index })?;
         let position = VisiblePosition {
+            history: crate::review::public_history(&events[..=event_index]),
             round: state.round(),
             honba: state.honba(),
             riichi_sticks: state.riichi_sticks(),
@@ -105,36 +108,85 @@ impl AgentConfig<'_> {
         client::Client::new(self).map(|_| ())
     }
 
-    /// 发送一次不含牌谱的请求，检查认证、模型和工具调用能力。
+    /// 通过两次不含牌谱的请求，检查工具调用及返回工具结果后的续答能力。
     /// 此操作可能产生服务商的调用费用，不保存服务端会话。
     pub fn test_connection(&self) -> Result<(), AgentError> {
-        let response = client::Client::new(self)?.respond(
-            &[json!({"role": "user", "content": "连接测试：请调用 get_review，不必回答。"})],
-            true,
-        )?;
+        let client = client::Client::new(self)?;
+        let mut input = vec![
+            json!({"role": "user", "content": "连接测试：请调用 get_review；收到 connection_test=true 后直接确认连接成功，不再调用工具。这不是牌谱分析。"}),
+        ];
+        let response = client.respond(&input, true)?;
         if response["status"] != "completed" {
             return Err(AgentError::IncompleteResponse);
         }
         let output = response["output"]
             .as_array()
             .ok_or(invalid("missing output array"))?;
-        if output.iter().any(|item| {
-            item["type"] == "function_call"
+        let calls: Vec<_> = output
+            .iter()
+            .filter(|item| item["type"] == "function_call")
+            .collect();
+        if calls.len() != 1
+            || !calls.iter().all(|item| {
+                item["type"] == "function_call"
+                    && item["status"] == "completed"
+                    && item["name"] == "get_review"
+                    && item["call_id"].as_str().is_some_and(|id| !id.is_empty())
+                    && item["arguments"].as_str().is_some_and(|args| {
+                        serde_json::from_str::<Value>(args).is_ok_and(|v| v == json!({}))
+                    })
+            })
+        {
+            return Err(invalid("service did not return the requested tool call"));
+        }
+        input.extend(output.iter().cloned());
+        input.push(
+            json!({"type":"function_call_output","call_id":calls[0]["call_id"],
+            "output":json!({"ok":true,"connection_test":true}).to_string()}),
+        );
+        let response = client.respond(&input, false)?;
+        if response["status"] != "completed" {
+            return Err(AgentError::IncompleteResponse);
+        }
+        let output = response["output"]
+            .as_array()
+            .ok_or(invalid("missing output array"))?;
+        if output.iter().any(|item| item["type"] == "function_call") {
+            return Err(invalid("service did not finish the tool roundtrip test"));
+        }
+        if !output.iter().any(|item| {
+            item["type"] == "message"
+                && item["role"] == "assistant"
                 && item["status"] == "completed"
-                && item["name"] == "get_review"
-                && item["call_id"].as_str().is_some_and(|id| !id.is_empty())
-                && item["arguments"].as_str().is_some_and(|args| {
-                    serde_json::from_str::<Value>(args).is_ok_and(|v| v == json!({}))
+                && item["content"].as_array().is_some_and(|parts| {
+                    parts.iter().any(|part| {
+                        part["type"] == "output_text"
+                            && part["text"]
+                                .as_str()
+                                .is_some_and(|text| !text.trim().is_empty())
+                    })
                 })
         }) {
-            Ok(())
-        } else {
-            Err(invalid("service did not return the requested tool call"))
+            return Err(invalid(
+                "service did not answer after receiving the tool result",
+            ));
         }
+        Ok(())
     }
 }
 
-/// Agent 调用失败。不会包含密钥、HTTP 响应正文或未经校验的模型输出。
+/// 服务端结构化错误的有界、脱敏摘要，不包含完整 HTTP 响应正文。
+#[derive(Debug)]
+pub struct ProviderError {
+    /// 服务端错误码。
+    pub code: Option<String>,
+    /// 服务端指出的相关参数。
+    pub parameter: Option<String>,
+    /// 服务端错误说明，已移除本次认证密钥及 Bearer 凭据。
+    pub message: Option<String>,
+}
+
+/// Agent 调用失败，不包含认证密钥、完整 HTTP 正文或未经校验的模型输出。
 #[derive(Debug)]
 pub enum AgentError {
     InvalidConfig {
@@ -148,6 +200,7 @@ pub enum AgentError {
     },
     Http {
         status: u16,
+        error: Option<ProviderError>,
     },
     InvalidResponse {
         reason: &'static str,
@@ -168,10 +221,30 @@ impl fmt::Display for AgentError {
                 "question must contain 1..={MAX_QUESTION_BYTES} UTF-8 bytes after trimming"
             ),
             Self::Transport { kind } => write!(f, "LLM request failed ({kind})"),
-            Self::Http { status } => write!(
-                f,
-                "LLM returned HTTP {status}; check endpoint, credentials, model and quota"
-            ),
+            Self::Http { status, error } => {
+                let hint = match status {
+                    400 | 422 => "请求参数被服务端拒绝，请检查模型名和接口参数兼容性",
+                    401 | 403 => "认证或访问权限失败，请检查该服务的 API Key 和模型权限",
+                    402 => "服务账户余额不足，请检查账户额度",
+                    404 => "接口或模型不存在，请检查完整服务地址和模型名",
+                    429 => "请求频率或配额受限，请检查服务额度并稍后重试",
+                    500..=599 => "服务端暂时不可用，请稍后重试",
+                    _ => "请检查服务配置与状态",
+                };
+                write!(f, "LLM returned HTTP {status}: {hint}")?;
+                if let Some(error) = error {
+                    if let Some(code) = &error.code {
+                        write!(f, " [code={code}]")?;
+                    }
+                    if let Some(parameter) = &error.parameter {
+                        write!(f, " [param={parameter}]")?;
+                    }
+                    if let Some(message) = &error.message {
+                        write!(f, "; {message}")?;
+                    }
+                }
+                Ok(())
+            }
             Self::InvalidResponse { reason } => {
                 write!(f, "invalid LLM API response: {reason}")
             }
@@ -233,7 +306,7 @@ impl AgentSession {
         &self.evidence
     }
 
-    /// 提问或追问。首次必须成功取得工具证据，最多请求模型六次。
+    /// 提问或追问。首次必须成功取得工具证据，最多请求模型十次。
     pub fn ask(&mut self, question: &str) -> Result<String, AgentError> {
         if serde_json::to_vec(&self.archive)
             .map_err(|_| AgentError::HistoryLimit)?
@@ -283,7 +356,13 @@ fn tool_definition() -> Value {
 }
 
 fn tool_definitions() -> Vec<Value> {
-    vec![tool_definition(), comparison::definition()]
+    let mut definitions = vec![
+        tool_definition(),
+        comparison::definition(),
+        comparison::all_definition(),
+    ];
+    definitions.extend(strategy::definitions());
+    definitions
 }
 
 fn execute_tool(evidence: &Value, name: &str, arguments: &str) -> (Value, bool) {
@@ -291,9 +370,18 @@ fn execute_tool(evidence: &Value, name: &str, arguments: &str) -> (Value, bool) 
         // 比较成功也不能代替首次读取完整局面。
         return (comparison::execute(evidence, arguments), false);
     }
+    if name == "compare_improvements" {
+        return (comparison::execute_all(evidence, arguments), false);
+    }
+    if strategy::definitions()
+        .iter()
+        .any(|definition| definition["name"] == name)
+    {
+        return (strategy::execute(name, evidence, arguments), false);
+    }
     if name != "get_review" {
         return (
-            json!({"ok": false, "error": {"code": "unknown_tool", "message": "Available tools: get_review, compare_discards."}}),
+            json!({"ok": false, "error": {"code": "unknown_tool", "message": "请使用当前 tools 中声明的工具。"}}),
             false,
         );
     }
@@ -341,12 +429,14 @@ fn answer_traced(
     let mut staged = history.to_vec();
     let mut verified = evidence.clone();
     verified["comparisons"] = json!({});
+    verified["analyses"] = json!({});
     for item in history {
         if item["type"] == "function_call_output"
             && let Some(output) = item["output"].as_str()
             && let Ok(result) = serde_json::from_str::<Value>(output)
         {
             comparison::remember(&mut verified, &result);
+            strategy::remember(&mut verified, &result);
         }
     }
     let mut corrections = 0;
@@ -392,6 +482,7 @@ fn answer_traced(
                         .ok_or(invalid("missing function arguments"))?;
                     let (result, success) = execute_tool(evidence, name, arguments);
                     comparison::remember(&mut verified, &result);
+                    strategy::remember(&mut verified, &result);
                     has_evidence |= success;
                     trace.push(json!({"kind": "tool", "call_id": id, "name": name, "arguments": arguments, "result": result}));
                     tool_results.push(json!({"type": "function_call_output", "call_id": id, "output": result.to_string()}));

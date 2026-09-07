@@ -1,5 +1,6 @@
 use super::*;
 use crate::analysis::DrawCandidates;
+use crate::mahjong::meld::Meld;
 
 fn tile(value: u8) -> Tile {
     Tile::try_from(value).unwrap()

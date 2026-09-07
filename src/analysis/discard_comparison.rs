@@ -5,7 +5,6 @@ use super::{
 };
 use crate::mahjong::{
     hand::Hand,
-    meld::Meld,
     tile::{Tile, TileKind},
 };
 
@@ -65,38 +64,17 @@ impl ComparisonContext {
             }
             .into());
         }
-        for meld in hand.melds() {
-            let kinds: Vec<_> = meld.tiles().iter().map(|t| t.kind().as_u8()).collect();
-            let valid = match meld {
-                Meld::Chi { .. } => {
-                    kinds[0] < 27
-                        && kinds[0] / 9 == kinds[2] / 9
-                        && kinds[0] + 1 == kinds[1]
-                        && kinds[1] + 1 == kinds[2]
+        let unseen =
+            super::visible_hand::unseen_tiles(&hand, additional_visible).map_err(|error| {
+                match error {
+                    super::visible_hand::VisibleHandError::InvalidMeld => {
+                        ComparisonError::InvalidMeld
+                    }
+                    super::visible_hand::VisibleHandError::TooManyCopies { kind } => {
+                        ComparisonError::TooManyCopies { kind }
+                    }
                 }
-                _ => kinds.iter().all(|k| *k == kinds[0]),
-            };
-            if !valid
-                || meld
-                    .called()
-                    .is_some_and(|tile| !meld.tiles().contains(&tile))
-            {
-                return Err(ComparisonError::InvalidMeld);
-            }
-        }
-        let mut unseen = [4; 34];
-        for tile in hand
-            .concealed()
-            .iter()
-            .chain(hand.melds().iter().flat_map(|m| m.tiles()))
-            .chain(additional_visible)
-        {
-            let count = &mut unseen[tile.kind().as_u8() as usize];
-            if *count == 0 {
-                return Err(ComparisonError::TooManyCopies { kind: tile.kind() });
-            }
-            *count -= 1;
-        }
+            })?;
         Ok(Self { hand, unseen })
     }
 
@@ -119,6 +97,22 @@ impl ComparisonContext {
             second: self.branch(second, draw)?,
             connections_before: connections(&self.hand),
         })
+    }
+
+    /// 枚举全部仍有不可见副本的摸牌分支；枚数仅作覆盖统计，不当作事件概率。
+    pub(crate) fn compare_all(
+        &self,
+        first: Tile,
+        second: Tile,
+    ) -> Result<Vec<(u8, DiscardComparison)>, ComparisonError> {
+        (0..34u8)
+            .filter(|&kind| self.unseen[kind as usize] > 0)
+            .map(|kind| {
+                let draw = TileKind::new(kind).unwrap_or_else(|| unreachable!("0..34 是合法牌种"));
+                self.compare(first, second, Some(draw))
+                    .map(|comparison| (self.unseen[kind as usize], comparison))
+            })
+            .collect()
     }
 
     fn branch(

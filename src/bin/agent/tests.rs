@@ -201,7 +201,8 @@ fn browse_questions_reset_history_on_switch_but_keep_it_on_invalid_selection() {
     assert!(requests[2].to_string().contains("first-position-question"));
     for (first, second, event_index) in [(0, 1, 2), (3, 4, 12), (5, 6, 2)] {
         assert_eq!(requests[first]["input"].as_array().unwrap().len(), 1);
-        assert_eq!(requests[first]["tool_choice"]["name"], "get_review");
+        assert_eq!(requests[first]["tool_choice"], "auto");
+        assert_eq!(requests[first]["tools"].as_array().unwrap().len(), 1);
         let tool = requests[second]["input"]
             .as_array()
             .unwrap()
@@ -234,6 +235,7 @@ fn review() -> kyoku::review::Review {
         event_index: 2,
         player: PlayerIndex::new(0).unwrap(),
         position: VisiblePosition {
+            history: None,
             round: RoundId::new(Wind::East, 1).unwrap(),
             honba: 0,
             riichi_sticks: 0,
@@ -433,7 +435,10 @@ fn custom_http_requests_send_only_explicit_custom_credentials() {
             .unwrap();
             assert!(matches!(
                 session.ask("分析"),
-                Err(kyoku::agent::AgentError::Http { status: 401 })
+                Err(kyoku::agent::AgentError::Http {
+                    status: 401,
+                    error: None
+                })
             ));
             assert_eq!(
                 server.join().unwrap(),

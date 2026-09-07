@@ -1,5 +1,6 @@
 use super::*;
 use crate::agent::{AgentContext, answer, execute_tool, output};
+use crate::mahjong::player_index::PlayerIndex;
 
 fn evidence() -> Value {
     let log = convlog::tenhou::Log::from_json_str(include_str!(
@@ -79,6 +80,46 @@ fn issue9_four_man_draw_exposes_a_concrete_followup_difference() {
 }
 
 #[test]
+fn improvement_summary_preserves_shape_completion_and_matches_detailed_metrics() {
+    let mut evidence = evidence();
+    evidence["position"]["concealed"] = json!(
+        "1m 2m 3m 4m 5m 6m 7p 8p 9p 2s 3s 5p 5p E"
+            .split_whitespace()
+            .collect::<Vec<_>>()
+    );
+    let snapshot = Snapshot::read(&evidence).unwrap();
+    let context = ComparisonContext::new(snapshot.hand, &snapshot.additional_visible).unwrap();
+    let comparison = context
+        .compare(
+            parse_tile("E").unwrap(),
+            parse_tile("3m").unwrap(),
+            Some(parse_tile("1s").unwrap().kind()),
+        )
+        .unwrap();
+    let full = branch(&comparison.first);
+    let summary = compact_followup(comparison.first.followup.as_ref().unwrap(), 4);
+    assert_eq!(summary["completed_shape"], true);
+    assert_eq!(summary["unseen"], 4);
+    assert_eq!(
+        summary["best_shanten"],
+        full["followup"]["best_shanten_after_discard"]
+    );
+    assert_eq!(
+        summary["best_unseen"],
+        full["followup"]["best_unseen_at_best_shanten"]
+    );
+    assert_eq!(
+        summary["best_discard_names"],
+        full["followup"]["best_discards_by_direct_efficiency"]
+    );
+    assert_eq!(summary.as_object().unwrap().len(), 6);
+    assert!(
+        serde_json::to_vec(&summary).unwrap().len()
+            < serde_json::to_vec(&full["followup"]).unwrap().len() / 2
+    );
+}
+
+#[test]
 fn invalid_arguments_and_unavailable_states_cannot_produce_comparisons() {
     let evidence = evidence();
     for args in [
@@ -99,6 +140,7 @@ fn invalid_arguments_and_unavailable_states_cannot_produce_comparisons() {
     let args = r#"{"first":"2p","second":"E","draw":"4m"}"#;
     let mut invalid = evidence.clone();
     invalid["position"]["players"][0]["riichi"] = json!("accepted");
+    invalid["position"]["history"] = Value::Null;
     assert_eq!(
         execute(&invalid, args)["error"]["code"],
         "unsupported_state"
@@ -212,6 +254,8 @@ fn hypothetical_results_cannot_render_the_original_draw_list() {
 #[test]
 fn called_discard_is_counted_only_in_the_public_meld() {
     let mut evidence = evidence();
+    // 这里手工构造公开快照，不沿用原 fixture 的事件历史。
+    evidence["position"]["history"] = Value::Null;
     evidence["position"]["players"][1]["melds"] = json!([{
         "kind":"pon", "tiles":["E","E","E"], "called":"E", "from":2
     }]);

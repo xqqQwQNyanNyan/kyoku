@@ -77,13 +77,15 @@ pub fn review_game(
             })?;
         if let Some(decision) = decision {
             let state = replay.state().ok_or(ReviewError::NoRound { event_index })?;
+            let mut position = visible_position(state, player);
+            position.history = public_history(&events[..=event_index]);
             decisions.push(DecisionPoint {
                 turn: state.player(player).discards().len() + 1,
                 actual: recorded_action(events, event_index, player),
                 review: Review {
                     event_index,
                     player,
-                    position: visible_position(state, player),
+                    position,
                     model: ModelInfo {
                         version: mortal.model().version,
                         tag: mortal.model().tag.clone(),

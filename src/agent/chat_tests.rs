@@ -80,10 +80,7 @@ fn chat_roundtrip_preserves_tool_groups_and_followups_and_reuses_answer_validati
         request["tools"][0]["function"]["parameters"]["additionalProperties"],
         false
     );
-    assert_eq!(
-        request["tool_choice"],
-        json!({"type":"function","function":{"name":"get_review"}})
-    );
+    assert_eq!(request["tool_choice"], json!("auto"));
     assert_eq!(request["max_completion_tokens"], 4096);
     assert_eq!(request["store"], false);
     assert_eq!(request["parallel_tool_calls"], false);
@@ -122,10 +119,10 @@ fn chat_endpoint_variants_and_connection_probe_use_chat_protocol() {
     ] {
         let (endpoint, handle) = server_at(
             path,
-            vec![(
-                200,
-                completion(tool_message(vec![tool("probe", "{}")]), "tool_calls").to_string(),
-            )],
+            vec![
+                (200, completion(json!({"role":"assistant","content":null,"reasoning_content":"probe-reasoning","tool_calls":[tool("probe", "{}")]}), "tool_calls").to_string()),
+                (200, completion(text_message("连接成功"), "stop").to_string()),
+            ],
         );
         AgentConfig {
             endpoint: &endpoint,
@@ -135,8 +132,20 @@ fn chat_endpoint_variants_and_connection_probe_use_chat_protocol() {
         .test_connection()
         .unwrap();
         let requests = handle.join().unwrap();
+        assert_eq!(requests.len(), 2);
         assert_eq!(requests[0]["messages"].as_array().unwrap().len(), 2);
-        assert_eq!(requests[0]["tool_choice"]["function"]["name"], "get_review");
+        assert_eq!(
+            requests[1]["messages"][2]["reasoning_content"],
+            "probe-reasoning"
+        );
+        assert_eq!(requests[1]["messages"][3]["tool_call_id"], "probe");
+        assert!(
+            requests[1]["messages"][3]["content"]
+                .as_str()
+                .unwrap()
+                .contains("connection_test")
+        );
+        assert_eq!(requests[0]["tool_choice"], "auto");
         assert!(!requests[0]["messages"][1].to_string().contains("concealed"));
     }
 }
@@ -192,7 +201,8 @@ fn chat_requires_evidence_and_can_correct_invalid_tool_arguments() {
         "【说明】未运行切牌分析。\n\n【Mortal】未分析。"
     );
     let requests = handle.join().unwrap();
-    assert_eq!(requests[2]["tool_choice"]["function"]["name"], "get_review");
+    assert_eq!(requests[2]["tool_choice"], "auto");
+    assert_eq!(requests[2]["tools"].as_array().unwrap().len(), 1);
     assert!(requests[2].to_string().contains("invalid_arguments"));
     assert!(!requests[2].to_string().contains("失败取证"));
 }

@@ -50,6 +50,7 @@ fn output_shows_public_state_and_preserves_final_recommendation() {
         event_index: 12,
         player: PlayerIndex::new(0).unwrap(),
         position: VisiblePosition {
+            history: None,
             round: RoundId::new(Wind::East, 1).unwrap(),
             honba: 1,
             riichi_sticks: 2,

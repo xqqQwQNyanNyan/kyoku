@@ -3,9 +3,12 @@ mod agari_context;
 mod bonus;
 pub(crate) mod discard_comparison;
 mod points;
+pub(crate) mod score_scenario;
 mod scoring;
 pub mod shanten;
 pub mod tile_efficiency;
+pub(crate) mod visible_hand;
+pub(crate) mod winning_value;
 mod yaku;
 
 pub use agari_context::{AgariContext, RiichiStatus, RonSource, TsumoSource, WinMethod};

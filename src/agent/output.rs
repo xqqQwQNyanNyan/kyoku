@@ -59,7 +59,12 @@ pub(super) fn render(text: &str, evidence: &Value) -> Result<String, String> {
         let (label, prefix) = match section.source {
             Source::Position => ("局面", "/position/"),
             Source::Calculation => {
-                if evidence["analysis_status"] != "available" {
+                if evidence["analysis_status"] != "available"
+                    && !section
+                        .facts
+                        .iter()
+                        .any(|fact| fact.path.starts_with("/analyses/"))
+                {
                     return Err(
                         "当前没有可用切牌计算，只能说明未分析或未提供，不得生成 calculation 段落。"
                             .into(),
@@ -84,12 +89,11 @@ pub(super) fn render(text: &str, evidence: &Value) -> Result<String, String> {
             );
         }
         if section.draws_for.is_some()
-            && section
-                .facts
-                .iter()
-                .any(|fact| fact.path.starts_with("/comparisons/"))
+            && section.facts.iter().any(|fact| {
+                fact.path.starts_with("/comparisons/") || fact.path.starts_with("/analyses/")
+            })
         {
-            return Err("draws_for 只展示当前 /discards 的进张，不能用于假设摸牌后的结果；请直接引用比较分支并说明摸牌和后续切牌。".into());
+            return Err("draws_for 只展示 get_review 的 /discards；引用 /analyses/ 或 /comparisons/ 时请去掉 draws_for，按工具的 waits 或分支结果直接说明。".into());
         }
         if matches!(section.source, Source::Assessment) {
             // 判断必须绑定同一次比较的双方，防止只引用推荐或单边数据就给出取舍。
@@ -108,28 +112,41 @@ pub(super) fn render(text: &str, evidence: &Value) -> Result<String, String> {
                                 .starts_with(&format!("/comparisons/{key}/second/"))
                     })
             });
-            if !paired {
-                return Err("判断必须引用 compare_discards 同一次结果的 first 和 second 两方证据；先比较并核对代价，不能只根据 Q 编理由。".into());
+            let analysis_supported = section.facts.len() >= 2
+                && section
+                    .facts
+                    .iter()
+                    .any(|fact| fact.path.starts_with("/analyses/"))
+                && section
+                    .facts
+                    .iter()
+                    .any(|fact| fact.path != section.facts[0].path);
+            if !paired && !analysis_supported {
+                return Err("判断必须引用 compare_discards 同一次结果的 first 和 second 两方证据；或引用新分析工具的至少两项不同证据，核对支持条件与代价，不能只根据 Q 编理由。".into());
             }
         }
         for fact in section.facts {
             let comparison_calculation = matches!(section.source, Source::Calculation)
-                && fact.path.starts_with("/comparisons/");
+                && (fact.path.starts_with("/comparisons/") || fact.path.starts_with("/analyses/"));
             if (!prefix.is_empty() && !fact.path.starts_with(prefix) && !comparison_calculation)
                 || !(fact.path.starts_with("/position/")
                     || fact.path.starts_with("/discards/")
                     || fact.path.starts_with("/mortal/decision/")
-                    || fact.path.starts_with("/comparisons/"))
+                    || fact.path.starts_with("/comparisons/")
+                    || fact.path.starts_with("/analyses/"))
             {
                 return Err(format!(
-                    "{label}段落的 facts 来源不匹配；请引用 {prefix} 下的证据，计算也可引用 /comparisons/，其他来源拆成独立段落。"
+                    "{label}段落的 facts 来源不匹配；请引用 {prefix} 下的证据，计算也可引用 /comparisons/ 或 /analyses/，其他来源拆成独立段落。"
                 ));
             }
             let expected = evidence
                 .pointer(&fact.path)
                 .filter(|value| !value.is_null())
                 .ok_or_else(|| {
-                    "证据引用不存在或为 null；请核对工具的实际字段，不要猜测路径。".to_owned()
+                    format!(
+                        "证据引用 {:?} 不存在或为 null；请核对工具的实际字段，不要猜测路径。",
+                        fact.path
+                    )
                 })?;
             if &fact.value != expected {
                 // 反馈只引用已有证据，不回显模型补造的值。

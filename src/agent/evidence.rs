@@ -9,7 +9,7 @@ use crate::mahjong::{
 };
 use crate::mortal::Action;
 use crate::replay::inspector::format_tile;
-use crate::review::{Review, VisiblePosition};
+use crate::review::{PublicAction, Review, VisiblePosition};
 
 /// 将可见复盘数据转换为工具使用的 JSON 证据，无需 LLM 配置或网络请求。
 /// 协议见 `docs/agent/agent.md`，与 `AgentSession::evidence` 使用同一份投影。
@@ -126,6 +126,16 @@ pub(super) fn position_evidence(
             })
         })
         .collect();
+    let history = position.history.as_ref().map(|events| events.iter().map(|event| {
+        let (kind, tile) = match event.action {
+            PublicAction::Draw => ("draw", None),
+            PublicAction::Discard { tile } => ("discard", Some(format_tile(tile))),
+            PublicAction::Call => ("call", None),
+            PublicAction::RiichiDeclared => ("riichi_declared", None),
+            PublicAction::RiichiAccepted => ("riichi_accepted", None),
+        };
+        json!({"event_index": event.event_index, "player": event.player.get_id(), "kind": kind, "tile": tile})
+    }).collect::<Vec<_>>());
     json!({
         "schema_version": 2,
         "event_index": event_index, "player": player,
@@ -136,6 +146,7 @@ pub(super) fn position_evidence(
             "dealer": position.round.dealer().get_id(),
             "honba": position.honba, "riichi_sticks": position.riichi_sticks,
             "remaining_draws": position.remaining_draws, "phase": phase(position.phase),
+            "history": history,
             "dora_indicators": tiles(&position.dora_indicators),
             "concealed": tiles(&position.concealed), "players": players,
         },
@@ -148,7 +159,8 @@ pub(super) fn position_evidence(
             "q_is_not_probability_or_expected_points",
             "recommended_overrides_q_ranking",
             "kan_q_is_separate",
-            "no_discard_scoring_or_defense_risk",
+            "conditional_scoring_requires_analysis_tool",
+            "no_deal_in_probability_or_combined_expected_value",
             "no_future_events_or_opponent_concealed_tiles",
             "mortal_preference_does_not_explain_its_cause",
         ],
