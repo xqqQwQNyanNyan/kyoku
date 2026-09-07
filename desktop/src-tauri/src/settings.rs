@@ -1,11 +1,15 @@
 use crate::{UiError, lock};
 use kyoku::agent::AgentConfig;
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, fs, path::PathBuf, sync::Mutex};
+use std::{
+    collections::BTreeMap,
+    fs::{self, OpenOptions},
+    io::Write,
+    path::PathBuf,
+    sync::Mutex,
+};
 
 const DEFAULT_ENDPOINT: &str = "https://api.openai.com/v1/responses";
-#[cfg(target_os = "macos")]
-const SERVICE: &str = "dev.kyoku.desktop.llm";
 
 #[derive(Deserialize)]
 pub(crate) struct SettingsInput {
@@ -29,7 +33,10 @@ pub(crate) struct SettingsView {
 struct SavedSettings {
     endpoint: String,
     model: String,
-    credential: Option<String>,
+    api_key: Option<String>,
+    // 兼容旧设置，但不再访问钥匙串；用户重新填写密钥后保存为新格式。
+    #[serde(rename = "credential", skip_serializing)]
+    _legacy_credential: Option<String>,
 }
 
 pub(crate) struct LlmConfig {
@@ -118,7 +125,7 @@ impl SettingsStore {
             Ok(SettingsView {
                 endpoint: saved.endpoint,
                 model: saved.model,
-                has_api_key: saved.credential.is_some(),
+                has_api_key: saved.api_key.is_some(),
                 saved: true,
             })
         } else {
@@ -136,11 +143,7 @@ impl SettingsStore {
         let _guard = lock(&self.gate)?;
         if let Some(saved) = self.read()? {
             Ok(LlmConfig {
-                key: saved
-                    .credential
-                    .as_deref()
-                    .map(|id| NativeSecrets.get(id))
-                    .transpose()?,
+                key: saved.api_key,
                 endpoint: saved.endpoint,
                 model: saved.model,
             })
@@ -149,7 +152,7 @@ impl SettingsStore {
         }
     }
 
-    fn draft(&self, input: SettingsInput, secrets: &impl Secrets) -> Result<LlmConfig, UiError> {
+    fn draft(&self, input: SettingsInput) -> Result<LlmConfig, UiError> {
         let endpoint = input.endpoint.trim().to_owned();
         let model = input.model.trim().to_owned();
         let key = if input.clear_key {
@@ -158,11 +161,7 @@ impl SettingsStore {
             Some(input.api_key.trim().to_owned())
         } else if let Some(saved) = self.read()? {
             if saved.endpoint == endpoint {
-                saved
-                    .credential
-                    .as_deref()
-                    .map(|id| secrets.get(id))
-                    .transpose()?
+                saved.api_key
             } else {
                 None
             }
@@ -193,7 +192,7 @@ impl SettingsStore {
     pub fn test(&self, input: SettingsInput) -> Result<(), UiError> {
         let config = {
             let _guard = lock(&self.gate)?;
-            self.draft(input, &NativeSecrets)?
+            self.draft(input)?
         };
         config
             .borrowed()
@@ -203,115 +202,49 @@ impl SettingsStore {
 
     pub fn save(&self, input: SettingsInput) -> Result<SettingsView, UiError> {
         let _guard = lock(&self.gate)?;
-        self.save_with(input, &NativeSecrets)
-    }
-
-    fn save_with(
-        &self,
-        input: SettingsInput,
-        secrets: &impl Secrets,
-    ) -> Result<SettingsView, UiError> {
-        let config = self.draft(input, secrets)?;
-        let previous = self.read()?;
+        let config = self.draft(input)?;
         fs::create_dir_all(&self.directory)
             .map_err(|_| UiError::new("config", "无法创建设置目录"))?;
-        // 新密钥和新文件先准备好，再切换配置；失败不会破坏正在使用的旧密钥。
-        let credential = config.key.as_ref().map(|_| credential_id()).transpose()?;
-        if let (Some(id), Some(key)) = (&credential, &config.key) {
-            secrets.set(id, key)?;
-        }
         let saved = SavedSettings {
             endpoint: config.endpoint,
             model: config.model,
-            credential,
+            api_key: config.key,
+            _legacy_credential: None,
         };
+        let bytes = serde_json::to_vec_pretty(&saved)
+            .map_err(|_| UiError::new("config", "无法编码设置"))?;
         let temporary = self.directory.join("settings.json.tmp");
-        let write_result = (|| {
-            let bytes = serde_json::to_vec_pretty(&saved)
-                .map_err(|_| UiError::new("config", "无法编码设置"))?;
-            fs::write(&temporary, bytes).map_err(|_| UiError::new("config", "无法写入设置"))?;
-            fs::rename(&temporary, self.directory.join("settings.json"))
-                .map_err(|_| UiError::new("config", "无法保存设置"))
-        })();
-        if let Err(error) = write_result {
-            if let Some(id) = &saved.credential {
-                let _ = secrets.delete(id);
-            }
+        // 清理上次意外退出留下的文件；新建时设置权限，避免密钥短暂暴露。
+        match fs::remove_file(&temporary) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(UiError::new("config", "无法清理临时设置文件")),
+        }
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options
+            .open(&temporary)
+            .map_err(|_| UiError::new("config", "无法创建临时设置文件"))?;
+        let write_result = file.write_all(&bytes).and_then(|_| file.sync_all());
+        // Windows 上替换文件前也先关闭句柄。
+        drop(file);
+        let result = write_result
+            .map_err(|_| UiError::new("config", "无法写入设置"))
+            .and_then(|_| {
+                // 完整写入后再替换，保存失败时保留原配置和密钥。
+                fs::rename(&temporary, self.directory.join("settings.json"))
+                    .map_err(|_| UiError::new("config", "无法保存设置"))
+            });
+        if let Err(error) = result {
             let _ = fs::remove_file(temporary);
             return Err(error);
         }
-        if let Some(id) = previous.and_then(|saved| saved.credential) {
-            let _ = secrets.delete(&id);
-        }
         self.view_unlocked()
-    }
-}
-
-fn credential_id() -> Result<String, UiError> {
-    use std::{
-        sync::atomic::{AtomicU64, Ordering},
-        time::{SystemTime, UNIX_EPOCH},
-    };
-    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
-    let time = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| UiError::new("config", "系统时间异常，无法保存密钥"))?
-        .as_nanos();
-    Ok(format!(
-        "{}-{time}-{}",
-        std::process::id(),
-        SEQUENCE.fetch_add(1, Ordering::Relaxed)
-    ))
-}
-
-trait Secrets {
-    fn get(&self, id: &str) -> Result<String, UiError>;
-    fn set(&self, id: &str, key: &str) -> Result<(), UiError>;
-    fn delete(&self, id: &str) -> Result<(), UiError>;
-}
-
-struct NativeSecrets;
-
-#[cfg(target_os = "macos")]
-impl Secrets for NativeSecrets {
-    fn get(&self, id: &str) -> Result<String, UiError> {
-        use security_framework::passwords::{PasswordOptions, generic_password};
-        let bytes =
-            generic_password(PasswordOptions::new_generic_password(SERVICE, id)).map_err(|_| {
-                UiError::new(
-                    "keychain",
-                    "无法读取钥匙串密钥，请解锁钥匙串或重新填写 API Key",
-                )
-            })?;
-        String::from_utf8(bytes)
-            .map_err(|_| UiError::new("keychain", "钥匙串密钥格式异常，请重新填写 API Key"))
-    }
-    fn set(&self, id: &str, key: &str) -> Result<(), UiError> {
-        security_framework::passwords::set_generic_password(SERVICE, id, key.as_bytes()).map_err(
-            |_| {
-                UiError::new(
-                    "keychain",
-                    "无法保存 API Key，请允许 Kyoku 访问钥匙串后重试",
-                )
-            },
-        )
-    }
-    fn delete(&self, id: &str) -> Result<(), UiError> {
-        security_framework::passwords::delete_generic_password(SERVICE, id)
-            .map_err(|_| UiError::new("keychain", "无法删除旧钥匙串条目"))
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-impl Secrets for NativeSecrets {
-    fn get(&self, _: &str) -> Result<String, UiError> {
-        Err(UiError::new("keychain", "设置页的密钥存储目前仅支持 macOS"))
-    }
-    fn set(&self, _: &str, _: &str) -> Result<(), UiError> {
-        Err(UiError::new("keychain", "设置页的密钥存储目前仅支持 macOS"))
-    }
-    fn delete(&self, _: &str) -> Result<(), UiError> {
-        Ok(())
     }
 }
 

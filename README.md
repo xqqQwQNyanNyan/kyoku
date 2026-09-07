@@ -107,7 +107,10 @@ DeepSeek 官方服务填写 `https://api.deepseek.com/chat/completions`，模型
 连接测试会先请求工具调用，再返回测试结果确认模型能继续回答；不发送牌谱，通常需要两次 API 请求。
 连接测试和提问都可能产生服务商的 API 调用费用。失败时会显示服务端提供的脱敏错误说明（如有）。
 
-API Key 保存在 macOS 钥匙串中，保存后输入框留空是正常的。
+API Key 以明文保存在系统应用配置目录的 `dev.kyoku.desktop/settings.json` 中，
+macOS 通常位于 `~/Library/Application Support/dev.kyoku.desktop/settings.json`。
+macOS/Linux 下文件仅允许当前用户读写，请勿分享此文件。保存后输入框留空是正常的。
+旧版使用钥匙串保存的密钥需重新填写并保存一次；应用不再访问钥匙串，也不会自动迁移或删除旧条目。
 服务地址不变时，留空会保留原密钥；更换服务地址时，需要重新填写对应密钥。
 要移除密钥，勾选“删除已保存的密钥”并保存。
 安装包中的问答配置请在这个页面完成，不读取源码目录中的 `.env`。

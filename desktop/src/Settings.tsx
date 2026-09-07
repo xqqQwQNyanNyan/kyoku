@@ -189,7 +189,9 @@ export function SettingsPanel({ api, onClose }: { api: Bridge; onClose: () => vo
               />
             </div>
           </div>
-          <small>密钥保存在 macOS 钥匙串。更换地址后需重新填写；本机无认证服务可留空。</small>
+          <small>
+            密钥以明文保存在本机应用配置文件中。更换地址后需重新填写；本机无认证服务可留空。
+          </small>
           {saved?.has_api_key && (
             <label className="settings-clear">
               <input

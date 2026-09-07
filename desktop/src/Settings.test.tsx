@@ -88,12 +88,12 @@ it('换地址提示重新填写密钥；测试使用草稿而不会保存', asyn
 
 it('保存失败保留输入和现有问答，允许重试', async () => {
   const bridge = api();
-  bridge.saveSettings = vi.fn().mockRejectedValue({ message: '无法访问钥匙串' });
+  bridge.saveSettings = vi.fn().mockRejectedValue({ message: '无法保存设置' });
   render(<SettingsPanel api={bridge} onClose={vi.fn()} />);
   await screen.findByPlaceholderText('已有密钥，留空保留');
   await userEvent.type(screen.getByLabelText('API Key'), 'retry-key');
   await userEvent.click(screen.getByRole('button', { name: '保存设置' }));
-  await screen.findByText('无法访问钥匙串');
+  await screen.findByText('无法保存设置');
   expect((screen.getByLabelText('API Key') as HTMLInputElement).value).toBe('retry-key');
 });
 
