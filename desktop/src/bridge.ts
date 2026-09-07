@@ -23,7 +23,7 @@ export const bridge: Bridge = {
   renameSession: (id, title) => invoke('rename_session', { id, title }),
   openSessionGame: (id) => invoke('open_session_game', { id }),
   setSessionPosition: (id, game_key, position) =>
-    invoke('set_session_position', { id, game_key, position }),
+    invoke('set_session_position', { id, gameKey: game_key, position }),
   continueSession: (id, text) => invoke('continue_session', { id, text }),
   retrySession: (id, turn) => invoke('retry_session', { id, turn: turn ?? null }),
   importSession: (json) => invoke('import_session', { json }),
@@ -31,6 +31,7 @@ export const bridge: Bridge = {
 };
 
 export function errorMessage(error: unknown): string {
+  if (typeof error === 'string' && error.trim()) return error;
   if (error && typeof error === 'object' && 'message' in error) {
     const at =
       'event_index' in error && typeof error.event_index === 'number'
@@ -38,5 +39,5 @@ export function errorMessage(error: unknown): string {
         : '';
     return `${String(error.message)}${at}`;
   }
-  return '操作失败，请重试。请通过桌面入口启动本应用。';
+  return '操作失败，请重试。';
 }
