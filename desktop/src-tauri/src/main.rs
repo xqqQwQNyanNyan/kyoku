@@ -9,7 +9,7 @@ mod settings;
 
 use convlog::Event;
 use kyoku::{
-    agent::{AgentSession, review_evidence},
+    agent::{AgentContext, review_evidence},
     mahjong::player_index::PlayerIndex,
     mortal::Mortal,
     review::{GameReview, RecordedAction, review_game},
@@ -61,9 +61,33 @@ struct Desktop {
 
 struct Game {
     id: u64,
+    key: String,
     mortal_supported: bool,
     events: Vec<Event>,
     reviews: Mutex<[Option<Arc<GameReview>>; 4]>,
+}
+
+impl Game {
+    fn context(&self, player: u8, event_index: usize) -> Result<AgentContext, UiError> {
+        let player = PlayerIndex::try_from(player)
+            .map_err(|_| UiError::new("player", "玩家编号必须为 0..3"))?;
+        // 推理期间也能提问；未取得的分析结果明确留空，不等待整场推理。
+        let review = match self.reviews.try_lock() {
+            Ok(cache) => cache[usize::from(player.get_id())].clone(),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                return Err(UiError::new("state", "分析缓存异常，请重新打开牌谱"));
+            }
+        };
+        if let Some(point) = review
+            .as_ref()
+            .and_then(|review| review.at_event(event_index))
+        {
+            return Ok(AgentContext::from(&point.review));
+        }
+        AgentContext::from_events(&self.events, player, event_index)
+            .map_err(|error| UiError::at("context", error.to_string(), event_index))
+    }
 }
 
 impl Desktop {
@@ -79,6 +103,7 @@ impl Desktop {
 #[derive(Serialize)]
 struct Imported {
     id: u64,
+    game_key: String,
     #[serde(flatten)]
     data: replay::ReplayData,
 }
@@ -147,13 +172,15 @@ fn finish_import(
     if state.sequence.load(Ordering::SeqCst) != id {
         return Err(UiError::new("stale_import", "已选择另一份牌谱"));
     }
+    let game_key = sessions::SessionGame::key(&events)?;
     *current = Some(Arc::new(Game {
         id,
+        key: game_key.clone(),
         mortal_supported: data.mortal_supported,
         events,
         reviews: Mutex::new(std::array::from_fn(|_| None)),
     }));
-    Ok(Imported { id, data })
+    Ok(Imported { id, game_key, data })
 }
 
 #[derive(Serialize)]
@@ -242,28 +269,21 @@ async fn ask(
     }
     let game = state.game(question.id)?;
     tauri::async_runtime::spawn_blocking(move || {
-        let review = game
-            .reviews
-            .try_lock()
-            .map_err(|_| UiError::new("busy", "请等待牌谱分析完成"))?[usize::from(question.player)]
-        .clone()
-        .ok_or_else(|| UiError::new("no_analysis", "请先分析所选玩家的牌谱"))?;
-        let point = review
-            .at_event(question.event_index)
-            .ok_or_else(|| UiError::new("no_decision", "请切换到该玩家的决策点再提问"))?;
+        let context = game.context(question.player, question.event_index)?;
         let config = app.state::<settings::SettingsStore>().load()?;
-        let session = AgentSession::new(&point.review, &config.borrowed())
-            .map_err(|error| UiError::new("agent", error.to_string()))?;
-        let store = app.state::<sessions::SessionStore>();
-        store.create(
-            &question.conversation_id,
-            question.context_label,
-            session.archive().clone(),
-        )?;
-        store.ask(
+        let saved_game = sessions::SessionGame {
+            key: game.key.clone(),
+            events: game.events.clone(),
+        };
+        app.state::<sessions::SessionStore>().ask(
             &question.conversation_id,
             &question.text,
             &config.borrowed(),
+            Some(sessions::SessionSource {
+                game: &saved_game,
+                label: &question.context_label,
+                context: &context,
+            }),
         )
     })
     .await
@@ -285,6 +305,19 @@ async fn get_session(id: String, app: tauri::AppHandle) -> Result<sessions::Sess
 }
 
 #[tauri::command]
+async fn rename_session(
+    id: String,
+    title: String,
+    app: tauri::AppHandle,
+) -> Result<sessions::SessionView, UiError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<sessions::SessionStore>().rename(&id, &title)
+    })
+    .await
+    .map_err(|_| UiError::new("task", "修改会话标题任务异常结束"))?
+}
+
+#[tauri::command]
 async fn continue_session(
     id: String,
     text: String,
@@ -293,10 +326,102 @@ async fn continue_session(
     tauri::async_runtime::spawn_blocking(move || {
         let config = app.state::<settings::SettingsStore>().load()?;
         app.state::<sessions::SessionStore>()
-            .ask(&id, &text, &config.borrowed())
+            .ask(&id, &text, &config.borrowed(), None)
     })
     .await
     .map_err(|_| UiError::new("task", "问答任务异常结束；问题已保存在历史会话中"))?
+}
+
+#[tauri::command]
+async fn retry_session(
+    id: String,
+    turn: Option<usize>,
+    app: tauri::AppHandle,
+) -> Result<sessions::SessionView, UiError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let config = app.state::<settings::SettingsStore>().load()?;
+        app.state::<sessions::SessionStore>()
+            .retry(&id, turn, &config.borrowed())
+    })
+    .await
+    .map_err(|_| UiError::new("task", "重试任务异常结束；问题已保存在历史会话中"))?
+}
+
+#[derive(Serialize)]
+struct OpenedSessionGame {
+    replay: Imported,
+    name: String,
+    position: sessions::SessionPosition,
+}
+
+#[tauri::command]
+async fn open_session_game(
+    id: String,
+    state: tauri::State<'_, Desktop>,
+    app: tauri::AppHandle,
+) -> Result<OpenedSessionGame, UiError> {
+    let document = tauri::async_runtime::spawn_blocking(move || {
+        app.state::<sessions::SessionStore>().get(&id)
+    })
+    .await
+    .map_err(|_| UiError::new("task", "读取会话牌谱异常结束"))??
+    .document;
+    let game = document
+        .game
+        .ok_or_else(|| UiError::new("session", "旧版会话未保存完整牌谱，可继续查看历史"))?;
+    let position = document
+        .position
+        .ok_or_else(|| UiError::new("session", "会话没有浏览位置"))?;
+    let existing = lock(&state.game)?
+        .as_ref()
+        .filter(|current| current.key == game.key)
+        .cloned();
+    let sequence = if existing.is_none() {
+        Some(state.sequence.fetch_add(1, Ordering::SeqCst) + 1)
+    } else {
+        None
+    };
+    let (game, data) = tauri::async_runtime::spawn_blocking(move || {
+        let data = replay::replay(&game.events)?;
+        Ok::<_, UiError>((game, data))
+    })
+    .await
+    .map_err(|_| UiError::new("task", "恢复牌桌异常结束"))??;
+    let replay = if let Some(current) = existing {
+        state.game(current.id)?;
+        Imported {
+            id: current.id,
+            game_key: current.key.clone(),
+            data,
+        }
+    } else {
+        finish_import(
+            &state,
+            sequence.ok_or_else(|| UiError::new("state", "缺少牌谱编号"))?,
+            game.events,
+            data,
+        )?
+    };
+    Ok(OpenedSessionGame {
+        replay,
+        name: document.context_label,
+        position,
+    })
+}
+
+#[tauri::command]
+async fn set_session_position(
+    id: String,
+    game_key: String,
+    position: sessions::SessionPosition,
+    app: tauri::AppHandle,
+) -> Result<(), UiError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<sessions::SessionStore>()
+            .set_position(&id, &game_key, position)
+    })
+    .await
+    .map_err(|_| UiError::new("task", "保存浏览位置异常结束"))?
 }
 
 #[tauri::command]
@@ -417,7 +542,11 @@ fn main() {
             ask,
             list_sessions,
             get_session,
+            rename_session,
             continue_session,
+            retry_session,
+            open_session_game,
+            set_session_position,
             import_session,
             export_session,
             get_settings,
@@ -436,10 +565,34 @@ fn main() {
 mod tests {
     use super::*;
     #[test]
+    fn questions_can_use_unanalysed_and_non_decision_frames_even_during_analysis() {
+        let (events, _) =
+            replay::parse(include_str!("../../../fixtures/tenhou/ranked_game.json")).unwrap();
+        let game = Game {
+            id: 1,
+            key: sessions::SessionGame::key(&events).unwrap(),
+            mortal_supported: true,
+            events,
+            reviews: Mutex::new(std::array::from_fn(|_| None)),
+        };
+        for (player, event) in [(0, 1), (0, 2), (0, 4), (1, 4)] {
+            let context = game.context(player, event).unwrap();
+            assert_eq!(context.evidence()["player"], player);
+            assert_eq!(context.evidence()["event_index"], event);
+            assert_eq!(context.evidence()["mortal"]["status"], "not_analyzed");
+        }
+        let _analyzing = game.reviews.lock().unwrap();
+        assert!(game.context(0, 4).is_ok());
+        assert!(game.context(4, 4).is_err());
+        assert!(game.context(0, game.events.len()).is_err());
+    }
+
+    #[test]
     fn obsolete_document_id_cannot_read_new_game() {
         let state = Desktop::default();
         *state.game.lock().unwrap() = Some(Arc::new(Game {
             id: 2,
+            key: "test".into(),
             mortal_supported: true,
             events: Vec::new(),
             reviews: Mutex::new(std::array::from_fn(|_| None)),

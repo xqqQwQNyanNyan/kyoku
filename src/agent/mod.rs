@@ -1,4 +1,4 @@
-//! 固定单局面的 LLM 工具调用与中文复盘会话。
+//! 携带每轮可见局面的 LLM 工具调用与中文复盘会话。
 
 use std::{collections::HashSet, error::Error, fmt};
 
@@ -313,7 +313,16 @@ impl AgentSession {
         &self.evidence
     }
 
-    /// 提问或追问。首次直接附带固定局面证据，最多请求模型十次。
+    /// 切换下一轮使用的局面，保留已有对话；历史计算只属于各自的快照。
+    pub fn set_context(&mut self, context: &AgentContext) {
+        if self.evidence != context.evidence {
+            self.evidence = context.evidence.clone();
+            self.archive.evidence = context.evidence.clone();
+            self.has_evidence = false;
+        }
+    }
+
+    /// 提问或追问。首次或局面改变后直接附带证据，最多请求模型十次。
     pub fn ask(&mut self, question: &str) -> Result<String, AgentError> {
         if serde_json::to_vec(&self.archive)
             .map_err(|_| AgentError::HistoryLimit)?
@@ -436,21 +445,10 @@ fn answer_traced(
     let mut staged = history.to_vec();
     if !has_evidence {
         // 快照已由本地生成，不必让模型花一次请求来索取同一份证据。
-        staged.insert(0, initial_evidence(evidence));
+        staged.push(initial_evidence(evidence));
         has_evidence = true;
     }
-    let mut verified = evidence.clone();
-    verified["comparisons"] = json!({});
-    verified["analyses"] = json!({});
-    for item in history {
-        if item["type"] == "function_call_output"
-            && let Some(output) = item["output"].as_str()
-            && let Ok(result) = serde_json::from_str::<Value>(output)
-        {
-            comparison::remember(&mut verified, &result);
-            strategy::remember(&mut verified, &result);
-        }
-    }
+    let mut verified = evidence_with_history(evidence, &staged);
     let mut corrections = 0;
     let mut previous_error = None;
     let mut call_ids: HashSet<String> = history
@@ -581,6 +579,47 @@ fn initial_evidence(evidence: &Value) -> Value {
         "当前固定局面的 review 证据（已提供，无需再调用 get_review）：{}",
         evidence
     )})
+}
+
+// 只识别本地生成的快照消息；导入时还会校验其内容和消息边界。
+fn context_evidence(item: &Value) -> Option<Value> {
+    if item["role"] != "developer" {
+        return None;
+    }
+    let text = item["content"]
+        .as_str()?
+        .strip_prefix("当前固定局面的 review 证据（已提供，无需再调用 get_review）：")?;
+    let evidence = serde_json::from_str(text).ok()?;
+    (*item == initial_evidence(&evidence)).then_some(evidence)
+}
+
+fn evidence_with_history(evidence: &Value, history: &[Value]) -> Value {
+    let mut current = evidence.clone();
+    current["comparisons"] = json!({});
+    current["analyses"] = json!({});
+    let mut past = Vec::new();
+    let mut seen_context = false;
+    for item in history {
+        if let Some(snapshot) = context_evidence(item) {
+            if seen_context {
+                past.push(current);
+            }
+            current = snapshot;
+            current["comparisons"] = json!({});
+            current["analyses"] = json!({});
+            seen_context = true;
+        } else if item["type"] == "function_call_output"
+            && let Some(output) = item["output"].as_str()
+            && let Ok(result) = serde_json::from_str::<Value>(output)
+        {
+            comparison::remember(&mut current, &result);
+            strategy::remember(&mut current, &result);
+        }
+    }
+    if !past.is_empty() {
+        current["past"] = json!(past);
+    }
+    current
 }
 
 fn check_history(history: &[Value]) -> Result<(), AgentError> {

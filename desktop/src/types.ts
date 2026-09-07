@@ -39,6 +39,7 @@ export interface Frame {
 }
 export interface Replay {
   id: number;
+  game_key: string;
   mortal_supported: boolean;
   names: string[];
   frames: Frame[];
@@ -99,7 +100,11 @@ export interface Bridge {
   ): Promise<SessionView>;
   listSessions(): Promise<{ sessions: SessionSummary[]; warnings: string[] }>;
   getSession(id: string): Promise<SessionView>;
+  renameSession(id: string, title: string): Promise<SessionView>;
+  openSessionGame(id: string): Promise<{ replay: Replay; name: string; position: SessionPosition }>;
+  setSessionPosition(id: string, gameKey: string, position: SessionPosition): Promise<void>;
   continueSession(id: string, text: string): Promise<SessionView>;
+  retrySession(id: string, turn?: number): Promise<SessionView>;
   importSession(json: string): Promise<SessionView>;
   exportSession(id: string): Promise<string>;
 }
@@ -125,14 +130,24 @@ export interface RuntimeStatus {
   model: string;
 }
 
+export interface SessionPosition {
+  player: number;
+  event_index: number;
+}
+export interface SessionEvidence extends SessionPosition {
+  position?: { round: { wind: string; number: number }; honba: number };
+}
 export interface SessionTurn {
   question: string;
   answer: string | null;
   error: string | null;
   trace: { kind: string; [key: string]: unknown }[];
+  evidence?: SessionEvidence | null;
 }
 export interface SessionView {
   id: string;
+  game?: { key: string } | null;
+  position?: SessionPosition | null;
   title: string;
   context_label: string;
   created_at: number;
@@ -145,13 +160,14 @@ export interface SessionView {
     tools: unknown[];
     endpoint: string;
     model: string;
-    evidence: Evidence;
+    evidence: SessionEvidence;
     history: unknown[];
     turns: SessionTurn[];
   };
 }
 export interface SessionSummary {
   id: string;
+  game_key?: string | null;
   title: string;
   context_label: string;
   updated_at: number;

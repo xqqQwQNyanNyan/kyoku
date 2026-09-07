@@ -1700,3 +1700,6 @@ fn live_scoring_and_action_followup() {
     assert!(tools.contains("analyze_hand"));
     assert!(tools.contains("analyze_actions"));
 }
+
+#[path = "session_tests.rs"]
+mod multi_context;

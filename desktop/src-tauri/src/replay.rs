@@ -82,7 +82,7 @@ pub(crate) fn parse(json: &str) -> Result<(Vec<Event>, ReplayData), UiError> {
     Ok((events, data))
 }
 
-fn replay(events: &[Event]) -> Result<ReplayData, UiError> {
+pub(crate) fn replay(events: &[Event]) -> Result<ReplayData, UiError> {
     let mut replayer = Replayer::new();
     let mut names = std::array::from_fn(|i| format!("玩家 {}", i + 1));
     let mut frames = Vec::new();

@@ -1,10 +1,21 @@
 import { useEffect, useRef, useState, Fragment } from 'react';
 import ReactMarkdown from 'react-markdown';
-import type { Bridge, SessionSummary, SessionTurn, SessionView } from './types';
+import type {
+  Bridge,
+  SessionEvidence,
+  SessionPosition,
+  SessionSummary,
+  SessionTurn,
+  SessionView,
+} from './types';
 import { errorMessage } from './bridge';
+import { Select } from './Select';
+import { replayName, sessionTitle, SESSION_TITLE_LIMIT } from './display';
 
 export interface SessionSource {
   game: number;
+  gameKey: string;
+  gameLabel: string;
   player: number;
   event: number;
   label: string;
@@ -17,19 +28,101 @@ export function useSessions(api: Bridge) {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [revision, setRevision] = useState(0);
   const scopes = useRef(new Map<string, string>());
+  const scopeIds = useRef(new Map<string, Set<string>>());
+  const selections = useRef(new Map<string, number>());
+  const [summaries, setSummaries] = useState<SessionSummary[]>([]);
+  const [pendingPositions, setPendingPositions] = useState<Record<string, SessionPosition>>({});
+  const positionWrites = useRef(new Map<string, Promise<void>>());
+  const positionVersions = useRef(new Map<string, number>());
   const busy = useRef(new Set<string>());
 
   function idFor(scope: string) {
     let id = scopes.current.get(scope);
     if (!id) {
       id = crypto.randomUUID();
-      scopes.current.set(scope, id);
+      activate(scope, id);
     }
     return id;
   }
   function newSession(scope: string) {
-    scopes.current.set(scope, crypto.randomUUID());
+    activate(scope, crypto.randomUUID());
     setRevision((r) => r + 1);
+  }
+  function activate(scope: string, id: string) {
+    scopes.current.set(scope, id);
+    selections.current.set(scope, (selections.current.get(scope) ?? 0) + 1);
+    const ids = scopeIds.current.get(scope) ?? new Set<string>();
+    ids.add(id);
+    scopeIds.current.set(scope, ids);
+  }
+  async function attachGame(scope: string) {
+    try {
+      const result = await api.listSessions();
+      setSummaries(result.sessions);
+      const id = scopes.current.get(scope) ?? result.sessions.find((s) => s.game_key === scope)?.id;
+      if (id && result.sessions.some((s) => s.id === id)) {
+        const doc = await api.getSession(id);
+        if (doc.game?.key !== scope) return;
+        put(doc);
+        activate(scope, doc.id);
+        return doc;
+      }
+    } catch {
+      // 历史读取失败时仍允许打开牌谱；历史面板提供明确错误与重试。
+    }
+  }
+  async function selectSession(scope: string, id: string) {
+    const version = (selections.current.get(scope) ?? 0) + 1;
+    selections.current.set(scope, version);
+    try {
+      if (!documents[id] && summaries.some((s) => s.id === id)) {
+        const doc = await api.getSession(id);
+        if (doc.game?.key !== scope) throw new Error('会话与牌谱不匹配');
+        put(doc);
+      }
+      if (selections.current.get(scope) !== version) return;
+      activate(scope, id);
+      setRevision((r) => r + 1);
+    } catch (error) {
+      if (selections.current.get(scope) !== version) return;
+      setErrors((e) => ({ ...e, [idFor(scope)]: errorMessage(error) }));
+    }
+  }
+  function choices(scope: string) {
+    const ids = new Set([
+      ...(scopeIds.current.get(scope) ?? []),
+      ...summaries.filter((s) => s.game_key === scope).map((s) => s.id),
+      ...Object.values(documents)
+        .filter((doc) => doc.game?.key === scope)
+        .map((doc) => doc.id),
+    ]);
+    return [...ids].map((id) => ({
+      id,
+      title: documents[id]?.title ?? summaries.find((s) => s.id === id)?.title ?? '新会话',
+    }));
+  }
+  async function savePosition(id: string, source: SessionSource) {
+    if (busy.current.has(id)) return;
+    const version = (positionVersions.current.get(id) ?? 0) + 1;
+    positionVersions.current.set(id, version);
+    const previous = positionWrites.current.get(id) ?? Promise.resolve();
+    const write = previous
+      .catch(() => undefined)
+      .then(async () => {
+        if (positionVersions.current.get(id) !== version || busy.current.has(id)) return;
+        await api.setSessionPosition(id, source.gameKey, {
+          player: source.player,
+          event_index: source.event,
+        });
+      });
+    positionWrites.current.set(id, write);
+    try {
+      await write;
+    } catch (error) {
+      setErrors((e) => ({ ...e, [id]: errorMessage(error) }));
+    } finally {
+      if (positionWrites.current.get(id) === write) positionWrites.current.delete(id);
+    }
   }
   function put(document: SessionView) {
     setDocuments((current) => {
@@ -41,17 +134,57 @@ export function useSessions(api: Bridge) {
   function draft(id: string, text: string) {
     setDrafts((current) => ({ ...current, [id]: text }));
   }
-  async function ask(id: string, source: SessionSource | undefined, text: string) {
+  async function rename(id: string, title: string) {
+    if (busy.current.has(id)) return false;
+    busy.current.add(id);
+    setErrors((e) => ({ ...e, [id]: '' }));
+    try {
+      await positionWrites.current.get(id)?.catch(() => undefined);
+      put(await api.renameSession(id, title));
+      return true;
+    } catch (error) {
+      setErrors((e) => ({ ...e, [id]: errorMessage(error) }));
+      return false;
+    } finally {
+      busy.current.delete(id);
+    }
+  }
+  function ask(id: string, source: SessionSource | undefined, text: string) {
+    return send(id, source, text);
+  }
+  function retry(id: string, turn?: number) {
+    const doc = documents[id];
+    const text = turn === undefined ? doc?.pending_question : doc?.archive.turns[turn]?.question;
+    if (text) return send(id, undefined, text, { turn });
+  }
+  async function send(
+    id: string,
+    source: SessionSource | undefined,
+    text: string,
+    retryTarget?: { turn?: number },
+  ) {
     text = text.trim();
     if (!text || busy.current.has(id) || (!documents[id] && !source)) return;
     busy.current.add(id);
+    const position = retryTarget
+      ? retryTarget.turn === undefined
+        ? documents[id]?.archive.evidence
+        : (documents[id]?.archive.turns[retryTarget.turn]?.evidence ??
+          documents[id]?.archive.evidence)
+      : source
+        ? { player: source.player, event_index: source.event }
+        : (documents[id]?.position ?? documents[id]?.archive.evidence);
+    if (position) setPendingPositions((p) => ({ ...p, [id]: position }));
     setPending((p) => ({ ...p, [id]: text }));
     setErrors((e) => ({ ...e, [id]: '' }));
     draft(id, '');
     try {
-      const result = documents[id]
-        ? await api.continueSession(id, text)
-        : await api.ask(source!.game, source!.player, source!.event, id, text, source!.label);
+      await positionWrites.current.get(id)?.catch(() => undefined);
+      const result = retryTarget
+        ? await api.retrySession(id, retryTarget.turn)
+        : source
+          ? await api.ask(source.game, source.player, source.event, id, text, source.gameLabel)
+          : await api.continueSession(id, text);
       put(result);
       if (result.archive.turns.at(-1)?.error) draft(id, text);
     } catch (error) {
@@ -72,7 +205,26 @@ export function useSessions(api: Bridge) {
       });
     }
   }
-  return { documents, drafts, pending, errors, revision, idFor, newSession, put, draft, ask };
+  return {
+    documents,
+    drafts,
+    pending,
+    pendingPositions,
+    errors,
+    revision,
+    idFor,
+    newSession,
+    put,
+    draft,
+    rename,
+    ask,
+    retry,
+    attachGame,
+    activate,
+    choices,
+    selectSession,
+    savePosition,
+  };
 }
 
 type Workspace = ReturnType<typeof useSessions>;
@@ -108,9 +260,14 @@ function Trace({ turn }: { turn: SessionTurn }) {
         {turn.trace.map((step, i) => (
           <li key={i}>
             <details>
-              <summary>
-                {names[step.kind] ?? step.kind}
-                {step.kind === 'tool' ? ` · ${String(step.name)}` : ''}
+              <summary className="trace-step">
+                <span className="trace-number" aria-hidden="true">
+                  {i + 1}
+                </span>
+                <span>
+                  {names[step.kind] ?? step.kind}
+                  {step.kind === 'tool' ? ` · ${String(step.name)}` : ''}
+                </span>
               </summary>
               <pre>
                 {JSON.stringify(
@@ -132,6 +289,126 @@ function Trace({ turn }: { turn: SessionTurn }) {
   );
 }
 
+function positionLabel(evidence: SessionEvidence) {
+  const round = evidence.position?.round;
+  const winds: Record<string, string> = { E: '东', S: '南', W: '西', N: '北' };
+  const label = round
+    ? `${winds[round.wind] ?? round.wind}${round.number}局 · ${evidence.position?.honba}本场 · `
+    : '';
+  return `${label}玩家 ${evidence.player} · G${evidence.event_index}`;
+}
+
+function Location({
+  evidence,
+  onLocate,
+}: {
+  evidence: SessionEvidence;
+  onLocate?: (position: SessionPosition) => void;
+}) {
+  return onLocate ? (
+    <button
+      className="session-location"
+      title="回到提问时的局面"
+      onClick={() => onLocate(evidence)}
+    >
+      {positionLabel(evidence)}
+    </button>
+  ) : (
+    <small className="session-location">{positionLabel(evidence)}</small>
+  );
+}
+
+function SessionTitle({
+  id,
+  title,
+  sessions,
+  onSelect,
+  onRename,
+  editable,
+}: {
+  id: string;
+  title: string;
+  sessions?: { id: string; title: string }[];
+  onSelect?: (id: string) => void;
+  onRename: (title: string) => Promise<boolean>;
+  editable: boolean;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState('');
+  const [saving, setSaving] = useState(false);
+  if (editing)
+    return (
+      <form
+        className="session-picker session-title-editor"
+        onSubmit={async (event) => {
+          event.preventDefault();
+          if (saving || !editable || !value.trim()) return;
+          setSaving(true);
+          if (await onRename(value.trim())) setEditing(false);
+          setSaving(false);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') {
+            event.preventDefault();
+            event.stopPropagation();
+            if (!saving) setEditing(false);
+          }
+        }}
+      >
+        <input
+          aria-label="会话标题"
+          autoFocus
+          value={value}
+          disabled={saving}
+          onChange={(event) =>
+            setValue(Array.from(event.target.value).slice(0, SESSION_TITLE_LIMIT).join(''))
+          }
+        />
+        <small>
+          {Array.from(value).length}/{SESSION_TITLE_LIMIT}
+        </small>
+        <button type="submit" disabled={saving || !editable || !value.trim()}>
+          保存
+        </button>
+        <button type="button" disabled={saving} onClick={() => setEditing(false)}>
+          取消
+        </button>
+      </form>
+    );
+  return (
+    <div className="session-picker">
+      {sessions && onSelect ? (
+        <Select
+          label="当前会话"
+          value={id}
+          options={sessions.map((session) => ({
+            value: session.id,
+            label: sessionTitle(session.title),
+          }))}
+          onChange={onSelect}
+        />
+      ) : (
+        <span className="session-title">{sessionTitle(title)}</span>
+      )}
+      {editable && (
+        <button
+          className="session-rename"
+          aria-label="修改会话标题"
+          title="修改会话标题"
+          onClick={() => {
+            setValue(sessionTitle(title));
+            setEditing(true);
+          }}
+        >
+          <svg aria-hidden="true" viewBox="0 0 24 24">
+            <path d="m15 5 4 4M4 20l5-1L20 8a2.8 2.8 0 0 0-4-4L5 15l-1 5Z" />
+          </svg>
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function ChatPanel({
   workspace: w,
   id,
@@ -140,6 +417,9 @@ export function ChatPanel({
   visible = true,
   onFocus,
   onNew,
+  sessions,
+  onSelect,
+  onLocate,
 }: {
   workspace: Workspace;
   id: string;
@@ -148,6 +428,9 @@ export function ChatPanel({
   visible?: boolean;
   onFocus?: () => void;
   onNew?: () => void;
+  sessions?: { id: string; title: string }[];
+  onSelect?: (id: string) => void;
+  onLocate?: (position: SessionPosition) => void;
 }) {
   const doc = w.documents[id];
   const turns = doc?.archive.turns ?? [];
@@ -174,27 +457,45 @@ export function ChatPanel({
   return (
     <section className="chat-panel" aria-label="局面问答">
       <div className="chat-heading">
-        <span className="agent-icon">✧</span>
+        <span className="agent-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24">
+            <path d="M12 3C11 9 9 11 3 12c6 1 8 3 9 9 1-6 3-8 9-9-6-1-8-3-9-9Z" />
+          </svg>
+        </span>
         <div>
           <h2>一起复盘</h2>
-          <p>{doc?.context_label ?? source?.label ?? '围绕当前决策展开讨论'}</p>
+          <p>
+            {source?.label ??
+              (doc ? positionLabel(doc.position ?? doc.archive.evidence) : '围绕这份牌谱展开讨论')}
+          </p>
         </div>
         {onNew && (
-          <button className="session-new" disabled={!canAsk || !!pending} onClick={onNew}>
+          <button className="session-new" disabled={!canAsk} onClick={onNew}>
             新建会话
           </button>
         )}
       </div>
+      {(sessions || doc) && (
+        <SessionTitle
+          key={id}
+          id={id}
+          title={doc?.title ?? '新会话'}
+          sessions={sessions}
+          onSelect={onSelect}
+          onRename={(title) => w.rename(id, title)}
+          editable={!!doc && !pending}
+        />
+      )}
       <div className="chat-context">
         <span className="status-dot" />
-        {doc ? '会话已自动保存 · 使用此会话固定的局面证据' : '仅使用所选玩家当时可见的信息'}
+        {doc ? '会话已自动保存 · 每次提问使用发送时的局面' : '仅使用所选玩家当时可见的信息'}
       </div>
       {doc && (
         <details className="session-context">
           <summary>会话上下文 · {doc.archive.model}</summary>
           <p>{doc.archive.endpoint}</p>
           <details>
-            <summary>固定局面证据</summary>
+            <summary>最近提问的局面证据</summary>
             <pre>{JSON.stringify(doc.archive.evidence, null, 2)}</pre>
           </details>
           <details>
@@ -216,7 +517,7 @@ export function ChatPanel({
               <br />
               也可以说说你当时的考虑。
             </p>
-            {canAsk && (
+            {canAsk && ready && (
               <>
                 <button
                   onClick={() => submit('比较这里的候选切牌，说明向听、进张和 Mortal 的倾向。')}
@@ -231,10 +532,10 @@ export function ChatPanel({
               </>
             )}
             <small>
-              {!ready
-                ? '先分析牌谱，再选择一个决策点。'
-                : !canAsk
-                  ? '用「下一决策」前往可提问的局面。'
+              {!canAsk
+                ? '导入牌谱后即可提问。'
+                : !ready
+                  ? '可以直接提问；当前局面暂无 Mortal 决策结果。'
                   : '回答会区分计算、Mortal 与推测。'}
             </small>
           </div>
@@ -243,6 +544,7 @@ export function ChatPanel({
           <Fragment key={i}>
             <div className="message user">
               <span className="message-author">你</span>
+              <Location evidence={turn.evidence ?? doc!.archive.evidence} onLocate={onLocate} />
               <Markdown text={turn.question} />
             </div>
             <Trace turn={turn} />
@@ -255,7 +557,7 @@ export function ChatPanel({
             {turn.error && (
               <div className="chat-error" role="alert">
                 {turn.error}
-                <button disabled={!!pending} onClick={() => submit(turn.question)}>
+                <button disabled={!!pending} onClick={() => void w.retry(id, i)}>
                   重试此问题
                 </button>
               </div>
@@ -266,6 +568,9 @@ export function ChatPanel({
           <>
             <div className="message user">
               <span className="message-author">你</span>
+              {w.pendingPositions[id] && (
+                <Location evidence={w.pendingPositions[id]} onLocate={onLocate} />
+              )}
               <Markdown text={pending} />
             </div>
             <div className="thinking">
@@ -277,7 +582,7 @@ export function ChatPanel({
         {doc?.pending_question && !pending && (
           <div className="chat-error" role="alert">
             上次请求未完成：{doc.pending_question}
-            <button onClick={() => submit(doc.pending_question!)}>重试未完成的问题</button>
+            <button onClick={() => void w.retry(id)}>重试未完成的问题</button>
           </div>
         )}
         {w.errors[id] && (
@@ -296,7 +601,7 @@ export function ChatPanel({
       >
         <textarea
           aria-label="复盘问题"
-          placeholder={canAsk ? '问问这个局面…' : '选择一个决策点后提问…'}
+          placeholder={canAsk ? '聊聊这份牌谱或当前局面…' : '导入牌谱后提问…'}
           value={question}
           disabled={!canAsk || !!pending}
           rows={2}
@@ -329,10 +634,12 @@ export function HistoryDialog({
   api,
   workspace: w,
   onClose,
+  onOpenGame,
 }: {
   api: Bridge;
   workspace: Workspace;
   onClose: () => void;
+  onOpenGame: (doc: SessionView, position?: SessionPosition) => Promise<void>;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const input = useRef<HTMLInputElement>(null);
@@ -422,6 +729,18 @@ export function HistoryDialog({
       setLoading(false);
     }
   }
+  async function openGame(position?: SessionPosition) {
+    if (!selected || loading) return;
+    setError('');
+    setLoading(true);
+    try {
+      await onOpenGame(w.documents[selected], position);
+    } catch (error) {
+      setError(errorMessage(error));
+    } finally {
+      setLoading(false);
+    }
+  }
   async function exportFile() {
     if (!selected) return;
     setError('');
@@ -452,6 +771,11 @@ export function HistoryDialog({
         <button onClick={() => void exportFile()} disabled={!selected}>
           导出 JSON
         </button>
+        {selected && w.documents[selected]?.game && (
+          <button disabled={loading} onClick={() => void openGame()}>
+            打开牌谱并继续
+          </button>
+        )}
         <button aria-label="关闭历史会话" onClick={onClose}>
           ×
         </button>
@@ -502,8 +826,8 @@ export function HistoryDialog({
               aria-current={s.id === selected ? 'true' : undefined}
               onClick={() => void open(s.id)}
             >
-              <strong>{s.title}</strong>
-              <span>{s.context_label}</span>
+              <strong title={sessionTitle(s.title)}>{sessionTitle(s.title)}</strong>
+              <span>{replayName(s.context_label)}</span>
               <small>
                 {new Date(s.updated_at).toLocaleString()} ·{' '}
                 {s.busy
@@ -520,7 +844,13 @@ export function HistoryDialog({
         <div className="history-content">
           {loading && <p role="status">正在读取会话…</p>}
           {selected ? (
-            <ChatPanel workspace={w} id={selected} />
+            <ChatPanel
+              workspace={w}
+              id={selected}
+              onLocate={
+                w.documents[selected]?.game ? (position) => void openGame(position) : undefined
+              }
+            />
           ) : (
             <div className="history-empty">
               选择一个会话，查看记录、工作流程或继续追问。

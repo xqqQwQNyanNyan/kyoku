@@ -126,28 +126,8 @@ fn render_section(section: Section, evidence: &Value) -> Result<String, String> 
     }
     let (label, prefix) = match section.source {
         Source::Position => ("局面", "/position/"),
-        Source::Calculation => {
-            if evidence["analysis_status"] != "available"
-                && !section
-                    .facts
-                    .iter()
-                    .any(|fact| fact.path.starts_with("/analyses/"))
-            {
-                return Err(
-                    "当前没有可用切牌计算，只能说明未分析或未提供，不得生成 calculation 段落。"
-                        .into(),
-                );
-            }
-            ("计算", "/discards/")
-        }
-        Source::Mortal => {
-            if evidence["mortal"]["status"] != "available" {
-                return Err(
-                    "当前没有 Mortal 决策，不得生成 mortal 段落；程序会附上实际状态。".into(),
-                );
-            }
-            ("Mortal", "/mortal/decision/")
-        }
+        Source::Calculation => ("计算", "/discards/"),
+        Source::Mortal => ("Mortal", "/mortal/decision/"),
         Source::Assessment => ("判断", ""),
         Source::Limitation => ("说明", ""),
     };
@@ -158,7 +138,9 @@ fn render_section(section: Section, evidence: &Value) -> Result<String, String> 
     }
     if section.draws_for.is_some()
         && section.facts.iter().any(|fact| {
-            fact.path.starts_with("/comparisons/") || fact.path.starts_with("/analyses/")
+            fact.path.starts_with("/past/")
+                || fact.path.starts_with("/comparisons/")
+                || fact.path.starts_with("/analyses/")
         })
     {
         return Err("draws_for 只展示 get_review 的 /discards；引用 /analyses/ 或 /comparisons/ 时请去掉 draws_for，按工具的 waits 或分支结果直接说明。".into());
@@ -166,7 +148,7 @@ fn render_section(section: Section, evidence: &Value) -> Result<String, String> 
     if matches!(section.source, Source::Assessment) {
         // 判断必须绑定同一次比较的双方，防止只引用推荐或单边数据就给出取舍。
         let paired = section.facts.iter().any(|first| {
-            let Some(rest) = first.path.strip_prefix("/comparisons/") else {
+            let Some((scope, rest)) = first.path.split_once("/comparisons/") else {
                 return false;
             };
             let Some((key, path)) = rest.split_once('/') else {
@@ -174,17 +156,17 @@ fn render_section(section: Section, evidence: &Value) -> Result<String, String> 
             };
             (path == "first" || path.starts_with("first/"))
                 && section.facts.iter().any(|second| {
-                    second.path == format!("/comparisons/{key}/second")
+                    second.path == format!("{scope}/comparisons/{key}/second")
                         || second
                             .path
-                            .starts_with(&format!("/comparisons/{key}/second/"))
+                            .starts_with(&format!("{scope}/comparisons/{key}/second/"))
                 })
         });
         let analysis_supported = section.facts.len() >= 2
-            && section
-                .facts
-                .iter()
-                .any(|fact| fact.path.starts_with("/analyses/"))
+            && section.facts.iter().any(|fact| {
+                fact_scope(evidence, &fact.path)
+                    .is_ok_and(|(_, path)| path.starts_with("/analyses/"))
+            })
             && section
                 .facts
                 .iter()
@@ -194,14 +176,24 @@ fn render_section(section: Section, evidence: &Value) -> Result<String, String> 
         }
     }
     for fact in section.facts {
+        let (snapshot, path) = fact_scope(evidence, &fact.path)?;
+        if matches!(section.source, Source::Calculation)
+            && snapshot["analysis_status"] != "available"
+            && !path.starts_with("/analyses/")
+        {
+            return Err("引用的局面没有可用切牌计算，只能说明未分析或未提供。".into());
+        }
+        if matches!(section.source, Source::Mortal) && snapshot["mortal"]["status"] != "available" {
+            return Err("引用的局面没有 Mortal 决策，不得生成 mortal 段落。".into());
+        }
         let comparison_calculation = matches!(section.source, Source::Calculation)
-            && (fact.path.starts_with("/comparisons/") || fact.path.starts_with("/analyses/"));
-        if (!prefix.is_empty() && !fact.path.starts_with(prefix) && !comparison_calculation)
-            || !(fact.path.starts_with("/position/")
-                || fact.path.starts_with("/discards/")
-                || fact.path.starts_with("/mortal/decision/")
-                || fact.path.starts_with("/comparisons/")
-                || fact.path.starts_with("/analyses/"))
+            && (path.starts_with("/comparisons/") || path.starts_with("/analyses/"));
+        if (!prefix.is_empty() && !path.starts_with(prefix) && !comparison_calculation)
+            || !(path.starts_with("/position/")
+                || path.starts_with("/discards/")
+                || path.starts_with("/mortal/decision/")
+                || path.starts_with("/comparisons/")
+                || path.starts_with("/analyses/"))
         {
             return Err(format!(
                 "{label}段落的 facts 来源不匹配；请引用 {prefix} 下的证据，计算也可引用 /comparisons/ 或 /analyses/，其他来源拆成独立段落。"
@@ -235,6 +227,21 @@ fn render_section(section: Section, evidence: &Value) -> Result<String, String> 
     Ok(paragraph)
 }
 
+// 历史引用沿用原有来源规则，不能借历史路径绕过分析状态或数值校验。
+fn fact_scope<'a, 'b>(evidence: &'a Value, path: &'b str) -> Result<(&'a Value, &'b str), String> {
+    if let Some(rest) = path.strip_prefix("/past/") {
+        let (index, _) = rest.split_once('/').ok_or("历史证据路径不完整。")?;
+        let snapshot = index
+            .parse::<usize>()
+            .ok()
+            .and_then(|index| evidence["past"].as_array()?.get(index))
+            .ok_or("没有这个历史局面的证据。")?;
+        Ok((snapshot, &path["/past/".len() + index.len()..]))
+    } else {
+        Ok((evidence, path))
+    }
+}
+
 fn honor(tile: &str) -> Option<&'static str> {
     match tile {
         "E" => Some("东"),
@@ -249,10 +256,18 @@ fn honor(tile: &str) -> Option<&'static str> {
 }
 
 fn display_text(text: &str, evidence: &Value) -> String {
-    let decision = &evidence["mortal"]["decision"];
-    let q_values: Vec<_> = ["candidates", "kan_candidates"]
-        .into_iter()
-        .flat_map(|key| decision[key].as_array().into_iter().flatten())
+    let q_values: Vec<_> = std::iter::once(evidence)
+        .chain(evidence["past"].as_array().into_iter().flatten())
+        .flat_map(|snapshot| {
+            ["candidates", "kan_candidates"]
+                .into_iter()
+                .flat_map(move |key| {
+                    snapshot["mortal"]["decision"][key]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                })
+        })
         .filter_map(|candidate| candidate["q_value"].as_f64())
         .collect();
     let mut rendered = String::new();

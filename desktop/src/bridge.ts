@@ -16,7 +16,12 @@ export const bridge: Bridge = {
     invoke('ask', { question: { id, player, event_index, conversation_id, text, context_label } }),
   listSessions: () => invoke('list_sessions'),
   getSession: (id) => invoke('get_session', { id }),
+  renameSession: (id, title) => invoke('rename_session', { id, title }),
+  openSessionGame: (id) => invoke('open_session_game', { id }),
+  setSessionPosition: (id, game_key, position) =>
+    invoke('set_session_position', { id, game_key, position }),
   continueSession: (id, text) => invoke('continue_session', { id, text }),
+  retrySession: (id, turn) => invoke('retry_session', { id, turn: turn ?? null }),
   importSession: (json) => invoke('import_session', { json }),
   exportSession: (id) => invoke('export_session', { id }),
 };

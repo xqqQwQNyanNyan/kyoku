@@ -1,3 +1,107 @@
+use serde_json::json;
+
+#[test]
+fn session_titles_are_bounded_and_renames_preserve_saved_context() {
+    assert_eq!(default_title(&"🀄".repeat(40)).chars().count(), 32);
+    assert_eq!(default_title("  第一行\n第二行  "), "第一行 第二行");
+    let directory = Directory::new();
+    let store = SessionStore::new(directory.0.clone());
+    store
+        .create(
+            "title",
+            "牌谱".into(),
+            archive("http://localhost/responses"),
+        )
+        .unwrap();
+    let before = serde_json::to_value(store.get("title").unwrap().document.archive).unwrap();
+    let renamed = store
+        .rename("title", &format!("  {}  ", "🀄".repeat(32)))
+        .unwrap();
+    assert_eq!(renamed.document.title, "🀄".repeat(32));
+    let bytes = fs::read(directory.0.join("title.json")).unwrap();
+    for invalid in [
+        "".to_owned(),
+        "   ".into(),
+        "长".repeat(33),
+        "一\n二".into(),
+    ] {
+        assert!(store.rename("title", &invalid).is_err());
+        assert_eq!(fs::read(directory.0.join("title.json")).unwrap(), bytes);
+    }
+    let reopened = SessionStore::new(directory.0.clone()).get("title").unwrap();
+    assert_eq!(reopened.document.title, "🀄".repeat(32));
+    assert_eq!(
+        serde_json::to_value(reopened.document.archive).unwrap(),
+        before
+    );
+    let mut old: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    old["title"] = json!("旧".repeat(100));
+    assert_eq!(parse(&old.to_string()).unwrap().title.chars().count(), 32);
+    let _operation = store.begin("title").unwrap();
+    assert!(store.rename("title", "不能覆盖正在写入的会话").is_err());
+}
+fn server(
+    responses: Vec<(u16, String)>,
+) -> (String, std::thread::JoinHandle<Vec<serde_json::Value>>) {
+    use std::io::{BufRead, BufReader, Read};
+    use std::net::TcpListener;
+    use std::time::{Duration, Instant};
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let endpoint = format!("http://{}/responses", listener.local_addr().unwrap());
+    let server = std::thread::spawn(move || {
+        let mut requests = Vec::<serde_json::Value>::new();
+        for (status, body) in responses {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline, "等待测试请求超时");
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(e) => panic!("{e}"),
+                }
+            };
+            stream.set_nonblocking(false).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = BufReader::new(&mut stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let mut length = 0;
+            loop {
+                line.clear();
+                assert_ne!(reader.read_line(&mut line).unwrap(), 0);
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some((name, value)) = line.split_once(':')
+                    && name.eq_ignore_ascii_case("content-length")
+                {
+                    length = value.trim().parse().unwrap();
+                }
+            }
+            let mut bytes = vec![0; length];
+            reader.read_exact(&mut bytes).unwrap();
+            requests.push(serde_json::from_slice(&bytes).unwrap());
+            write!(stream, "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+        }
+        requests
+    });
+    (endpoint, server)
+}
+
+fn message(text: &str) -> String {
+    json!({"status":"completed","output":[{
+        "type":"message","role":"assistant","status":"completed","content":[{
+            "type":"output_text","text":json!({"sections":[{"source":"limitation","text":text,"facts":[]}]}).to_string()
+        }]
+    }]}).to_string()
+}
+
 use super::*;
 use kyoku::{
     agent::{AgentConfig, AgentContext},
@@ -150,7 +254,8 @@ fn history_browsing_keeps_saved_answers_even_when_tool_results_no_longer_match()
                     endpoint: "http://localhost/responses",
                     model: "test",
                     api_key: None,
-                }
+                },
+                None
             )
             .is_err()
     );
@@ -182,7 +287,7 @@ fn session_operations_exclude_only_the_same_session_and_release_on_failure() {
         model: "test",
         api_key: None,
     };
-    assert!(store.ask("missing", "无法读取", &config).is_err());
+    assert!(store.ask("missing", "无法读取", &config, None).is_err());
     store
         .create("missing", "失败后可重新创建".into(), context)
         .unwrap();
@@ -219,67 +324,13 @@ fn unfinished_question_survives_restart_and_is_not_automatically_retried() {
 #[test]
 fn answers_and_failed_traces_are_saved_before_reopening_and_continuing() {
     use serde_json::json;
-    use std::io::{BufRead, BufReader, Read};
-    use std::net::TcpListener;
-    use std::time::{Duration, Instant};
-
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.set_nonblocking(true).unwrap();
-    let endpoint = format!("http://{}/responses", listener.local_addr().unwrap());
-    let message = |text: &str| {
-        json!({"status":"completed","output":[{
-        "type":"message","role":"assistant","status":"completed","content":[{
-            "type":"output_text","text":json!({"sections":[{"source":"limitation","text":text,"facts":[]}]}).to_string()
-        }]
-    }]}).to_string()
-    };
     let responses = vec![
         (200, json!({"status":"completed","output":[{"type":"function_call","status":"completed","name":"get_review","arguments":"{}","call_id":"saved"}]}).to_string()),
         (200, message("原会话回答")),
         (503, "not-persisted-http-body".into()),
         (200, message("恢复后的回答")),
     ];
-    let server = std::thread::spawn(move || {
-        let mut requests = Vec::<serde_json::Value>::new();
-        for (status, body) in responses {
-            let deadline = Instant::now() + Duration::from_secs(10);
-            let mut stream = loop {
-                match listener.accept() {
-                    Ok((stream, _)) => break stream,
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        assert!(Instant::now() < deadline, "等待测试请求超时");
-                        std::thread::sleep(Duration::from_millis(5));
-                    }
-                    Err(e) => panic!("{e}"),
-                }
-            };
-            stream.set_nonblocking(false).unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
-            let mut reader = BufReader::new(&mut stream);
-            let mut line = String::new();
-            reader.read_line(&mut line).unwrap();
-            let mut length = 0;
-            loop {
-                line.clear();
-                assert_ne!(reader.read_line(&mut line).unwrap(), 0);
-                if line == "\r\n" {
-                    break;
-                }
-                if let Some((name, value)) = line.split_once(':')
-                    && name.eq_ignore_ascii_case("content-length")
-                {
-                    length = value.trim().parse().unwrap();
-                }
-            }
-            let mut bytes = vec![0; length];
-            reader.read_exact(&mut bytes).unwrap();
-            requests.push(serde_json::from_slice(&bytes).unwrap());
-            write!(stream, "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
-        }
-        requests
-    });
+    let (endpoint, server) = server(responses);
     let directory = Directory::new();
     let store = SessionStore::new(directory.0.clone());
     store
@@ -290,13 +341,13 @@ fn answers_and_failed_traces_are_saved_before_reopening_and_continuing() {
         model: "test",
         api_key: None,
     };
-    store.ask("saved", "最初的问题", &config).unwrap();
+    store.ask("saved", "最初的问题", &config, None).unwrap();
     let accepted =
         serde_json::to_value(store.get("saved").unwrap().document.archive).unwrap()["history"]
             .clone();
     drop(store);
     let store = SessionStore::new(directory.0.clone());
-    assert!(store.ask("saved", "失败的问题", &config).is_err());
+    assert!(store.ask("saved", "失败的问题", &config, None).is_err());
     let failed = serde_json::to_value(store.get("saved").unwrap().document).unwrap();
     assert!(failed["pending_question"].is_null());
     assert!(
@@ -308,10 +359,282 @@ fn answers_and_failed_traces_are_saved_before_reopening_and_continuing() {
     assert_eq!(failed["archive"]["history"], accepted);
     assert!(store.list().unwrap().sessions[0].failed);
     assert!(!failed.to_string().contains("not-persisted-http-body"));
-    store.ask("saved", "继续原来的讨论", &config).unwrap();
+    store.ask("saved", "继续原来的讨论", &config, None).unwrap();
     let requests = server.join().unwrap();
     let mut expected = accepted.as_array().unwrap().clone();
     expected.push(json!({"role":"user","content":"继续原来的讨论"}));
     assert_eq!(requests[3]["input"], json!(expected));
     assert_eq!(store.list().unwrap().sessions.len(), 1);
+}
+
+impl SessionStore {
+    fn create(&self, id: &str, label: String, archive: SessionArchive) -> Result<(), UiError> {
+        let _operation = self.begin(id)?;
+        if label.len() > 2048 {
+            return Err(UiError::new("session", "会话局面描述过长"));
+        }
+        if self.path(id)?.exists() {
+            return Err(UiError::new("session", "会话编号已存在，请打开原会话继续"));
+        }
+        self.save(&SessionDocument {
+            version: 1,
+            id: id.into(),
+            title: "新会话".into(),
+            context_label: label,
+            created_at: now(),
+            updated_at: now(),
+            archive,
+            pending_question: None,
+            game: None,
+            position: None,
+        })
+    }
+}
+
+fn fixture_game() -> SessionGame {
+    let (events, _) =
+        crate::replay::parse(include_str!("../../../../fixtures/tenhou/ranked_game.json")).unwrap();
+    SessionGame {
+        key: SessionGame::key(&events).unwrap(),
+        events,
+    }
+}
+
+#[test]
+fn game_sessions_preserve_turn_snapshots_browsing_position_and_portable_replay() {
+    let (endpoint, server) = server(vec![
+        (200, message("第一处")),
+        (200, message("第二处")),
+        (200, message("独立会话")),
+    ]);
+    let config = AgentConfig {
+        endpoint: &endpoint,
+        model: "test",
+        api_key: None,
+    };
+    let game = fixture_game();
+    let first = AgentContext::from_events(&game.events, PlayerIndex::new(0).unwrap(), 1).unwrap();
+    let next = AgentContext::from_events(&game.events, PlayerIndex::new(1).unwrap(), 4).unwrap();
+    let directory = Directory::new();
+    let store = SessionStore::new(directory.0.join("sessions"));
+    for (id, question, context) in [
+        ("one", "未分析也能问", &first),
+        ("one", "换位置继续", &next),
+        ("two", "另一段讨论", &first),
+    ] {
+        store
+            .ask(
+                id,
+                question,
+                &config,
+                Some(SessionSource {
+                    game: &game,
+                    context,
+                    label: "test.json",
+                }),
+            )
+            .unwrap();
+    }
+    let original = store.get("one").unwrap().document;
+    let value = serde_json::to_value(&original.archive).unwrap();
+    assert_eq!(value["turns"].as_array().unwrap().len(), 2);
+    assert_eq!(value["turns"][0]["evidence"]["event_index"], 1);
+    assert_eq!(value["turns"][1]["evidence"]["event_index"], 4);
+    assert_eq!(value["turns"][1]["evidence"]["player"], 1);
+    let position = SessionPosition {
+        player: 2,
+        event_index: 10,
+    };
+    store.set_position("one", &game.key, position).unwrap();
+    assert_eq!(
+        serde_json::to_value(store.get("one").unwrap().document.archive).unwrap(),
+        value
+    );
+    assert!(store.set_position("one", "another-game", position).is_err());
+    assert!(
+        store
+            .set_position(
+                "one",
+                &game.key,
+                SessionPosition {
+                    player: 4,
+                    event_index: 10
+                }
+            )
+            .is_err()
+    );
+    assert!(
+        store
+            .set_position(
+                "one",
+                &game.key,
+                SessionPosition {
+                    player: 0,
+                    event_index: game.events.len()
+                }
+            )
+            .is_err()
+    );
+    drop(store);
+    let reopened = SessionStore::new(directory.0.join("sessions"));
+    let restored = reopened.get("one").unwrap().document;
+    assert!(restored.position == Some(position));
+    assert_eq!(restored.game.as_ref().unwrap().events, game.events);
+    let list = reopened.list().unwrap();
+    assert_eq!(list.sessions.len(), 2);
+    assert!(
+        list.sessions
+            .iter()
+            .all(|session| session.game_key.as_deref() == Some(&game.key))
+    );
+    let exported = reopened.export("one", &directory.0).unwrap();
+    let imported = reopened
+        .import(&fs::read_to_string(exported).unwrap())
+        .unwrap()
+        .document;
+    assert_ne!(imported.id, "one");
+    assert!(imported.position == Some(position));
+    assert_eq!(imported.game.as_ref().unwrap().events, game.events);
+    let imported_replay = crate::replay::replay(&imported.game.unwrap().events).unwrap();
+    assert!(
+        imported_replay
+            .frames
+            .iter()
+            .any(|frame| frame.event_index == position.event_index)
+    );
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 3);
+    // 保存完整牌谱不改变网络投影：每份快照仍只提供当前观察玩家的手牌。
+    for request in requests {
+        assert!(!request.to_string().contains("tehais"));
+        assert!(!request.to_string().contains(&game.key));
+        assert!(!request.to_string().contains("test.json"));
+    }
+}
+
+#[test]
+fn retries_use_original_question_snapshots_even_after_browsing_and_other_questions() {
+    let (endpoint, server) = server(vec![
+        (503, "failed".into()),
+        (200, message("新问题成功")),
+        (200, message("旧问题重试成功")),
+        (200, message("继续浏览位置")),
+        (200, message("未完成问题恢复")),
+    ]);
+    let config = AgentConfig {
+        endpoint: &endpoint,
+        model: "test",
+        api_key: None,
+    };
+    let game = fixture_game();
+    let first = AgentContext::from_events(&game.events, PlayerIndex::new(0).unwrap(), 2).unwrap();
+    let next = AgentContext::from_events(&game.events, PlayerIndex::new(1).unwrap(), 4).unwrap();
+    let directory = Directory::new();
+    let store = SessionStore::new(directory.0.clone());
+    assert!(
+        store
+            .ask(
+                "one",
+                "原问题",
+                &config,
+                Some(SessionSource {
+                    game: &game,
+                    context: &first,
+                    label: "game"
+                })
+            )
+            .is_err()
+    );
+    store
+        .ask(
+            "one",
+            "新局面的问题",
+            &config,
+            Some(SessionSource {
+                game: &game,
+                context: &next,
+                label: "game",
+            }),
+        )
+        .unwrap();
+    let position = SessionPosition {
+        player: 2,
+        event_index: 10,
+    };
+    store.set_position("one", &game.key, position).unwrap();
+    store.retry("one", Some(0), &config).unwrap();
+    assert!(store.get("one").unwrap().document.position == Some(position));
+    assert!(store.retry("one", Some(1), &config).is_err());
+    assert!(store.retry("one", None, &config).is_err());
+    store.ask("one", "继续浏览位置", &config, None).unwrap();
+    let mut pending = store.get("one").unwrap().document;
+    pending.pending_question = Some("退出前的问题".into());
+    store.save(&pending).unwrap();
+    store
+        .set_position(
+            "one",
+            &game.key,
+            SessionPosition {
+                player: 3,
+                event_index: 12,
+            },
+        )
+        .unwrap();
+    store.retry("one", None, &config).unwrap();
+    let archive = serde_json::to_value(store.get("one").unwrap().document.archive).unwrap();
+    assert_eq!(archive["turns"][2]["evidence"], first.evidence().clone());
+    assert_eq!(archive["turns"][3]["evidence"]["event_index"], 10);
+    assert_eq!(archive["turns"][4]["evidence"]["event_index"], 10);
+    assert_eq!(archive["turns"][4]["question"], "退出前的问题");
+    assert_eq!(server.join().unwrap().len(), 5);
+}
+
+#[test]
+fn a_session_cannot_be_reused_for_another_game_and_invalid_import_keeps_original() {
+    let (endpoint, server) = server(vec![(200, message("已有回答"))]);
+    let config = AgentConfig {
+        endpoint: &endpoint,
+        model: "test",
+        api_key: None,
+    };
+    let game = fixture_game();
+    let context = AgentContext::from_events(&game.events, PlayerIndex::new(0).unwrap(), 2).unwrap();
+    let directory = Directory::new();
+    let store = SessionStore::new(directory.0.clone());
+    store
+        .ask(
+            "one",
+            "问题",
+            &config,
+            Some(SessionSource {
+                game: &game,
+                context: &context,
+                label: "game",
+            }),
+        )
+        .unwrap();
+    let original = fs::read(directory.0.join("one.json")).unwrap();
+    let mut another = game.clone();
+    another.events.pop();
+    another.key = SessionGame::key(&another.events).unwrap();
+    assert!(
+        store
+            .ask(
+                "one",
+                "错误牌谱",
+                &config,
+                Some(SessionSource {
+                    game: &another,
+                    context: &context,
+                    label: "other"
+                })
+            )
+            .is_err()
+    );
+    assert_eq!(fs::read(directory.0.join("one.json")).unwrap(), original);
+    let mut json: serde_json::Value = serde_json::from_slice(&original).unwrap();
+    json["game"]["key"] = json!("forged-key");
+    assert!(store.import(&json.to_string()).is_err());
+    assert_eq!(fs::read(directory.0.join("one.json")).unwrap(), original);
+    assert_eq!(server.join().unwrap().len(), 1);
 }

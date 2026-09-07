@@ -319,7 +319,7 @@ export function ImportDialog({
             options={examples.map((item) => ({
               value: item.filename,
               label: item.title,
-              description: item.filename,
+              description: item.filename.replace(/\.json$/i, ''),
             }))}
             onChange={setExampleName}
           />

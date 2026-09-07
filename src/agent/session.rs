@@ -32,7 +32,7 @@ pub struct SessionArchive {
     tools: Vec<Value>,
     endpoint: String,
     model: String,
-    evidence: Value,
+    pub(super) evidence: Value,
     history: Vec<Value>,
     turns: Vec<Turn>,
 }
@@ -44,12 +44,15 @@ struct Turn {
     answer: Option<String>,
     error: Option<String>,
     trace: Vec<Value>,
+    /// 这一轮发送时的局面；旧版会话沿用顶层 evidence。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    evidence: Option<Value>,
 }
 
 impl SessionArchive {
     pub(super) fn new(evidence: Value, config: &AgentConfig<'_>) -> Self {
         Self {
-            version: 1,
+            version: 2,
             instructions: INSTRUCTIONS.into(),
             tools: tool_definitions(),
             endpoint: config.endpoint.into(),
@@ -74,6 +77,7 @@ impl SessionArchive {
             answer: answer.map(str::to_owned),
             error,
             trace,
+            evidence: Some(self.evidence.clone()),
         });
     }
 
@@ -88,7 +92,7 @@ impl SessionArchive {
         Ok(archive)
     }
 
-    /// 校验浏览所需的格式、消息配对和固定证据，不重新执行分析工具。
+    /// 校验浏览所需的格式、消息配对和各轮快照，不重新执行分析工具。
     /// 此检查不证明历史计算结果正确；导入用 `from_json`，续聊用 `AgentSession::from_archive`。
     pub fn validate_for_display(&self) -> Result<(), SessionFormatError> {
         self.validate(false)
@@ -99,39 +103,29 @@ impl SessionArchive {
         self.turns.last().and_then(|turn| turn.error.as_deref())
     }
 
-    /// 会话绑定的可见局面，用于历史列表定位。
+    /// 最近一次提问使用的可见局面。
     pub fn evidence(&self) -> &Value {
         &self.evidence
     }
 
+    /// 取得失败问题及它发送时的快照，供显式重试使用；成功的轮次不可重试。
+    pub fn failed_turn_context(&self, index: usize) -> Option<(&str, AgentContext)> {
+        let turn = self.turns.get(index)?;
+        turn.error.as_ref()?;
+        Some((
+            &turn.question,
+            AgentContext {
+                evidence: turn.evidence.as_ref().unwrap_or(&self.evidence).clone(),
+            },
+        ))
+    }
+
     fn validate(&self, verify_results: bool) -> Result<(), SessionFormatError> {
         use SessionFormatError as E;
-        if self.version != 1 {
+        if !matches!(self.version, 1 | 2) {
             return Err(E::IncompatibleVersion);
         }
-        if self.evidence["schema_version"] != 2
-            || self.evidence["event_index"].as_u64().is_none()
-            || self.evidence["player"].as_u64().is_none_or(|p| p >= 4)
-            || !self.evidence["position"].is_object()
-            || !self.evidence["discards"].is_array()
-            || !self.evidence["mortal"].is_object()
-        {
-            return Err(E::InvalidContext("缺少有效的固定局面证据"));
-        }
-        let players = self.evidence["position"]["players"]
-            .as_array()
-            .ok_or(E::InvalidContext("缺少四家公开信息"))?;
-        if players.len() != 4
-            || players.iter().enumerate().any(|(i, p)| {
-                p["player"].as_u64() != Some(i as u64)
-                    || p.get("concealed").is_some()
-                    || !p["discards"].is_array()
-                    || !p["melds"].is_array()
-            })
-            || !self.evidence["position"]["concealed"].is_array()
-        {
-            return Err(E::InvalidContext("玩家公开信息或自家手牌无效"));
-        }
+        validate_evidence(&self.evidence)?;
         check_history(&self.history).map_err(|_| E::TooLarge)?;
         let mut calls = std::collections::HashMap::new();
         let mut pending = HashSet::new();
@@ -144,6 +138,7 @@ impl SessionArchive {
                 .trim_end_matches('/')
                 .ends_with("/chat/completion");
         let mut chat_group_end = 0;
+        let mut current_evidence = self.evidence.clone();
         for (index, item) in self.history.iter().enumerate() {
             let bad = || E::InvalidContext("历史消息或工具调用格式不正确");
             // Chat 原始消息必须与标准化轨迹一致，不能夹带额外角色或工具结果。
@@ -169,7 +164,17 @@ impl SessionArchive {
                 return Err(bad());
             }
             match item["type"].as_str() {
-                None if index == 0 && *item == initial_evidence(&self.evidence) => {}
+                None if context_evidence(item).is_some() => {
+                    if !pending.is_empty() || (self.version == 1 && index != 0) {
+                        return Err(bad());
+                    }
+                    let snapshot = context_evidence(item).ok_or_else(bad)?;
+                    validate_evidence(&snapshot)?;
+                    if self.version == 1 && snapshot != self.evidence {
+                        return Err(bad());
+                    }
+                    current_evidence = snapshot;
+                }
                 None if item["role"] == "user" && item["content"].is_string() => {
                     if !pending.is_empty() {
                         return Err(bad());
@@ -191,7 +196,7 @@ impl SessionArchive {
                     let args = item["arguments"].as_str().ok_or_else(bad)?;
                     // 浏览历史不能触发昂贵的牌形枚举；导入和续聊仍重算校验。
                     let expected = if verify_results || name == "get_review" {
-                        Some(execute_tool(&self.evidence, name, args).0)
+                        Some(execute_tool(&current_evidence, name, args).0)
                     } else {
                         None
                     };
@@ -223,6 +228,9 @@ impl SessionArchive {
             return Err(E::InvalidContext("工具调用缺少结果"));
         }
         for turn in &self.turns {
+            if let Some(evidence) = &turn.evidence {
+                validate_evidence(evidence)?;
+            }
             if turn.answer.is_some() == turn.error.is_some()
                 || turn.question.len() > MAX_QUESTION_BYTES
             {
@@ -258,6 +266,34 @@ impl SessionArchive {
     }
 }
 
+fn validate_evidence(evidence: &Value) -> Result<(), SessionFormatError> {
+    use SessionFormatError as E;
+    if evidence["schema_version"] != 2
+        || evidence["event_index"].as_u64().is_none()
+        || evidence["player"].as_u64().is_none_or(|p| p >= 4)
+        || !evidence["position"].is_object()
+        || !evidence["discards"].is_array()
+        || !evidence["mortal"].is_object()
+    {
+        return Err(E::InvalidContext("缺少有效的固定局面证据"));
+    }
+    let players = evidence["position"]["players"]
+        .as_array()
+        .ok_or(E::InvalidContext("缺少四家公开信息"))?;
+    if players.len() != 4
+        || players.iter().enumerate().any(|(i, p)| {
+            p["player"].as_u64() != Some(i as u64)
+                || p.get("concealed").is_some()
+                || !p["discards"].is_array()
+                || !p["melds"].is_array()
+        })
+        || !evidence["position"]["concealed"].is_array()
+    {
+        return Err(E::InvalidContext("玩家公开信息或自家手牌无效"));
+    }
+    Ok(())
+}
+
 impl AgentSession {
     /// 获取可保存的上下文；失败请求的轨迹也会保留，但不会进入后续模型历史。
     pub fn archive(&self) -> &SessionArchive {
@@ -289,14 +325,21 @@ impl AgentSession {
             client: client::Client::new(config)?,
             evidence: archive.evidence.clone(),
             history: archive.history.clone(),
-            has_evidence: archive.history.first() == Some(&initial_evidence(&archive.evidence))
-                || archive.history.iter().any(|item| {
+            has_evidence: match archive
+                .history
+                .iter()
+                .filter_map(context_evidence)
+                .next_back()
+            {
+                Some(evidence) => evidence == archive.evidence,
+                None => archive.history.iter().any(|item| {
                     item["type"] == "function_call"
                         && item["name"] == "get_review"
                         && item["arguments"].as_str().is_some_and(|args| {
                             serde_json::from_str::<Value>(args).is_ok_and(|v| v == json!({}))
                         })
                 }),
+            },
             archive: archive.clone(),
         })
     }

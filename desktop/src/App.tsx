@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
-import type { Bridge, Decision, Replay } from './types';
+import type { Bridge, Decision, Replay, SessionPosition, SessionView } from './types';
 import { bridge, errorMessage } from './bridge';
 import { Board, eventText } from './Board';
 import { Analysis } from './Analysis';
@@ -8,6 +8,7 @@ import { SettingsPanel } from './Settings';
 import { useWindowScale } from './useWindowScale';
 import { ImportDialog } from './ImportDialog';
 import { Select } from './Select';
+import { replayName } from './display';
 import { ChatPanel, HistoryDialog, useSessions } from './Sessions';
 
 const roundsPerPage = 7;
@@ -79,13 +80,19 @@ export default function App({ api = bridge }: { api?: Bridge }) {
     setError('');
     try {
       const loaded = await read();
+      const attached = await workspace.attachGame(loaded.game_key);
       documentId.current = loaded.id;
       analysisJob.current += 1;
       setSelected(null);
       setReplay(loaded);
       setFilename(name);
-      setIndex(0);
-      setPlayer(0);
+      setIndex(
+        Math.max(
+          0,
+          loaded.frames.findIndex((f) => f.event_index === attached?.position?.event_index),
+        ),
+      );
+      setPlayer(attached?.position?.player ?? 0);
       setReveal(false);
       setDecisions({});
       setAnalyzing(null);
@@ -177,17 +184,71 @@ export default function App({ api = bridge }: { api?: Bridge }) {
     return () => window.removeEventListener('keydown', onKey);
   });
 
-  const scope = `${replay?.id}/${player}/${frame?.event_index}`;
+  const scope = replay?.game_key ?? '';
   const chatId = workspace.idFor(scope);
   const chatSource =
-    replay && frame && decision
+    replay && frame
       ? {
           game: replay.id,
+          gameKey: replay.game_key,
+          gameLabel: filename,
           player,
           event: frame.event_index,
-          label: `${filename} · ${replay.names[player]} · ${frame.round} · 第 ${decision.turn} 手 · G${frame.event_index}`,
+          label: `${replay.names[player]} · ${frame.round} · G${frame.event_index}`,
         }
       : undefined;
+
+  function locate(position: SessionPosition) {
+    if (!replay) return;
+    const frameIndex = replay.frames.findIndex((f) => f.event_index === position.event_index);
+    if (frameIndex < 0) return;
+    changePlayer(position.player);
+    jump(frameIndex);
+  }
+
+  async function openSessionGame(doc: SessionView, position?: SessionPosition) {
+    if (importBusy.current) return;
+    importBusy.current = true;
+    setLoading(true);
+    setPlaying(false);
+    try {
+      const opened = await api.openSessionGame(doc.id);
+      const loaded = opened.replay;
+      await workspace.attachGame(loaded.game_key);
+      if (documentId.current !== loaded.id) {
+        analysisJob.current += 1;
+        setDecisions({});
+        setAnalyzing(null);
+      }
+      documentId.current = loaded.id;
+      workspace.activate(loaded.game_key, doc.id);
+      setReplay(loaded);
+      setFilename(opened.name);
+      setSelected(null);
+      setReveal(false);
+      const cursor = position ?? opened.position;
+      setIndex(
+        Math.max(
+          0,
+          loaded.frames.findIndex((f) => f.event_index === cursor.event_index),
+        ),
+      );
+      setPlayer(cursor.player);
+      setReviewTab('chat');
+      setShowHistory(false);
+    } finally {
+      importBusy.current = false;
+      setLoading(false);
+    }
+  }
+
+  const hasSavedGame = workspace.documents[chatId]?.game?.key === scope;
+  const chatPending = !!workspace.pending[chatId];
+  useEffect(() => {
+    if (!chatSource || !hasSavedGame || chatPending || playing) return;
+    const timer = window.setTimeout(() => void workspace.savePosition(chatId, chatSource), 400);
+    return () => window.clearTimeout(timer);
+  }, [chatId, scope, frame?.event_index, player, hasSavedGame, chatPending, playing]);
 
   const openFile = () => fileInput.current?.click();
 
@@ -226,7 +287,7 @@ export default function App({ api = bridge }: { api?: Bridge }) {
           {replay ? (
             <>
               <span className="status-dot" />
-              {filename}
+              {replayName(filename)}
             </>
           ) : (
             '从一份牌谱，重新看懂每一步。'
@@ -265,7 +326,12 @@ export default function App({ api = bridge }: { api?: Bridge }) {
         </button>
       </header>
       {showHistory && (
-        <HistoryDialog api={api} workspace={workspace} onClose={() => setShowHistory(false)} />
+        <HistoryDialog
+          api={api}
+          workspace={workspace}
+          onClose={() => setShowHistory(false)}
+          onOpenGame={openSessionGame}
+        />
       )}
       {showSettings && <SettingsPanel api={api} onClose={() => setShowSettings(false)} />}
       {error && !showImport && (
@@ -561,10 +627,13 @@ export default function App({ api = bridge }: { api?: Bridge }) {
                 workspace={workspace}
                 id={chatId}
                 source={chatSource}
-                ready={!!points}
+                ready={!!decision}
                 visible={reviewTab === 'chat' && !showHistory}
                 onFocus={() => setPlaying(false)}
                 onNew={() => workspace.newSession(scope)}
+                sessions={workspace.choices(scope)}
+                onSelect={(id) => void workspace.selectSession(scope, id)}
+                onLocate={locate}
               />
             </div>
           </aside>

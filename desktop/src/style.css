@@ -986,12 +986,19 @@ summary {
 .agent-icon {
   display: grid;
   place-items: center;
-  width: 30px;
+  width: 32px;
   height: 32px;
+  flex-shrink: 0;
   border: 1px solid #bccea522;
   border-radius: 8px;
-  font-size: 26px;
   color: #c1c498;
+}
+.agent-icon svg {
+  width: 24px;
+  height: 24px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
 }
 .chat-heading p {
   font-size: 10px;
@@ -1561,11 +1568,45 @@ summary {
   border-radius: 6px;
 }
 .session-trace ol {
-  padding-left: 18px;
+  padding-left: 0;
   margin-top: 10px;
+  list-style: none;
 }
 .session-trace li {
   margin: 8px 0;
+}
+.trace-step {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  list-style: none;
+}
+.trace-step::-webkit-details-marker {
+  display: none;
+}
+.trace-step::before {
+  content: '';
+  align-self: flex-start;
+  margin-top: 5px;
+  width: 5px;
+  height: 5px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  flex-shrink: 0;
+}
+details[open] > .trace-step::before {
+  transform: rotate(45deg);
+}
+.trace-number {
+  min-width: 2ch;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.6;
+}
+.trace-step > span:last-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .session-trace pre,
 .session-context pre {
@@ -1675,4 +1716,76 @@ summary {
   font-size: 11px;
   overflow-wrap: anywhere;
   margin-bottom: 10px;
+}
+
+.session-picker {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 20px 10px;
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+.session-picker .custom-select,
+.session-title-editor input,
+.session-title {
+  flex: 1;
+  min-width: 0;
+}
+.session-picker .select-trigger {
+  padding: 5px 8px;
+  font-size: 11px;
+}
+.session-picker .select-menu {
+  width: 100%;
+  max-width: none;
+}
+.session-title,
+.session-picker .select-menu li > div > span,
+.history-body nav strong {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-rename {
+  display: grid;
+  place-items: center;
+  padding: 5px;
+  border-color: transparent;
+  background: transparent;
+  flex-shrink: 0;
+}
+.session-rename svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+.session-title-editor input {
+  width: 0;
+  padding: 5px 8px;
+}
+.session-title-editor button {
+  padding: 5px 6px;
+  font-size: 10px;
+  flex-shrink: 0;
+}
+.session-location {
+  display: block;
+  margin: 4px 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-size: 11px;
+  color: inherit;
+  opacity: 0.75;
+  text-align: left;
+}
+button.session-location:hover {
+  opacity: 1;
+  text-decoration: underline;
 }

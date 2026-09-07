@@ -1,5 +1,9 @@
 use crate::{UiError, lock};
-use kyoku::agent::{AgentSession, SessionArchive};
+use kyoku::agent::{AgentContext, AgentSession, SessionArchive};
+use kyoku::mahjong::player_index::PlayerIndex;
+
+mod game;
+pub(crate) use game::{SessionGame, SessionPosition, SessionSource};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
@@ -14,6 +18,7 @@ use std::{
 };
 
 const MAX_FILE_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_TITLE_CHARS: usize = 32;
 static FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -28,18 +33,23 @@ pub(crate) struct SessionDocument {
     pub archive: SessionArchive,
     /// 请求前落盘；进程退出后仍能看见未完成的问题，并手动重试。
     pub pending_question: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub game: Option<SessionGame>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<SessionPosition>,
 }
 
 #[derive(Serialize)]
 pub(crate) struct SessionView {
     #[serde(flatten)]
-    document: SessionDocument,
+    pub document: SessionDocument,
     busy: bool,
 }
 
 #[derive(Serialize)]
 pub(crate) struct SessionSummary {
     id: String,
+    game_key: Option<String>,
     title: String,
     context_label: String,
     updated_at: u64,
@@ -52,6 +62,12 @@ pub(crate) struct SessionSummary {
 pub(crate) struct SessionList {
     sessions: Vec<SessionSummary>,
     warnings: Vec<String>,
+}
+
+enum SessionQuestion<'a> {
+    New(&'a str),
+    Retry(usize),
+    Pending,
 }
 
 pub(crate) struct SessionStore {
@@ -93,13 +109,23 @@ fn valid_id(id: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
 }
 
+fn default_title(question: &str) -> String {
+    question
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(MAX_TITLE_CHARS)
+        .collect()
+}
+
 fn parse(text: &str) -> Result<SessionDocument, UiError> {
     if text.len() as u64 > MAX_FILE_BYTES {
         return Err(UiError::new("session_format", "会话文件不能超过 32 MiB"));
     }
-    let document: SessionDocument = serde_json::from_str(text)
+    let mut document: SessionDocument = serde_json::from_str(text)
         .map_err(|_| UiError::new("session_format", "不是有效的 Kyoku 会话 JSON"))?;
-    if document.version != 1
+    if !matches!(document.version, 1 | 2)
         || !valid_id(&document.id)
         || document.title.len() > 1024
         || document.context_label.len() > 2048
@@ -110,10 +136,25 @@ fn parse(text: &str) -> Result<SessionDocument, UiError> {
     {
         return Err(UiError::new("session_format", "会话版本、编号或描述无效"));
     }
+    if let Some(game) = &document.game {
+        game.validate()?;
+        document
+            .position
+            .ok_or_else(|| UiError::new("session_format", "缺少会话浏览位置"))?
+            .validate(game)?;
+        SessionPosition::from_evidence(document.archive.evidence())?.validate(game)?;
+    } else if document.version == 2 {
+        return Err(UiError::new("session_format", "缺少会话关联的牌谱"));
+    }
     document
         .archive
         .validate_for_display()
         .map_err(|e| UiError::new("session_format", e.to_string()))?;
+    // 兼容旧文件的长标题，不因显示限制而拒绝整份历史记录。
+    document.title = default_title(&document.title);
+    if document.title.is_empty() {
+        document.title = "新会话".into();
+    }
     Ok(document)
 }
 
@@ -216,6 +257,7 @@ impl SessionStore {
                     failed: doc.archive.last_error().is_some(),
                     busy: busy.contains(&doc.id),
                     interrupted: doc.pending_question.is_some() && !busy.contains(&doc.id),
+                    game_key: doc.game.map(|game| game.key),
                     id: doc.id,
                     title: doc.title,
                     context_label: doc.context_label,
@@ -245,28 +287,56 @@ impl SessionStore {
         Ok(SessionView { document, busy })
     }
 
-    pub fn create(&self, id: &str, label: String, archive: SessionArchive) -> Result<(), UiError> {
+    /// 修改本地标题，不改变问题和模型上下文。
+    pub fn rename(&self, id: &str, title: &str) -> Result<SessionView, UiError> {
+        let title = title.trim();
+        if title.is_empty()
+            || title.chars().count() > MAX_TITLE_CHARS
+            || title.chars().any(char::is_control)
+        {
+            return Err(UiError::new(
+                "session_title",
+                "会话标题需为 1–32 个字符，且不能换行",
+            ));
+        }
         let _operation = self.begin(id)?;
-        if label.len() > 2048 {
-            return Err(UiError::new("session", "会话局面描述过长"));
-        }
-        if self.path(id)?.exists() {
-            return Err(UiError::new("session", "会话编号已存在，请打开原会话继续"));
-        }
-        self.save(&SessionDocument {
-            version: 1,
-            id: id.into(),
-            title: "新会话".into(),
-            context_label: label,
-            created_at: now(),
-            updated_at: now(),
-            archive,
-            pending_question: None,
+        let mut document = read(&self.path(id)?)?;
+        document.title = title.into();
+        document.updated_at = now().max(document.updated_at.saturating_add(1));
+        self.save(&document)?;
+        Ok(SessionView {
+            document,
+            busy: false,
         })
+    }
+
+    pub fn set_position(
+        &self,
+        id: &str,
+        game_key: &str,
+        position: SessionPosition,
+    ) -> Result<(), UiError> {
+        let _operation = self.begin(id)?;
+        let mut document = read(&self.path(id)?)?;
+        let game = document
+            .game
+            .as_ref()
+            .filter(|game| game.key == game_key)
+            .ok_or_else(|| UiError::new("session", "此会话属于另一份牌谱"))?;
+        position.validate(game)?;
+        if document.position != Some(position) {
+            document.position = Some(position);
+            document.updated_at = now().max(document.updated_at.saturating_add(1));
+            self.save(&document)?;
+        }
+        Ok(())
     }
 
     pub fn import(&self, text: &str) -> Result<SessionView, UiError> {
         let mut document = parse(text)?;
+        if let Some(game) = &document.game {
+            crate::replay::replay(&game.events)?;
+        }
         // 外部导入仍完整重算证据；普通列表、打开和导出只做浏览校验。
         document.archive = SessionArchive::from_json(
             &serde_json::to_string(&document.archive).map_err(|_| io_error())?,
@@ -306,22 +376,111 @@ impl SessionStore {
         id: &str,
         question: &str,
         config: &kyoku::agent::AgentConfig<'_>,
+        source: Option<SessionSource<'_>>,
     ) -> Result<SessionView, UiError> {
-        let question = question.trim();
+        self.ask_question(id, SessionQuestion::New(question), config, source)
+    }
+
+    pub fn retry(
+        &self,
+        id: &str,
+        turn: Option<usize>,
+        config: &kyoku::agent::AgentConfig<'_>,
+    ) -> Result<SessionView, UiError> {
+        let question = match turn {
+            Some(index) => SessionQuestion::Retry(index),
+            None => SessionQuestion::Pending,
+        };
+        self.ask_question(id, question, config, None)
+    }
+
+    fn ask_question(
+        &self,
+        id: &str,
+        request: SessionQuestion<'_>,
+        config: &kyoku::agent::AgentConfig<'_>,
+        source: Option<SessionSource<'_>>,
+    ) -> Result<SessionView, UiError> {
+        let _operation = self.begin(id)?;
+        let path = self.path(id)?;
+        let exists = path.try_exists().map_err(|_| io_error())?;
+        let mut document = if exists {
+            read(&path)?
+        } else {
+            let source = source
+                .as_ref()
+                .ok_or_else(|| UiError::new("session", "会话不存在"))?;
+            if source.label.len() > 2048 {
+                return Err(UiError::new("session", "牌谱名称过长"));
+            }
+            let session = AgentSession::with_context(source.context, config)
+                .map_err(|e| UiError::new("agent", e.to_string()))?;
+            SessionDocument {
+                version: 2,
+                id: id.into(),
+                title: "新会话".into(),
+                context_label: source.label.into(),
+                created_at: now(),
+                updated_at: now(),
+                archive: session.archive().clone(),
+                pending_question: None,
+                game: Some(source.game.clone()),
+                position: Some(SessionPosition::from_evidence(source.context.evidence())?),
+            }
+        };
+        let (question, retry_context) = match &request {
+            SessionQuestion::New(text) => (text.trim().to_owned(), None),
+            SessionQuestion::Retry(index) => {
+                let (text, context) = document
+                    .archive
+                    .failed_turn_context(*index)
+                    .ok_or_else(|| UiError::new("question", "找不到可重试的失败问题"))?;
+                (text.to_owned(), Some(context))
+            }
+            SessionQuestion::Pending => (
+                document
+                    .pending_question
+                    .clone()
+                    .ok_or_else(|| UiError::new("question", "没有未完成的问题"))?,
+                None,
+            ),
+        };
         if question.is_empty() || question.len() > 16 * 1024 {
             return Err(UiError::new("question", "问题不能为空，且不能超过 16 KiB"));
         }
-        let _operation = self.begin(id)?;
-        let mut document = read(&self.path(id)?)?;
         let mut session = AgentSession::from_archive(&document.archive, config)
             .map_err(|e| UiError::new("agent", e.to_string()))?;
-        if document.title == "新会话" {
-            document.title = question.chars().take(40).collect();
+        if let Some(context) = retry_context {
+            session.set_context(&context);
+        } else if let Some(source) = source {
+            if document
+                .game
+                .as_ref()
+                .is_none_or(|game| game.key != source.game.key || game.events != source.game.events)
+            {
+                return Err(UiError::new("session", "此会话不属于当前牌谱，请新建会话"));
+            }
+            session.set_context(source.context);
+            document.position = Some(SessionPosition::from_evidence(source.context.evidence())?);
+        } else if matches!(request, SessionQuestion::New(_))
+            && let (Some(game), Some(position)) = (&document.game, document.position)
+            && position != SessionPosition::from_evidence(document.archive.evidence())?
+        {
+            let player = PlayerIndex::try_from(position.player)
+                .map_err(|_| UiError::new("player", "玩家编号必须为 0..3"))?;
+            let context = AgentContext::from_events(&game.events, player, position.event_index)
+                .map_err(|e| UiError::new("session", e.to_string()))?;
+            session.set_context(&context);
         }
-        document.pending_question = Some(question.into());
+        // 请求快照先落盘，退出或失败后仍能按原位置重试。
+        document.archive = session.archive().clone();
+        if !exists {
+            document.title = default_title(&question);
+        }
+        document.pending_question = Some(question.clone());
         document.updated_at = now().max(document.updated_at.saturating_add(1));
         self.save(&document)?;
-        let result = session.ask(question);
+        let result = session.ask(&question);
         document.archive = session.archive().clone();
         document.pending_question = None;
         document.updated_at = now().max(document.updated_at.saturating_add(1));
