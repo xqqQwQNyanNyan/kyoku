@@ -1340,7 +1340,7 @@ summary {
   padding-top: 20px;
   border-top: 1px solid var(--line);
 }
-.import-detail input,
+.import-detail input:not([type='checkbox']),
 .import-detail .select-trigger {
   color: #e6e9e5;
   width: 100%;
@@ -1353,6 +1353,68 @@ summary {
 }
 .import-actions button {
   flex-shrink: 0;
+}
+.majsoul-import {
+  max-height: calc(100dvh / var(--app-scale, 1) - 32px);
+  overflow-y: auto;
+}
+.majsoul-import .import-sources {
+  margin: 16px 0;
+}
+.majsoul-import .import-sources button {
+  padding: 12px;
+}
+.majsoul-account {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  font-size: 12px;
+}
+.majsoul-account p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+.majsoul-credentials {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.majsoul-credentials label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.majsoul-risk {
+  padding: 12px;
+  border: 1px solid #d5bc8640;
+  border-radius: 8px;
+  background: #d5bc8609;
+}
+.majsoul-risk strong {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--accent);
+}
+.majsoul-risk p + p {
+  margin-top: 6px;
+}
+.majsoul-consent {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  line-height: 1.6;
+  cursor: pointer;
+}
+.majsoul-consent input {
+  margin-top: 3px;
+  accent-color: var(--accent);
+}
+.majsoul-session {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }
 .example-credit {
   margin-top: 4px;

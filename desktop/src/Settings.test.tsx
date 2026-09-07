@@ -15,6 +15,9 @@ function api(): Bridge {
   return {
     importLog: vi.fn(),
     importLink: vi.fn(),
+    majsoulStatus: vi.fn().mockResolvedValue(false),
+    loginMajsoul: vi.fn(),
+    logoutMajsoul: vi.fn(),
     analyze: vi.fn(),
     ask: vi.fn(),
     listSessions: vi.fn(),

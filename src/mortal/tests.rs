@@ -78,3 +78,25 @@ fn startup_failure_is_reported() {
     );
     assert!(matches!(result, Err(MortalError::Spawn(_))));
 }
+
+#[test]
+fn east_only_game_is_rejected_before_inference_and_closes_session() {
+    let mut mortal = Mortal::spawn(
+        command("while IFS= read -r event; do exit 9; done"),
+        PlayerIndex::new(0).unwrap(),
+    )
+    .unwrap();
+    let event = Event::StartGame {
+        kyoku_first: 4,
+        aka_flag: true,
+        names: std::array::from_fn(|i| format!("P{i}")),
+    };
+    assert!(matches!(
+        mortal.react(&event),
+        Err(MortalError::UnsupportedGameLength)
+    ));
+    assert!(matches!(
+        mortal.react(&Event::EndGame),
+        Err(MortalError::Closed)
+    ));
+}

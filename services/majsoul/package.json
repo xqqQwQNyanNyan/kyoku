@@ -1,0 +1,20 @@
+{
+  "name": "kyoku-majsoul",
+  "version": "0.1.0",
+  "private": true,
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env server.cjs",
+    "test": "node --test test/*.test.cjs"
+  },
+  "dependencies": {
+    "mjsoul": "2.3.0",
+    "protobufjs": "7.6.6"
+  },
+  "overrides": {
+    "protobufjs": "$protobufjs",
+    "ws": "^8.18.3"
+  }
+}

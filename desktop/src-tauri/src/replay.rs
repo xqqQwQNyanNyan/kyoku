@@ -64,6 +64,7 @@ pub(crate) struct RoundEntry {
 
 #[derive(Serialize)]
 pub(crate) struct ReplayData {
+    pub mortal_supported: bool,
     pub names: [String; 4],
     pub frames: Vec<Frame>,
     pub rounds: Vec<RoundEntry>,
@@ -192,6 +193,10 @@ fn replay(events: &[Event]) -> Result<ReplayData, UiError> {
         return Err(UiError::new("empty_log", "牌谱中没有可回放的局面"));
     }
     Ok(ReplayData {
+        mortal_supported: matches!(
+            events.first(),
+            Some(Event::StartGame { kyoku_first: 0, .. })
+        ),
         names,
         frames,
         rounds,
@@ -279,5 +284,18 @@ mod tests {
         .err()
         .unwrap();
         assert_eq!(error.event_index, Some(0));
+    }
+
+    #[test]
+    fn east_only_records_remain_replayable_but_are_not_marked_for_mortal() {
+        let sample =
+            include_str!("../../../services/majsoul/test/fixtures/ranked-round.tenhou.json");
+        let mut log: serde_json::Value = serde_json::from_str(sample).unwrap();
+        for (rule, supported) in [("四般東喰赤", false), ("四般南喰赤", true)] {
+            log["rule"]["disp"] = rule.into();
+            let (_, data) = parse(&log.to_string()).unwrap();
+            assert_eq!(data.mortal_supported, supported);
+            assert!(!data.frames.is_empty());
+        }
     }
 }

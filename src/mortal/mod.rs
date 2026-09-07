@@ -47,6 +47,8 @@ pub enum MortalError {
     UnexpectedEof,
     Timeout,
     Closed,
+    /// 当前引擎按半庄处理终盘，不能分析东风场。
+    UnsupportedGameLength,
     Exit(ExitStatus),
 }
 
@@ -63,6 +65,9 @@ impl fmt::Display for MortalError {
             }
             Self::Timeout => write!(f, "Mortal did not respond within 60 seconds"),
             Self::Closed => write!(f, "Mortal session is closed after an earlier failure"),
+            Self::UnsupportedGameLength => {
+                write!(f, "当前 Mortal 仅支持四人半庄分析，东风场可继续回放")
+            }
             Self::Exit(status) => write!(f, "Mortal exited with {status}"),
         }
     }
@@ -166,6 +171,7 @@ impl Mortal {
     ///
     /// 对手起手牌和摸牌会遮蔽；无决策机会时返回 `None`，可行动但选择跳过时
     /// 返回动作是 `Event::None` 的 `Some(Decision)`。不自动执行推荐动作。
+    /// 东风场的 `StartGame` 返回 `UnsupportedGameLength` 并关闭会话。
     pub fn react(&mut self, event: &Event) -> Result<Option<Decision>, MortalError> {
         if self.failed {
             return Err(MortalError::Closed);
@@ -181,6 +187,10 @@ impl Mortal {
     }
 
     fn exchange(&mut self, event: &Event) -> Result<Option<Decision>, MortalError> {
+        // libriichi 不读取 kyoku_first；直接传入会错误地按半庄判断最终局。
+        if matches!(event, Event::StartGame { kyoku_first, .. } if *kyoku_first != 0) {
+            return Err(MortalError::UnsupportedGameLength);
+        }
         let message = protocol::visible_event(event, self.player).map_err(MortalError::Json)?;
         let stdin = self.stdin.as_mut().ok_or(MortalError::Closed)?;
         writeln!(stdin, "{message}").map_err(MortalError::Write)?;

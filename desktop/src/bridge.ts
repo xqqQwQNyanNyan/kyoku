@@ -8,6 +8,9 @@ export const bridge: Bridge = {
   runtimeStatus: (check) => invoke('runtime_status', { check }),
   importLog: (json) => invoke('import_log', { json }),
   importLink: (link) => invoke('import_link', { link }),
+  majsoulStatus: () => invoke('majsoul_status'),
+  loginMajsoul: (input) => invoke('login_majsoul', { input }),
+  logoutMajsoul: () => invoke('logout_majsoul'),
   analyze: (id, player) => invoke('analyze_game', { id, player }),
   ask: (id, player, event_index, conversation_id, text, context_label) =>
     invoke('ask', { question: { id, player, event_index, conversation_id, text, context_label } }),

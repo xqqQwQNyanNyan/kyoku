@@ -1,7 +1,10 @@
 {
   "bundle": {
     "targets": ["app", "dmg"],
-    "resources": { "target/bundled-runtime/inference/": "inference/" },
+    "resources": {
+      "target/bundled-runtime/inference/": "inference/",
+      "target/bundled-runtime/majsoul/": "majsoul/"
+    },
     "macOS": { "minimumSystemVersion": "14.0", "signingIdentity": "-" }
   }
 }

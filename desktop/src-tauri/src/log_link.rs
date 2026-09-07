@@ -4,7 +4,23 @@ use url::Url;
 
 use crate::{UiError, replay::MAX_LOG_BYTES};
 
-pub(crate) fn download(link: &str) -> Result<String, UiError> {
+pub(crate) fn download(
+    link: &str,
+    account: &std::sync::Mutex<crate::majsoul::Account>,
+) -> Result<String, UiError> {
+    let link = share_link(link);
+    if let Ok(url) = Url::parse(link)
+        && url.host_str().is_some_and(crate::majsoul::is_host)
+    {
+        if !matches!(url.scheme(), "http" | "https")
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.port().is_some()
+        {
+            return Err(UiError::new("invalid_link", "请输入完整的雀魂牌谱分享链接"));
+        }
+        return crate::lock(account)?.download(&url);
+    }
     let id = log_id(link)?;
     // 只使用校验后的编号构造官方地址，不访问用户提供的任意 URL。
     let url = format!("https://tenhou.net/5/mjlog2json.cgi?{id}");
@@ -26,13 +42,29 @@ pub(crate) fn download(link: &str) -> Result<String, UiError> {
         .map_err(download_error)
 }
 
+fn share_link(text: &str) -> &str {
+    let text = text.trim();
+    for prefix in ["雀魂牌谱", "雀魂牌譜"] {
+        if let Some(rest) = text.strip_prefix(prefix)
+            && let Some(link) = rest.trim_start().strip_prefix([':', '：'])
+        {
+            return link.trim();
+        }
+    }
+    text
+}
+
 fn log_id(link: &str) -> Result<String, UiError> {
     let link = link.trim();
     if valid_id(link) {
         return Ok(link.to_owned());
     }
-    let url = Url::parse(link)
-        .map_err(|_| UiError::new("invalid_link", "请输入完整的天凤牌谱链接或 log ID"))?;
+    let url = Url::parse(link).map_err(|_| {
+        UiError::new(
+            "invalid_link",
+            "请输入完整的天凤、雀魂牌谱链接或天凤 log ID",
+        )
+    })?;
     if !matches!(url.scheme(), "http" | "https")
         || !matches!(url.host_str(), Some("tenhou.net" | "www.tenhou.net"))
         || !url.username().is_empty()
@@ -41,7 +73,7 @@ fn log_id(link: &str) -> Result<String, UiError> {
     {
         return Err(UiError::new(
             "invalid_link",
-            "目前只支持 tenhou.net 的牌谱链接；雀魂链接暂不支持",
+            "仅支持天凤和雀魂官方牌谱分享链接",
         ));
     }
     let mut ids = url.query_pairs().filter(|(key, _)| key == "log");
@@ -94,6 +126,22 @@ mod tests {
     const ID: &str = "2023010100gm-00a9-0000-123456ab";
 
     #[test]
+    fn accepts_majsoul_share_prefix_without_changing_the_id() {
+        let url = "https://game.maj-soul.com/1/?paipu=260907-d7e9a96e-3582-48c5-9858-4d01e6beb2ba_a216567045";
+        for prefix in ["", "雀魂牌谱:", "雀魂牌谱：", "雀魂牌譜:", "雀魂牌譜 ： "]
+        {
+            let text = format!("  {prefix}{url}  ");
+            assert_eq!(share_link(&text), url);
+            assert_eq!(
+                download(&text, &std::sync::Mutex::default())
+                    .unwrap_err()
+                    .code,
+                "majsoul_login_required"
+            );
+        }
+    }
+
+    #[test]
     fn accepts_links_and_ids_with_optional_perspective() {
         for link in [
             ID.to_owned(),
@@ -120,9 +168,15 @@ mod tests {
             format!("https://tenhou.net/0/?log={ID}&log={ID}"),
             "https://tenhou.net/0/?log=not-a-log".to_owned(),
             "https://tenhou.net/0/?log=雀魂牌谱".to_owned(),
+            "雀魂牌谱:https://game.maj-soul.com.evil.test/1/?paipu=test".to_owned(),
+            "雀魂牌谱:https://game.maj-soul.com/1/?paipu=invalid".to_owned(),
+            "雀魂牌谱:ftp://game.maj-soul.com/1/?paipu=test".to_owned(),
         ] {
             assert_eq!(
-                download(&link).err().unwrap().code,
+                download(&link, &std::sync::Mutex::default())
+                    .err()
+                    .unwrap()
+                    .code,
                 "invalid_link",
                 "{link}"
             );

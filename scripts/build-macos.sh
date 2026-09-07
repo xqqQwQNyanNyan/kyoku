@@ -8,6 +8,9 @@ if [[ "$(uname -s)" != Darwin || "$(uname -m)" != arm64 ]]; then
     exit 1
 fi
 "$project_dir/mortal/.venv/bin/python" scripts/prepare-macos.py
+"$project_dir/mortal/.venv/bin/python" scripts/prepare-majsoul.py
 MACOSX_DEPLOYMENT_TARGET=14.0 npm --prefix desktop run tauri -- build --config src-tauri/tauri.bundle.conf.json
 "$project_dir/mortal/.venv/bin/python" scripts/prepare-macos.py --verify \
     "$project_dir/desktop/src-tauri/target/release/bundle/macos/Kyoku.app/Contents/Resources/inference"
+"$project_dir/mortal/.venv/bin/python" scripts/prepare-majsoul.py --verify \
+    "$project_dir/desktop/src-tauri/target/release/bundle/macos/Kyoku.app/Contents/Resources/majsoul"

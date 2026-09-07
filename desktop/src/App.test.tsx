@@ -28,6 +28,7 @@ const first: Frame = {
 };
 const replay: Replay = {
   id: 1,
+  mortal_supported: true,
   names: ['自己', '下家', '对家', '上家'],
   rounds: [{ label: '东一局 · 0 本场', frame_index: 0 }],
   frames: [
@@ -118,6 +119,9 @@ function api(): Bridge {
       .mockResolvedValue({ bundled: true, available: true, checked: false, model: 'Mortal V4' }),
     importLog: vi.fn().mockResolvedValue(replay),
     importLink: vi.fn().mockResolvedValue(replay),
+    majsoulStatus: vi.fn().mockResolvedValue(false),
+    loginMajsoul: vi.fn().mockResolvedValue(undefined),
+    logoutMajsoul: vi.fn().mockResolvedValue(undefined),
     analyze: vi.fn().mockResolvedValue([decision]),
     ask: vi.fn().mockImplementation(async (_game, _player, _event, id, text) => {
       const result = savedSession(id, '【计算】测试回答', text);
@@ -185,7 +189,7 @@ async function openChat() {
 
 async function openLink() {
   await userEvent.click(screen.getByRole('button', { name: '＋ 导入牌谱' }));
-  await userEvent.click(screen.getByRole('button', { name: /天凤链接/ }));
+  await userEvent.click(screen.getByRole('button', { name: /天凤.*雀魂链接/ }));
 }
 
 beforeEach(() => {
@@ -197,6 +201,19 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe('复盘工具标签', () => {
+  it('东风场保留回放，但不能启动 Mortal 分析', async () => {
+    const bridge = api();
+    vi.mocked(bridge.importLog).mockResolvedValue({ ...replay, mortal_supported: false });
+    await load(bridge);
+    const buttons = screen.getAllByRole('button', { name: '分析此玩家' });
+    for (const button of buttons) {
+      expect((button as HTMLButtonElement).disabled).toBe(true);
+      await userEvent.click(button);
+    }
+    expect(screen.getByText('东风场可回放，Mortal 分析目前仅支持半庄。')).toBeTruthy();
+    expect(bridge.analyze).not.toHaveBeenCalled();
+    expect(screen.getByLabelText('牌谱进度')).toBeTruthy();
+  });
   it('默认只显示分析，键盘切换标签不会推进回放', async () => {
     await load(api());
     expect(screen.getAllByRole('tabpanel')).toHaveLength(1);
@@ -284,11 +301,11 @@ describe('统一导入入口', () => {
     const bridge = api();
     render(<App api={bridge} />);
     expect(screen.queryByRole('button', { name: '链接导入' })).toBeNull();
-    expect(screen.queryByRole('button', { name: '粘贴天凤链接' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '粘贴天凤 / 雀魂链接' })).toBeNull();
     await userEvent.click(screen.getByRole('button', { name: '导入牌谱 ↗' }));
     expect(screen.getByRole('dialog', { name: '导入牌谱' })).toBeTruthy();
     expect(screen.getByRole('button', { name: /本地文件/ })).toBeTruthy();
-    expect(screen.getByRole('button', { name: /天凤链接/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /天凤.*雀魂链接/ })).toBeTruthy();
     await userEvent.click(screen.getByRole('button', { name: /示例牌谱/ }));
     await userEvent.click(screen.getByRole('button', { name: '导入示例' }));
     await screen.findByLabelText('牌谱进度');
@@ -353,7 +370,114 @@ describe('统一导入入口', () => {
   });
 });
 
-describe('天凤链接导入', () => {
+describe('天凤 / 雀魂链接导入', () => {
+  it.each(['雀魂牌谱:', '雀魂牌谱：', '雀魂牌譜:', '雀魂牌譜 ： '])(
+    '直接粘贴带 %s 前缀的分享文本，识别登录入口并导入原牌谱编号',
+    async (prefix) => {
+      const bridge = api();
+      const link =
+        'https://game.maj-soul.com/1/?paipu=260907-d7e9a96e-3582-48c5-9858-4d01e6beb2ba_a216567045';
+      render(<App api={bridge} />);
+      await openLink();
+      await userEvent.click(screen.getByLabelText('牌谱链接'));
+      await userEvent.paste(`  ${prefix}${link}  `);
+      expect(screen.getByText('账号风险提示')).toBeTruthy();
+      await userEvent.type(screen.getByLabelText('雀魂账号'), 'test-user');
+      await userEvent.type(screen.getByLabelText('雀魂密码'), 'test-password');
+      await userEvent.click(screen.getByRole('checkbox', { name: /我已了解风险/ }));
+      await userEvent.click(screen.getByRole('button', { name: '登录并导入' }));
+      await screen.findByLabelText('牌谱进度');
+      expect(bridge.loginMajsoul).toHaveBeenCalledOnce();
+      expect(bridge.importLink).toHaveBeenCalledExactlyOnceWith(link);
+    },
+  );
+
+  it('已登录的雀魂账号可直接导入分享链接，不再次索要密码', async () => {
+    const bridge = api();
+    vi.mocked(bridge.majsoulStatus).mockResolvedValue(true);
+    const link =
+      'https://game.maj-soul.com/1/?paipu=200515-cfbe0120-c92c-44ad-bdfc-ebfef3a33a10_a89702544';
+    render(<App api={bridge} />);
+    await openLink();
+    await userEvent.type(screen.getByLabelText('牌谱链接'), link + '{Enter}');
+    await screen.findByLabelText('牌谱进度');
+    expect(bridge.importLink).toHaveBeenCalledExactlyOnceWith(link);
+    expect(bridge.importLog).not.toHaveBeenCalled();
+    expect(bridge.loginMajsoul).not.toHaveBeenCalled();
+  });
+
+  it('首次雀魂导入必须确认风险，密码只提交给登录命令且提交后清空', async () => {
+    const bridge = api();
+    const login = deferred<void>();
+    vi.mocked(bridge.loginMajsoul).mockReturnValue(login.promise);
+    const link = 'https://game.maj-soul.com/1/?paipu=200515-cfbe0120-c92c-44ad-bdfc-ebfef3a33a10';
+    render(<App api={bridge} />);
+    await openLink();
+    await userEvent.type(screen.getByLabelText('牌谱链接'), link);
+    expect(screen.getByText('账号风险提示')).toBeTruthy();
+    await userEvent.type(screen.getByLabelText('雀魂账号'), 'test-user');
+    await userEvent.type(screen.getByLabelText('雀魂密码'), 'secret-password');
+    const button = screen.getByRole('button', { name: '登录并导入' });
+    expect((button as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.submit(screen.getByRole('form', { name: '链接导入' }));
+    expect(bridge.loginMajsoul).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole('checkbox', { name: /我已了解风险/ }));
+    await userEvent.click(button);
+    expect(bridge.loginMajsoul).toHaveBeenCalledExactlyOnceWith({
+      username: 'test-user',
+      password: 'secret-password',
+      accept_risk: true,
+    });
+    expect((screen.getByLabelText('雀魂密码') as HTMLInputElement).value).toBe('');
+    expect(bridge.importLink).not.toHaveBeenCalled();
+    fireEvent.submit(screen.getByRole('form', { name: '链接导入' }));
+    fireEvent.drop(screen.getByRole('dialog'), {
+      dataTransfer: { files: [new File(['{}'], 'another.json')] },
+    });
+    expect(bridge.importLog).not.toHaveBeenCalled();
+    expect(bridge.loginMajsoul).toHaveBeenCalledTimes(1);
+    await act(async () => login.resolve());
+    await screen.findByLabelText('牌谱进度');
+    expect(bridge.importLink).toHaveBeenCalledExactlyOnceWith(link);
+  });
+
+  it('登录失败保留链接且清空密码，不开始下载', async () => {
+    const bridge = api();
+    vi.mocked(bridge.loginMajsoul).mockRejectedValue({ message: '雀魂登录失败，请检查账号密码' });
+    render(<App api={bridge} />);
+    await openLink();
+    const link = 'https://game.maj-soul.com/1/?paipu=200515-cfbe0120-c92c-44ad-bdfc-ebfef3a33a10';
+    await userEvent.type(screen.getByLabelText('牌谱链接'), link);
+    await userEvent.type(screen.getByLabelText('雀魂账号'), 'test-user');
+    await userEvent.type(screen.getByLabelText('雀魂密码'), 'wrong-password');
+    await userEvent.click(screen.getByRole('checkbox', { name: /我已了解风险/ }));
+    await userEvent.click(screen.getByRole('button', { name: '登录并导入' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('雀魂登录失败');
+    expect((screen.getByLabelText('雀魂密码') as HTMLInputElement).value).toBe('');
+    expect((screen.getByLabelText('牌谱链接') as HTMLInputElement).value).toBe(link);
+    expect(bridge.importLink).not.toHaveBeenCalled();
+  });
+
+  it('退出雀魂后再次导入需要重新填写凭据并确认风险', async () => {
+    const bridge = api();
+    vi.mocked(bridge.majsoulStatus).mockResolvedValue(true);
+    render(<App api={bridge} />);
+    await openLink();
+    await userEvent.type(
+      screen.getByLabelText('牌谱链接'),
+      'https://game.maj-soul.com/1/?paipu=200515-cfbe0120-c92c-44ad-bdfc-ebfef3a33a10',
+    );
+    await userEvent.click(screen.getByRole('button', { name: '退出登录' }));
+    expect(bridge.logoutMajsoul).toHaveBeenCalledOnce();
+    await screen.findByLabelText('雀魂密码');
+    expect(
+      (screen.getByRole('checkbox', { name: /我已了解风险/ }) as HTMLInputElement).checked,
+    ).toBe(false);
+    expect((screen.getByRole('button', { name: '登录并导入' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+  });
+
   const link = 'https://tenhou.net/0/?log=2023010100gm-00a9-0000-123456ab&tw=2';
 
   it('空输入不能提交，粘贴链接后可按 Enter 导入并回放', async () => {
@@ -363,7 +487,7 @@ describe('天凤链接导入', () => {
     expect((screen.getByRole('button', { name: '导入链接' }) as HTMLButtonElement).disabled).toBe(
       true,
     );
-    await userEvent.type(screen.getByLabelText('天凤牌谱链接'), `  ${link}  {Enter}`);
+    await userEvent.type(screen.getByLabelText('牌谱链接'), `  ${link}  {Enter}`);
     await screen.findByLabelText('牌谱进度');
     expect(bridge.importLink).toHaveBeenCalledExactlyOnceWith(link);
     expect(bridge.importLog).not.toHaveBeenCalled();
@@ -377,14 +501,14 @@ describe('天凤链接导入', () => {
     vi.mocked(bridge.importLink).mockReturnValueOnce(pending.promise);
     render(<App api={bridge} />);
     await openLink();
-    await userEvent.type(screen.getByLabelText('天凤牌谱链接'), link);
+    await userEvent.type(screen.getByLabelText('牌谱链接'), link);
     const form = screen.getByRole('form', { name: '链接导入' });
     fireEvent.submit(form);
     fireEvent.submit(form);
     fireEvent.drop(form, { dataTransfer: { files: [new File(['{}'], 'another.json')] } });
     expect(bridge.importLink).toHaveBeenCalledOnce();
     expect(bridge.importLog).not.toHaveBeenCalled();
-    expect((screen.getByLabelText('天凤牌谱链接') as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByLabelText('牌谱链接') as HTMLInputElement).disabled).toBe(true);
     await act(async () => pending.resolve(replay));
     await screen.findByLabelText('牌谱进度');
   });
@@ -402,7 +526,7 @@ describe('天凤链接导入', () => {
     await userEvent.click(screen.getByText('这里的几个选择差在哪里？'));
     await screen.findByText('【计算】测试回答');
     await openLink();
-    const input = screen.getByLabelText('天凤牌谱链接');
+    const input = screen.getByLabelText('牌谱链接');
     await userEvent.type(input, link);
     fireEvent.keyDown(input, { code: 'ArrowRight' });
     expect(screen.getByTestId('event-caption').textContent).toBe('自己 · 摸牌 一筒');

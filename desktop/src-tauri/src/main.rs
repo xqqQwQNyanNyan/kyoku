@@ -2,6 +2,7 @@
 
 mod config;
 mod log_link;
+mod majsoul;
 mod replay;
 mod sessions;
 mod settings;
@@ -55,10 +56,12 @@ fn lock<T>(mutex: &Mutex<T>) -> Result<MutexGuard<'_, T>, UiError> {
 struct Desktop {
     sequence: AtomicU64,
     game: Mutex<Option<Arc<Game>>>,
+    majsoul: Arc<Mutex<majsoul::Account>>,
 }
 
 struct Game {
     id: u64,
+    mortal_supported: bool,
     events: Vec<Event>,
     reviews: Mutex<[Option<Arc<GameReview>>; 4]>,
 }
@@ -92,13 +95,46 @@ async fn import_log(json: String, state: tauri::State<'_, Desktop>) -> Result<Im
 #[tauri::command]
 async fn import_link(link: String, state: tauri::State<'_, Desktop>) -> Result<Imported, UiError> {
     let id = state.sequence.fetch_add(1, Ordering::SeqCst) + 1;
+    let account = Arc::clone(&state.majsoul);
     let (events, data) = tauri::async_runtime::spawn_blocking(move || {
-        let json = log_link::download(&link)?;
+        let json = log_link::download(&link, &account)?;
         replay::parse(&json)
     })
     .await
     .map_err(|_| UiError::new("task", "下载牌谱任务异常结束"))??;
     finish_import(&state, id, events, data)
+}
+
+#[tauri::command]
+async fn majsoul_status(state: tauri::State<'_, Desktop>) -> Result<bool, UiError> {
+    let account = Arc::clone(&state.majsoul);
+    tauri::async_runtime::spawn_blocking(move || Ok(lock(&account)?.logged_in()))
+        .await
+        .map_err(|_| UiError::new("task", "雀魂状态检查异常结束"))?
+}
+
+#[tauri::command]
+async fn login_majsoul(
+    input: majsoul::Credentials,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Desktop>,
+) -> Result<(), UiError> {
+    let paths = majsoul::Paths::resolve(&app)?;
+    let account = Arc::clone(&state.majsoul);
+    tauri::async_runtime::spawn_blocking(move || lock(&account)?.login(&paths, input))
+        .await
+        .map_err(|_| UiError::new("task", "雀魂登录任务异常结束"))?
+}
+
+#[tauri::command]
+async fn logout_majsoul(state: tauri::State<'_, Desktop>) -> Result<(), UiError> {
+    let account = Arc::clone(&state.majsoul);
+    tauri::async_runtime::spawn_blocking(move || {
+        lock(&account)?.logout();
+        Ok(())
+    })
+    .await
+    .map_err(|_| UiError::new("task", "雀魂退出任务异常结束"))?
 }
 
 fn finish_import(
@@ -113,6 +149,7 @@ fn finish_import(
     }
     *current = Some(Arc::new(Game {
         id,
+        mortal_supported: data.mortal_supported,
         events,
         reviews: Mutex::new(std::array::from_fn(|_| None)),
     }));
@@ -154,6 +191,12 @@ async fn analyze_game(
     let player =
         PlayerIndex::try_from(player).map_err(|_| UiError::new("player", "玩家编号必须为 0..3"))?;
     let game = state.game(id)?;
+    if !game.mortal_supported {
+        return Err(UiError::new(
+            "mortal_rules",
+            "当前 Mortal 仅支持四人半庄分析，东风场可继续回放",
+        ));
+    }
     let paths = config::RuntimePaths::resolve(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
         // 每份牌谱只允许一个推理任务；后台锁不影响前端已加载的回放。
@@ -367,6 +410,9 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             import_log,
             import_link,
+            majsoul_status,
+            login_majsoul,
+            logout_majsoul,
             analyze_game,
             ask,
             list_sessions,
@@ -394,6 +440,7 @@ mod tests {
         let state = Desktop::default();
         *state.game.lock().unwrap() = Some(Arc::new(Game {
             id: 2,
+            mortal_supported: true,
             events: Vec::new(),
             reviews: Mutex::new(std::array::from_fn(|_| None)),
         }));

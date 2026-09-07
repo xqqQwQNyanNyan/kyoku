@@ -30,6 +30,7 @@ export function Analysis({
   decision,
   ready,
   busy,
+  supported,
   selected,
   onSelect,
   onAnalyze,
@@ -37,6 +38,7 @@ export function Analysis({
   decision: Decision | undefined;
   ready: boolean;
   busy: boolean;
+  supported: boolean;
   selected: string | null;
   onSelect: (tile: string) => void;
   onAnalyze: () => void;
@@ -60,18 +62,22 @@ export function Analysis({
                 ? '正在分析整场牌谱…'
                 : ready
                   ? '当前事件没有所选玩家的决策'
-                  : '让每一步都有依据'}
+                  : supported
+                    ? '让每一步都有依据'
+                    : '当前牌谱仅支持回放'}
             </strong>
             <p>
               {busy
                 ? '模型只加载一次，你可以继续浏览牌局。'
                 : ready
                   ? '继续逐张播放，或使用「下一决策」跳转。'
-                  : '回放已就绪。分析所选玩家，查看推荐动作与切牌效率。'}
+                  : supported
+                    ? '回放已就绪。分析所选玩家，查看推荐动作与切牌效率。'
+                    : 'Mortal 分析目前仅支持四人半庄。'}
             </p>
           </div>
           {!ready && !busy && (
-            <button className="primary" onClick={onAnalyze}>
+            <button className="primary" onClick={onAnalyze} disabled={!supported}>
               分析此玩家
             </button>
           )}

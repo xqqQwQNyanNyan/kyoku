@@ -35,10 +35,13 @@ Icon?
 /mortal/.venv/
 /mortal/models/*.pth
 /mortal/models/*.part
-/docs/
+/docs/*
+!/docs/majsoul-service.md
 /fixtures/*
 !/fixtures/tenhou/
 /fixtures/tenhou/*
 !/fixtures/tenhou/*.json
 !/fixtures/tenhou/README.md
 !/fixtures/tenhou/LICENSE
+
+/services/majsoul/node_modules/

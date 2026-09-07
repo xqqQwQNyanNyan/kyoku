@@ -114,7 +114,7 @@ export default function App({ api = bridge }: { api?: Bridge }) {
   }
 
   async function analyze() {
-    if (!replay || analyzing !== null) return;
+    if (!replay || !replay.mortal_supported || analyzing !== null) return;
     const id = replay.id;
     const perspective = player;
     const job = ++analysisJob.current;
@@ -278,10 +278,15 @@ export default function App({ api = bridge }: { api?: Bridge }) {
       )}
       {showImport && (
         <ImportDialog
+          api={api}
+          onAccountBusyChange={(busy) => {
+            importBusy.current = busy;
+            setLoading(busy);
+          }}
           busy={loading}
           error={error}
           onFile={openFile}
-          onLink={(value) => void importReplay(value, () => api.importLink(value))}
+          onLink={(value) => importReplay(value, () => api.importLink(value))}
           onExample={(name, json) => void importReplay(name, () => api.importLog(json))}
           onClose={() => setShowImport(false)}
         />
@@ -306,7 +311,7 @@ export default function App({ api = bridge }: { api?: Bridge }) {
           <button className="primary large" onClick={openImport} disabled={loading}>
             {loading ? '正在读取牌谱…' : '导入牌谱'} <span>↗</span>
           </button>
-          <span className="welcome-hint">本地文件 · 天凤链接 · 示例牌谱</span>
+          <span className="welcome-hint">本地文件 · 天凤 / 雀魂链接 · 示例牌谱</span>
           <div className="welcome-footer">
             <span>01 完整牌局回放</span>
             <span>02 Mortal 动作对比</span>
@@ -364,16 +369,18 @@ export default function App({ api = bridge }: { api?: Bridge }) {
               <span className="eyebrow">REVIEW</span>
               <strong>{replay.names[player]}</strong>
               <p>
-                {points
-                  ? `${points.length} 个决策点已就绪`
-                  : analyzing === player
-                    ? '正在分析整场…'
-                    : '分析后可按决策跳转'}
+                {!replay.mortal_supported
+                  ? '东风场可回放，Mortal 分析目前仅支持半庄。'
+                  : points
+                    ? `${points.length} 个决策点已就绪`
+                    : analyzing === player
+                      ? '正在分析整场…'
+                      : '分析后可按决策跳转'}
               </p>
               <button
                 className="secondary"
                 onClick={() => void analyze()}
-                disabled={analyzing !== null || !!points}
+                disabled={!replay.mortal_supported || analyzing !== null || !!points}
               >
                 {points ? '分析已完成' : analyzing !== null ? '分析中…' : '分析此玩家'}
               </button>
@@ -540,6 +547,7 @@ export default function App({ api = bridge }: { api?: Bridge }) {
                 selected={selected}
                 onSelect={setSelected}
                 onAnalyze={() => void analyze()}
+                supported={replay.mortal_supported}
               />
             </div>
             <div

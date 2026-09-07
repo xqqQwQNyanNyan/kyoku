@@ -39,6 +39,7 @@ export interface Frame {
 }
 export interface Replay {
   id: number;
+  mortal_supported: boolean;
   names: string[];
   frames: Frame[];
   rounds: { frame_index: number; label: string }[];
@@ -84,6 +85,9 @@ export interface Bridge {
   runtimeStatus(check: boolean): Promise<RuntimeStatus>;
   importLog(json: string): Promise<Replay>;
   importLink(link: string): Promise<Replay>;
+  majsoulStatus(): Promise<boolean>;
+  loginMajsoul(input: { username: string; password: string; accept_risk: boolean }): Promise<void>;
+  logoutMajsoul(): Promise<void>;
   analyze(id: number, player: number): Promise<Decision[]>;
   ask(
     id: number,
