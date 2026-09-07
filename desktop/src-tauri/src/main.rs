@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod config;
+mod library;
 mod log_link;
 mod majsoul;
 mod replay;
@@ -109,25 +110,97 @@ struct Imported {
 }
 
 #[tauri::command]
-async fn import_log(json: String, state: tauri::State<'_, Desktop>) -> Result<Imported, UiError> {
+async fn import_log(
+    json: String,
+    name: String,
+    state: tauri::State<'_, Desktop>,
+    app: tauri::AppHandle,
+) -> Result<Imported, UiError> {
     let id = state.sequence.fetch_add(1, Ordering::SeqCst) + 1;
-    let (events, data) = tauri::async_runtime::spawn_blocking(move || replay::parse(&json))
-        .await
-        .map_err(|_| UiError::new("task", "读取牌谱任务异常结束"))??;
+    let library = app.state::<Arc<library::ReplayLibrary>>().inner().clone();
+    let (events, data) = tauri::async_runtime::spawn_blocking(move || {
+        let (events, data) = library::parse_input(&json)?;
+        library.save(
+            &sessions::SessionGame {
+                key: sessions::SessionGame::key(&events)?,
+                events: events.clone(),
+            },
+            &name,
+            library::ReplayOrigin::File,
+        )?;
+        Ok::<_, UiError>((events, data))
+    })
+    .await
+    .map_err(|_| UiError::new("task", "读取牌谱任务异常结束"))??;
     finish_import(&state, id, events, data)
 }
 
 #[tauri::command]
-async fn import_link(link: String, state: tauri::State<'_, Desktop>) -> Result<Imported, UiError> {
+async fn import_link(
+    link: String,
+    state: tauri::State<'_, Desktop>,
+    app: tauri::AppHandle,
+) -> Result<Imported, UiError> {
     let id = state.sequence.fetch_add(1, Ordering::SeqCst) + 1;
     let account = Arc::clone(&state.majsoul);
+    let library = app.state::<Arc<library::ReplayLibrary>>().inner().clone();
     let (events, data) = tauri::async_runtime::spawn_blocking(move || {
         let json = log_link::download(&link, &account)?;
-        replay::parse(&json)
+        let (events, data) = replay::parse(&json)?;
+        library.save(
+            &sessions::SessionGame {
+                key: sessions::SessionGame::key(&events)?,
+                events: events.clone(),
+            },
+            &link,
+            library::ReplayOrigin::Link,
+        )?;
+        Ok::<_, UiError>((events, data))
     })
     .await
     .map_err(|_| UiError::new("task", "下载牌谱任务异常结束"))??;
     finish_import(&state, id, events, data)
+}
+
+#[tauri::command]
+async fn list_replays(app: tauri::AppHandle) -> Result<library::ReplayList, UiError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let migration = app.state::<sessions::SessionStore>().migrate_embedded();
+        let mut list = app.state::<Arc<library::ReplayLibrary>>().list()?;
+        match migration {
+            Ok(warnings) => list.warnings.extend(warnings),
+            Err(error) => list.warnings.push(error.message),
+        }
+        Ok(list)
+    })
+    .await
+    .map_err(|_| UiError::new("task", "读取牌谱库任务异常结束"))?
+}
+
+#[tauri::command]
+async fn open_replay(
+    key: String,
+    state: tauri::State<'_, Desktop>,
+    app: tauri::AppHandle,
+) -> Result<Imported, UiError> {
+    let id = state.sequence.fetch_add(1, Ordering::SeqCst) + 1;
+    let (events, data) = tauri::async_runtime::spawn_blocking(move || {
+        let saved = app.state::<Arc<library::ReplayLibrary>>().get(&key)?;
+        let data = replay::replay(&saved.game.events)?;
+        Ok::<_, UiError>((saved.game.events, data))
+    })
+    .await
+    .map_err(|_| UiError::new("task", "打开已保存牌谱任务异常结束"))??;
+    finish_import(&state, id, events, data)
+}
+
+#[tauri::command]
+async fn open_data_directory(app: tauri::AppHandle) -> Result<(), UiError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<library::ReplayLibrary>>().open_directory()
+    })
+    .await
+    .map_err(|_| UiError::new("task", "打开数据文件夹任务异常结束"))?
 }
 
 #[tauri::command]
@@ -361,11 +434,10 @@ async fn open_session_game(
     app: tauri::AppHandle,
 ) -> Result<OpenedSessionGame, UiError> {
     let document = tauri::async_runtime::spawn_blocking(move || {
-        app.state::<sessions::SessionStore>().get(&id)
+        app.state::<sessions::SessionStore>().open_game(&id)
     })
     .await
-    .map_err(|_| UiError::new("task", "读取会话牌谱异常结束"))??
-    .document;
+    .map_err(|_| UiError::new("task", "读取会话牌谱异常结束"))??;
     let game = document
         .game
         .ok_or_else(|| UiError::new("session", "旧版会话未保存完整牌谱，可继续查看历史"))?;
@@ -523,18 +595,28 @@ fn main() {
     let result = tauri::Builder::default()
         .manage(Desktop::default())
         .setup(|app| {
+            let data_directory = app.path().app_data_dir()?;
+            let library = Arc::new(library::ReplayLibrary::new(data_directory.clone()));
+            library
+                .initialize()
+                .map_err(|error| std::io::Error::other(error.message))?;
             app.manage(settings::SettingsStore::new(
                 app.path().app_config_dir()?,
                 config::development_home(),
             ));
             app.manage(sessions::SessionStore::new(
-                app.path().app_data_dir()?.join("sessions"),
+                data_directory.join("sessions"),
+                library.clone(),
             ));
+            app.manage(library);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             import_log,
             import_link,
+            list_replays,
+            open_replay,
+            open_data_directory,
             majsoul_status,
             login_majsoul,
             logout_majsoul,

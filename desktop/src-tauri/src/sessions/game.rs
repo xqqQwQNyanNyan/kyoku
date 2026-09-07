@@ -2,11 +2,12 @@ use super::*;
 use convlog::Event;
 use sha2::{Digest, Sha256};
 
-/// 会话关联的完整本地牌谱，只用于恢复牌桌，不直接发送给模型。
+/// 会话关联的牌谱；本地文件只保存 key，读取牌桌或导出时再补齐 events。
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SessionGame {
     pub key: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub events: Vec<Event>,
 }
 
@@ -16,7 +17,14 @@ impl SessionGame {
         Ok(format!("{:x}", Sha256::digest(bytes)))
     }
 
-    pub(super) fn validate(&self) -> Result<(), UiError> {
+    pub(crate) fn valid_key(key: &str) -> bool {
+        key.len() == 64
+            && key
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), UiError> {
         if self.events.is_empty() || Self::key(&self.events)? != self.key {
             return Err(UiError::new("session_format", "会话关联的牌谱无效"));
         }

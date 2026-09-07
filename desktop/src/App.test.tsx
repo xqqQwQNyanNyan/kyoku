@@ -123,6 +123,9 @@ function api(): Bridge {
       .fn()
       .mockResolvedValue({ bundled: true, available: true, checked: false, model: 'Mortal V4' }),
     importLog: vi.fn().mockResolvedValue(replay),
+    listReplays: vi.fn().mockResolvedValue({ replays: [], warnings: [], directory: '/data/kyoku' }),
+    openReplay: vi.fn().mockResolvedValue(replay),
+    openDataDirectory: vi.fn().mockResolvedValue(undefined),
     importLink: vi.fn().mockResolvedValue(replay),
     majsoulStatus: vi.fn().mockResolvedValue(false),
     loginMajsoul: vi.fn().mockResolvedValue(undefined),
@@ -357,7 +360,7 @@ describe('统一导入入口', () => {
     Object.defineProperty(file, 'text', { value: () => Promise.resolve('{}') });
     await userEvent.upload(fileInput, file);
     await screen.findByLabelText('牌谱进度');
-    expect(bridge.importLog).toHaveBeenCalledExactlyOnceWith('{}');
+    expect(bridge.importLog).toHaveBeenCalledExactlyOnceWith('{}', 'local.json');
     expect(screen.getByText('local')).toBeTruthy();
     expect(screen.queryByRole('dialog')).toBeNull();
   });
@@ -381,6 +384,7 @@ describe('统一导入入口', () => {
     await screen.findByLabelText('牌谱进度');
     expect(bridge.importLog).toHaveBeenLastCalledWith(
       examples.find((e) => e.filename === 'rinshan.json')!.json,
+      'rinshan.json',
     );
     expect(screen.getByText('rinshan')).toBeTruthy();
     expect(screen.queryByRole('dialog')).toBeNull();
@@ -392,6 +396,7 @@ describe('统一导入入口', () => {
     await screen.findByText('double_ron');
     expect(bridge.importLog).toHaveBeenLastCalledWith(
       examples.find((e) => e.filename === 'double_ron.json')!.json,
+      'double_ron.json',
     );
   });
 });
@@ -904,6 +909,70 @@ describe('独立会话与历史上下文', () => {
     await screen.findByText('会话文件不能超过 32 MiB');
     expect(bridge.importSession).toHaveBeenCalledOnce();
     expect(screen.getByText('追问回答')).toBeTruthy();
+  });
+});
+
+describe('本地牌谱库', () => {
+  it('筛选并离线打开保存的牌谱，同时找回关联会话', async () => {
+    const bridge = api();
+    vi.mocked(bridge.listReplays).mockResolvedValue({
+      directory: '/data/kyoku',
+      warnings: [],
+      replays: [
+        { key: replay.game_key, name: '我的半庄', origin: 'link', saved_at: 1 },
+        { key: 'sample', name: '示例一局', origin: 'example', saved_at: 1 },
+      ],
+    });
+    await load(bridge);
+    await openChat();
+    await userEvent.type(screen.getByLabelText('复盘问题'), '先聊这份牌谱');
+    await userEvent.click(screen.getByRole('button', { name: '发送问题' }));
+    await screen.findByText('【计算】测试回答');
+    cleanup();
+    render(<App api={bridge} />);
+    await userEvent.click(screen.getByRole('button', { name: '牌谱库' }));
+    await screen.findByRole('button', { name: /我的半庄/ });
+    await userEvent.click(screen.getByRole('button', { name: '打开数据文件夹' }));
+    expect(bridge.openDataDirectory).toHaveBeenCalledOnce();
+    await userEvent.click(screen.getByRole('combobox', { name: '牌谱来源' }));
+    await userEvent.click(screen.getByRole('option', { name: '我的牌谱' }));
+    expect(screen.queryByRole('button', { name: /示例一局/ })).toBeNull();
+    await userEvent.type(screen.getByLabelText('搜索牌谱'), '不存在');
+    expect(screen.queryByRole('button', { name: /我的半庄/ })).toBeNull();
+    await userEvent.clear(screen.getByLabelText('搜索牌谱'));
+    await userEvent.click(screen.getByRole('button', { name: /我的半庄/ }));
+    await screen.findByLabelText('牌谱进度');
+    expect(screen.queryByRole('dialog')).toBeNull();
+    await openChat();
+    expect(screen.getByText('【计算】测试回答')).toBeTruthy();
+    expect(screen.getByText('我的半庄')).toBeTruthy();
+    expect(bridge.openReplay).toHaveBeenCalledWith(replay.game_key);
+    expect(bridge.importLink).not.toHaveBeenCalled();
+    expect(bridge.importLog).toHaveBeenCalledOnce();
+    expect(bridge.analyze).not.toHaveBeenCalled();
+  });
+
+  it('读取失败可重试，打开缺失牌谱失败时保留当前牌桌', async () => {
+    const bridge = api();
+    vi.mocked(bridge.listReplays)
+      .mockRejectedValueOnce({ message: '无法读取牌谱库' })
+      .mockResolvedValue({
+        directory: '/data/kyoku',
+        warnings: ['坏文件已保留'],
+        replays: [{ key: 'missing', name: '已移走的牌谱', origin: 'file', saved_at: 1 }],
+      });
+    vi.mocked(bridge.openReplay).mockRejectedValue({ message: '关联的牌谱文件不存在' });
+    await load(bridge);
+    await userEvent.click(screen.getByLabelText('下一事件'));
+    await userEvent.click(screen.getByRole('button', { name: '牌谱库' }));
+    await screen.findByText('无法读取牌谱库');
+    await userEvent.click(screen.getByRole('button', { name: '刷新' }));
+    await screen.findByText('坏文件已保留');
+    await userEvent.click(screen.getByRole('button', { name: /已移走的牌谱/ }));
+    await screen.findByText('关联的牌谱文件不存在');
+    expect((screen.getByLabelText('牌谱进度') as HTMLInputElement).value).toBe('1');
+    await userEvent.click(screen.getByRole('button', { name: '关闭牌谱库' }));
+    expect(screen.getByText('test')).toBeTruthy();
   });
 });
 

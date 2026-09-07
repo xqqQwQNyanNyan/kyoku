@@ -84,8 +84,11 @@ export interface Bridge {
   saveSettings(input: SettingsInput): Promise<Settings>;
   testConnection(input: SettingsInput): Promise<void>;
   runtimeStatus(check: boolean): Promise<RuntimeStatus>;
-  importLog(json: string): Promise<Replay>;
+  importLog(json: string, name: string): Promise<Replay>;
   importLink(link: string): Promise<Replay>;
+  listReplays(): Promise<ReplayList>;
+  openReplay(key: string): Promise<Replay>;
+  openDataDirectory(): Promise<void>;
   majsoulStatus(): Promise<boolean>;
   loginMajsoul(input: { username: string; password: string; accept_risk: boolean }): Promise<void>;
   logoutMajsoul(): Promise<void>;
@@ -114,6 +117,19 @@ export interface Settings {
   model: string;
   has_api_key: boolean;
   saved: boolean;
+}
+
+export interface SavedReplay {
+  key: string;
+  name: string;
+  origin: 'example' | 'file' | 'link' | 'session';
+  saved_at: number;
+}
+
+export interface ReplayList {
+  replays: SavedReplay[];
+  warnings: string[];
+  directory: string;
 }
 
 export interface SettingsInput {

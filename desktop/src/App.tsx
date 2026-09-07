@@ -10,6 +10,7 @@ import { ImportDialog } from './ImportDialog';
 import { Select } from './Select';
 import { replayName } from './display';
 import { ChatPanel, HistoryDialog, useSessions } from './Sessions';
+import { ReplayLibrary } from './ReplayLibrary';
 
 const roundsPerPage = 7;
 const reviewTabs = [
@@ -37,6 +38,7 @@ export default function App({ api = bridge }: { api?: Bridge }) {
   const [error, setError] = useState('');
   const workspace = useSessions(api);
   const [showHistory, setShowHistory] = useState(false);
+  const [showLibrary, setShowLibrary] = useState(false);
   const asking = Object.keys(workspace.pending).length > 0;
   const fileInput = useRef<HTMLInputElement>(null);
   const documentId = useRef<number | null>(null);
@@ -97,6 +99,7 @@ export default function App({ api = bridge }: { api?: Bridge }) {
       setDecisions({});
       setAnalyzing(null);
       setShowImport(false);
+      setShowLibrary(false);
     } catch (error) {
       setError(errorMessage(error));
     } finally {
@@ -107,11 +110,11 @@ export default function App({ api = bridge }: { api?: Bridge }) {
 
   async function importFile(file: File | undefined) {
     if (!file || importBusy.current) return;
-    if (file.size > 16 * 1024 * 1024) {
-      setError('牌谱文件不能超过 16 MiB');
+    if (file.size > 32 * 1024 * 1024) {
+      setError('牌谱文件不能超过 32 MiB；天凤 JSON 上限为 16 MiB');
       return;
     }
-    await importReplay(file.name, async () => api.importLog(await file.text()));
+    await importReplay(file.name, async () => api.importLog(await file.text(), file.name));
   }
 
   function openImport() {
@@ -159,7 +162,7 @@ export default function App({ api = bridge }: { api?: Bridge }) {
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
-      if (showSettings || showImport || showHistory) return;
+      if (showSettings || showImport || showHistory || showLibrary) return;
       if (!replay || event.altKey || event.ctrlKey || event.metaKey || event.isComposing) return;
       if (
         (event.target as HTMLElement).closest(
@@ -261,7 +264,8 @@ export default function App({ api = bridge }: { api?: Bridge }) {
       }}
       onDrop={(event) => {
         event.preventDefault();
-        if (!showSettings && !showHistory) void importFile(event.dataTransfer.files[0]);
+        if (!showSettings && !showHistory && !showLibrary)
+          void importFile(event.dataTransfer.files[0]);
       }}
     >
       <input
@@ -310,6 +314,16 @@ export default function App({ api = bridge }: { api?: Bridge }) {
         <button
           onClick={() => {
             setPlaying(false);
+            setError('');
+            setShowLibrary(true);
+          }}
+          disabled={loading}
+        >
+          牌谱库
+        </button>
+        <button
+          onClick={() => {
+            setPlaying(false);
             setShowHistory(true);
           }}
         >
@@ -334,7 +348,16 @@ export default function App({ api = bridge }: { api?: Bridge }) {
         />
       )}
       {showSettings && <SettingsPanel api={api} onClose={() => setShowSettings(false)} />}
-      {error && !showImport && (
+      {showLibrary && (
+        <ReplayLibrary
+          api={api}
+          busy={loading}
+          error={error}
+          onOpen={(record) => importReplay(record.name, () => api.openReplay(record.key))}
+          onClose={() => setShowLibrary(false)}
+        />
+      )}
+      {error && !showImport && !showLibrary && (
         <div role="alert" className="error-banner">
           <span>{error}</span>
           <button onClick={() => setError('')} aria-label="关闭错误提示">
@@ -353,7 +376,7 @@ export default function App({ api = bridge }: { api?: Bridge }) {
           error={error}
           onFile={openFile}
           onLink={(value) => importReplay(value, () => api.importLink(value))}
-          onExample={(name, json) => void importReplay(name, () => api.importLog(json))}
+          onExample={(name, json) => void importReplay(name, () => api.importLog(json, name))}
           onClose={() => setShowImport(false)}
         />
       )}

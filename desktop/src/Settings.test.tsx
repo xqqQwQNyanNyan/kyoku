@@ -14,6 +14,9 @@ const stored: Settings = {
 function api(): Bridge {
   return {
     importLog: vi.fn(),
+    listReplays: vi.fn().mockResolvedValue({ replays: [], warnings: [], directory: '/data/kyoku' }),
+    openReplay: vi.fn().mockResolvedValue(undefined),
+    openDataDirectory: vi.fn().mockResolvedValue(undefined),
     importLink: vi.fn(),
     majsoulStatus: vi.fn().mockResolvedValue(false),
     loginMajsoul: vi.fn(),

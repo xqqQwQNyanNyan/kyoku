@@ -5,7 +5,7 @@ fn session_titles_are_bounded_and_renames_preserve_saved_context() {
     assert_eq!(default_title(&"🀄".repeat(40)).chars().count(), 32);
     assert_eq!(default_title("  第一行\n第二行  "), "第一行 第二行");
     let directory = Directory::new();
-    let store = SessionStore::new(directory.0.clone());
+    let store = new_store(directory.0.clone());
     store
         .create(
             "title",
@@ -28,7 +28,7 @@ fn session_titles_are_bounded_and_renames_preserve_saved_context() {
         assert!(store.rename("title", &invalid).is_err());
         assert_eq!(fs::read(directory.0.join("title.json")).unwrap(), bytes);
     }
-    let reopened = SessionStore::new(directory.0.clone()).get("title").unwrap();
+    let reopened = new_store(directory.0.clone()).get("title").unwrap();
     assert_eq!(reopened.document.title, "🀄".repeat(32));
     assert_eq!(
         serde_json::to_value(reopened.document.archive).unwrap(),
@@ -39,6 +39,123 @@ fn session_titles_are_bounded_and_renames_preserve_saved_context() {
     assert_eq!(parse(&old.to_string()).unwrap().title.chars().count(), 32);
     let _operation = store.begin("title").unwrap();
     assert!(store.rename("title", "不能覆盖正在写入的会话").is_err());
+}
+
+#[test]
+fn local_sessions_share_replays_and_exports_restore_without_the_original_library() {
+    let directory = Directory::new();
+    let store = new_store(directory.0.clone());
+    let game = fixture_game();
+    store
+        .create("one", "对局".into(), archive("http://localhost/responses"))
+        .unwrap();
+    let mut original = store.get("one").unwrap().document;
+    original.version = 2;
+    original.game = Some(game.clone());
+    original.position = Some(SessionPosition {
+        player: 0,
+        event_index: 2,
+    });
+    store.save(&original).unwrap();
+    original.id = "two".into();
+    store.save(&original).unwrap();
+    let local = fs::read_to_string(directory.0.join("one.json")).unwrap();
+    let compact: serde_json::Value = serde_json::from_str(&local).unwrap();
+    assert_eq!(compact["version"], 3);
+    assert_eq!(compact["game"], json!({"key":game.key}));
+    assert!(store.import(&local).is_err());
+    assert_eq!(store.library.list().unwrap().warnings.len(), 0);
+    let replay_files = directory.0.join("data/replays/imported");
+    assert_eq!(fs::read_dir(&replay_files).unwrap().count(), 1);
+    let exports = Directory::new();
+    let export = store.export("one", &exports.0).unwrap();
+    let portable = fs::read_to_string(&export).unwrap();
+    let portable_json: serde_json::Value = serde_json::from_str(&portable).unwrap();
+    assert_eq!(portable_json["version"], 2);
+    assert!(
+        !portable_json["game"]["events"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let other_directory = Directory::new();
+    let other = new_store(other_directory.0.clone());
+    let imported = other.import(&portable).unwrap();
+    fs::remove_file(replay_files.join(format!("{}.json", game.key))).unwrap();
+    assert_eq!(
+        other
+            .open_game(&imported.document.id)
+            .unwrap()
+            .game
+            .unwrap()
+            .events,
+        game.events
+    );
+    assert_eq!(store.get("one").unwrap().document.title, "新会话");
+    assert_eq!(store.list().unwrap().sessions.len(), 2);
+    assert_eq!(store.open_game("one").err().unwrap().code, "replay_missing");
+    assert!(store.export("one", &directory.0).is_err());
+    assert_eq!(
+        fs::read_to_string(directory.0.join("one.json")).unwrap(),
+        local
+    );
+    store
+        .library
+        .save(&game, "重新导入", ReplayOrigin::File)
+        .unwrap();
+    assert_eq!(
+        store.open_game("one").unwrap().game.unwrap().events,
+        game.events
+    );
+}
+
+#[test]
+fn embedded_session_migration_saves_replay_first_and_preserves_failures() {
+    let directory = Directory::new();
+    let store = new_store(directory.0.clone());
+    store
+        .create(
+            "old",
+            "旧牌谱".into(),
+            archive("http://localhost/responses"),
+        )
+        .unwrap();
+    let mut document = store.get("old").unwrap().document;
+    let game = fixture_game();
+    document.version = 2;
+    document.game = Some(game.clone());
+    document.position = Some(SessionPosition {
+        player: 0,
+        event_index: 2,
+    });
+    let bytes = serde_json::to_vec(&document).unwrap();
+    fs::write(directory.0.join("old.json"), &bytes).unwrap();
+    fs::write(directory.0.join("broken.json"), "broken").unwrap();
+    fs::write(directory.0.join("data"), "阻止创建牌谱目录").unwrap();
+    assert_eq!(store.migrate_embedded().unwrap().len(), 2);
+    assert_eq!(fs::read(directory.0.join("old.json")).unwrap(), bytes);
+    fs::remove_file(directory.0.join("data")).unwrap();
+    assert_eq!(store.migrate_embedded().unwrap().len(), 1);
+    assert!(
+        store
+            .get("old")
+            .unwrap()
+            .document
+            .game
+            .unwrap()
+            .events
+            .is_empty()
+    );
+    let restored = store.open_game("old").unwrap();
+    assert_eq!(restored.game.unwrap().events, game.events);
+    assert_eq!(
+        serde_json::to_value(restored.archive).unwrap(),
+        serde_json::to_value(document.archive).unwrap()
+    );
+    assert_eq!(
+        fs::read_to_string(directory.0.join("broken.json")).unwrap(),
+        "broken"
+    );
 }
 fn server(
     responses: Vec<(u16, String)>,
@@ -108,6 +225,11 @@ use kyoku::{
     mahjong::player_index::PlayerIndex,
 };
 
+fn new_store(directory: PathBuf) -> SessionStore {
+    let library = Arc::new(crate::library::ReplayLibrary::new(directory.join("data")));
+    SessionStore::new(directory, library)
+}
+
 struct Directory(PathBuf);
 impl Directory {
     fn new() -> Self {
@@ -150,7 +272,7 @@ fn archive(endpoint: &str) -> SessionArchive {
 #[test]
 fn restart_export_import_and_independent_sessions_preserve_context() {
     let directory = Directory::new();
-    let store = SessionStore::new(directory.0.join("sessions"));
+    let store = new_store(directory.0.join("sessions"));
     let original = archive("http://localhost/responses");
     store
         .create("one", "牌谱 A · 玩家 0 · G2".into(), original.clone())
@@ -168,7 +290,7 @@ fn restart_export_import_and_independent_sessions_preserve_context() {
             .is_err()
     );
     drop(store);
-    let store = SessionStore::new(directory.0.join("sessions"));
+    let store = new_store(directory.0.join("sessions"));
     assert_eq!(store.list().unwrap().sessions.len(), 2);
     let restored = store.get("one").unwrap();
     assert_eq!(restored.document.context_label, "牌谱 A · 玩家 0 · G2");
@@ -192,7 +314,7 @@ fn restart_export_import_and_independent_sessions_preserve_context() {
 #[test]
 fn invalid_import_path_and_corrupt_files_do_not_replace_saved_sessions() {
     let directory = Directory::new();
-    let store = SessionStore::new(directory.0.clone());
+    let store = new_store(directory.0.clone());
     store
         .create(
             "valid",
@@ -217,7 +339,7 @@ fn invalid_import_path_and_corrupt_files_do_not_replace_saved_sessions() {
 #[test]
 fn history_browsing_keeps_saved_answers_even_when_tool_results_no_longer_match() {
     let directory = Directory::new();
-    let store = SessionStore::new(directory.0.clone());
+    let store = new_store(directory.0.clone());
     let mut saved = serde_json::to_value(archive("http://localhost/responses")).unwrap();
     saved["history"] = serde_json::json!([
         {"type":"function_call","status":"completed","call_id":"old-score",
@@ -266,7 +388,7 @@ fn history_browsing_keeps_saved_answers_even_when_tool_results_no_longer_match()
 #[test]
 fn session_operations_exclude_only_the_same_session_and_release_on_failure() {
     let directory = Directory::new();
-    let store = SessionStore::new(directory.0.clone());
+    let store = new_store(directory.0.clone());
     let context = archive("http://localhost/responses");
     store
         .create("one", "会话一".into(), context.clone())
@@ -297,7 +419,7 @@ fn session_operations_exclude_only_the_same_session_and_release_on_failure() {
 #[test]
 fn unfinished_question_survives_restart_and_is_not_automatically_retried() {
     let directory = Directory::new();
-    let store = SessionStore::new(directory.0.clone());
+    let store = new_store(directory.0.clone());
     store
         .create(
             "pending",
@@ -311,7 +433,7 @@ fn unfinished_question_survives_restart_and_is_not_automatically_retried() {
     lock(&store.gate).unwrap().insert("pending".into());
     assert!(store.get("pending").unwrap().busy);
     drop(store);
-    let restarted = SessionStore::new(directory.0.clone());
+    let restarted = new_store(directory.0.clone());
     let session = restarted.get("pending").unwrap();
     assert!(!session.busy);
     assert_eq!(
@@ -332,7 +454,7 @@ fn answers_and_failed_traces_are_saved_before_reopening_and_continuing() {
     ];
     let (endpoint, server) = server(responses);
     let directory = Directory::new();
-    let store = SessionStore::new(directory.0.clone());
+    let store = new_store(directory.0.clone());
     store
         .create("saved", "固定局面".into(), archive(&endpoint))
         .unwrap();
@@ -346,7 +468,7 @@ fn answers_and_failed_traces_are_saved_before_reopening_and_continuing() {
         serde_json::to_value(store.get("saved").unwrap().document.archive).unwrap()["history"]
             .clone();
     drop(store);
-    let store = SessionStore::new(directory.0.clone());
+    let store = new_store(directory.0.clone());
     assert!(store.ask("saved", "失败的问题", &config, None).is_err());
     let failed = serde_json::to_value(store.get("saved").unwrap().document).unwrap();
     assert!(failed["pending_question"].is_null());
@@ -416,7 +538,7 @@ fn game_sessions_preserve_turn_snapshots_browsing_position_and_portable_replay()
     let first = AgentContext::from_events(&game.events, PlayerIndex::new(0).unwrap(), 1).unwrap();
     let next = AgentContext::from_events(&game.events, PlayerIndex::new(1).unwrap(), 4).unwrap();
     let directory = Directory::new();
-    let store = SessionStore::new(directory.0.join("sessions"));
+    let store = new_store(directory.0.join("sessions"));
     for (id, question, context) in [
         ("one", "未分析也能问", &first),
         ("one", "换位置继续", &next),
@@ -476,8 +598,8 @@ fn game_sessions_preserve_turn_snapshots_browsing_position_and_portable_replay()
             .is_err()
     );
     drop(store);
-    let reopened = SessionStore::new(directory.0.join("sessions"));
-    let restored = reopened.get("one").unwrap().document;
+    let reopened = new_store(directory.0.join("sessions"));
+    let restored = reopened.open_game("one").unwrap();
     assert!(restored.position == Some(position));
     assert_eq!(restored.game.as_ref().unwrap().events, game.events);
     let list = reopened.list().unwrap();
@@ -530,7 +652,7 @@ fn retries_use_original_question_snapshots_even_after_browsing_and_other_questio
     let first = AgentContext::from_events(&game.events, PlayerIndex::new(0).unwrap(), 2).unwrap();
     let next = AgentContext::from_events(&game.events, PlayerIndex::new(1).unwrap(), 4).unwrap();
     let directory = Directory::new();
-    let store = SessionStore::new(directory.0.clone());
+    let store = new_store(directory.0.clone());
     assert!(
         store
             .ask(
@@ -600,7 +722,7 @@ fn a_session_cannot_be_reused_for_another_game_and_invalid_import_keeps_original
     let game = fixture_game();
     let context = AgentContext::from_events(&game.events, PlayerIndex::new(0).unwrap(), 2).unwrap();
     let directory = Directory::new();
-    let store = SessionStore::new(directory.0.clone());
+    let store = new_store(directory.0.clone());
     store
         .ask(
             "one",
