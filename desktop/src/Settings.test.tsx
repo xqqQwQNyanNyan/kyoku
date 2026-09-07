@@ -15,6 +15,9 @@ function api(): Bridge {
   return {
     importLog: vi.fn(),
     listReplays: vi.fn().mockResolvedValue({ replays: [], warnings: [], directory: '/data/kyoku' }),
+    previewReplayDeletion: vi.fn(),
+    deleteReplay: vi.fn(),
+    deleteSession: vi.fn(),
     renameReplay: vi.fn(),
     openReplay: vi.fn().mockResolvedValue(undefined),
     openDataDirectory: vi.fn().mockResolvedValue(undefined),

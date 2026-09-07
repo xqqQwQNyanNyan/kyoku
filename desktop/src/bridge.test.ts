@@ -6,6 +6,18 @@ import { bridge, errorMessage } from './bridge';
 afterEach(clearMocks);
 
 describe('桌面通信', () => {
+  it('删除牌谱时传递已确认的会话集合，使用 Tauri 参数名', async () => {
+    mockIPC((command, args) => {
+      expect(command).toBe('delete_replay');
+      expect(args).toEqual({ key: 'game-one', sessionIds: ['session-one'] });
+      return { session_ids: ['session-one'], replay_deleted: true, error: null };
+    });
+    expect(await bridge.deleteReplay('game-one', ['session-one'])).toEqual({
+      session_ids: ['session-one'],
+      replay_deleted: true,
+      error: null,
+    });
+  });
   it('保存浏览位置时使用 Tauri 命令参数名，位置字段保持 Rust 序列化格式', async () => {
     let saved: unknown;
     mockIPC((command, args) => {

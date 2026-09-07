@@ -10,6 +10,7 @@ import type {
 } from './types';
 import { errorMessage } from './bridge';
 import { Select } from './Select';
+import { DeleteDialog } from './DeleteDialog';
 import { replayName, sessionTitle, SESSION_TITLE_LIMIT } from './display';
 
 export interface SessionSource {
@@ -35,6 +36,7 @@ export function useSessions(api: Bridge) {
   const positionWrites = useRef(new Map<string, Promise<void>>());
   const positionVersions = useRef(new Map<string, number>());
   const busy = useRef(new Set<string>());
+  const deleted = useRef(new Set<string>());
 
   function idFor(scope: string) {
     let id = scopes.current.get(scope);
@@ -62,6 +64,7 @@ export function useSessions(api: Bridge) {
       const id = scopes.current.get(scope) ?? result.sessions.find((s) => s.game_key === scope)?.id;
       if (id && result.sessions.some((s) => s.id === id)) {
         const doc = await api.getSession(id);
+        if (deleted.current.has(id)) return;
         if (doc.game?.key !== scope) return;
         put(doc);
         activate(scope, doc.id);
@@ -72,6 +75,7 @@ export function useSessions(api: Bridge) {
     }
   }
   async function selectSession(scope: string, id: string) {
+    if (deleted.current.has(id)) return;
     const version = (selections.current.get(scope) ?? 0) + 1;
     selections.current.set(scope, version);
     try {
@@ -102,14 +106,19 @@ export function useSessions(api: Bridge) {
     }));
   }
   async function savePosition(id: string, source: SessionSource) {
-    if (busy.current.has(id)) return;
+    if (busy.current.has(id) || deleted.current.has(id)) return;
     const version = (positionVersions.current.get(id) ?? 0) + 1;
     positionVersions.current.set(id, version);
     const previous = positionWrites.current.get(id) ?? Promise.resolve();
     const write = previous
       .catch(() => undefined)
       .then(async () => {
-        if (positionVersions.current.get(id) !== version || busy.current.has(id)) return;
+        if (
+          positionVersions.current.get(id) !== version ||
+          busy.current.has(id) ||
+          deleted.current.has(id)
+        )
+          return;
         await api.setSessionPosition(id, source.gameKey, {
           player: source.player,
           event_index: source.event,
@@ -119,12 +128,14 @@ export function useSessions(api: Bridge) {
     try {
       await write;
     } catch (error) {
+      if (deleted.current.has(id)) return;
       setErrors((e) => ({ ...e, [id]: errorMessage(error) }));
     } finally {
       if (positionWrites.current.get(id) === write) positionWrites.current.delete(id);
     }
   }
   function put(document: SessionView) {
+    if (deleted.current.has(document.id)) return;
     setDocuments((current) => {
       if (current[document.id]?.updated_at > document.updated_at) return current;
       return { ...current, [document.id]: document };
@@ -133,6 +144,39 @@ export function useSessions(api: Bridge) {
   }
   function draft(id: string, text: string) {
     setDrafts((current) => ({ ...current, [id]: text }));
+  }
+  function forget(ids: string[], gameKey?: string) {
+    const removed = new Set([...ids, ...(gameKey ? (scopeIds.current.get(gameKey) ?? []) : [])]);
+    for (const id of removed) deleted.current.add(id);
+    for (const [scope, id] of scopes.current) {
+      if (removed.has(id)) {
+        scopes.current.delete(scope);
+        selections.current.set(scope, (selections.current.get(scope) ?? 0) + 1);
+      }
+    }
+    for (const ids of scopeIds.current.values()) {
+      for (const id of removed) ids.delete(id);
+    }
+    function keep<T>(records: Record<string, T>) {
+      return Object.fromEntries(Object.entries(records).filter(([id]) => !removed.has(id)));
+    }
+    setDocuments(keep);
+    setDrafts(keep);
+    setErrors(keep);
+    setPendingPositions(keep);
+    setSummaries((items) => items.filter((s) => !removed.has(s.id)));
+    setRevision((r) => r + 1);
+  }
+  async function remove(id: string) {
+    if (busy.current.has(id)) throw new Error('此会话仍在处理，请稍后重试');
+    busy.current.add(id);
+    try {
+      await positionWrites.current.get(id)?.catch(() => undefined);
+      await api.deleteSession(id);
+      forget([id]);
+    } finally {
+      busy.current.delete(id);
+    }
   }
   async function rename(id: string, title: string) {
     if (busy.current.has(id)) return false;
@@ -164,7 +208,8 @@ export function useSessions(api: Bridge) {
     retryTarget?: { turn?: number },
   ) {
     text = text.trim();
-    if (!text || busy.current.has(id) || (!documents[id] && !source)) return;
+    if (!text || busy.current.has(id) || deleted.current.has(id) || (!documents[id] && !source))
+      return;
     busy.current.add(id);
     const position = retryTarget
       ? retryTarget.turn === undefined
@@ -224,6 +269,8 @@ export function useSessions(api: Bridge) {
     choices,
     selectSession,
     savePosition,
+    forget,
+    remove,
   };
 }
 
@@ -651,6 +698,8 @@ export function HistoryDialog({
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [loading, setLoading] = useState(false);
+  const [deletion, setDeletion] = useState<{ id: string; title: string } | null>(null);
+  const selectedDocument = selected ? w.documents[selected] : undefined;
   const selection = useRef(0);
   const listRequest = useRef<ReturnType<Bridge['listSessions']> | null>(null);
   useEffect(() => {
@@ -768,14 +817,6 @@ export function HistoryDialog({
         <button onClick={() => input.current?.click()} disabled={loading}>
           加载 JSON
         </button>
-        <button onClick={() => void exportFile()} disabled={!selected}>
-          导出 JSON
-        </button>
-        {selected && w.documents[selected]?.game && (
-          <button disabled={loading} onClick={() => void openGame()}>
-            打开牌谱并继续
-          </button>
-        )}
         <button aria-label="关闭历史会话" onClick={onClose}>
           ×
         </button>
@@ -842,6 +883,36 @@ export function HistoryDialog({
           ))}
         </nav>
         <div className="history-content">
+          {selectedDocument && (
+            <div className="history-actions" role="group" aria-label="会话操作">
+              {selectedDocument.game && (
+                <button disabled={loading} onClick={() => void openGame()}>
+                  打开牌谱并继续
+                </button>
+              )}
+              <button disabled={loading} onClick={() => void exportFile()}>
+                导出 JSON
+              </button>
+              <button
+                className="record-delete"
+                aria-label="删除会话"
+                title="删除当前会话"
+                disabled={
+                  loading ||
+                  selectedDocument.busy ||
+                  !!w.pending[selectedDocument.id] ||
+                  sessions.some((s) => s.id === selectedDocument.id && s.busy)
+                }
+                onClick={() =>
+                  setDeletion({ id: selectedDocument.id, title: selectedDocument.title })
+                }
+              >
+                <svg aria-hidden="true" viewBox="0 0 24 24">
+                  <path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 10v7m4-7v7" />
+                </svg>
+              </button>
+            </div>
+          )}
           {loading && <p role="status">正在读取会话…</p>}
           {selected ? (
             <ChatPanel
@@ -859,6 +930,22 @@ export function HistoryDialog({
           )}
         </div>
       </div>
+      {deletion && (
+        <DeleteDialog
+          title="删除会话"
+          name={sessionTitle(deletion.title)}
+          description="删除这个会话的问题、回答和快照，关联牌谱会保留。"
+          onDelete={async () => {
+            await w.remove(deletion.id);
+            ++selection.current;
+            if (selected === deletion.id) setSelected(null);
+            setSessions((items) => items.filter((s) => s.id !== deletion.id));
+            setNotice('');
+            setError('');
+          }}
+          onClose={() => setDeletion(null)}
+        />
+      )}
     </dialog>
   );
 }

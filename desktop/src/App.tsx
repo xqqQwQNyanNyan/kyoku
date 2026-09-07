@@ -388,6 +388,20 @@ export default function App({ api = bridge }: { api?: Bridge }) {
           onRenamed={(record) => {
             if (record.key === replay?.game_key) setFilename(record.name);
           }}
+          onDeleted={(key, sessionIds) => {
+            workspace.forget(sessionIds, key ?? undefined);
+            if (key && key === replay?.game_key) {
+              documentId.current = null;
+              analysisJob.current += 1;
+              setPlaying(false);
+              setReplay(null);
+              setFilename('');
+              setDecisions({});
+              setAnalyzing(null);
+              setSelected(null);
+              setError('');
+            }
+          }}
           onClose={() => setShowLibrary(false)}
         />
       )}

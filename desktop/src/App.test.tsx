@@ -124,6 +124,17 @@ function api(): Bridge {
       .mockResolvedValue({ bundled: true, available: true, checked: false, model: 'Mortal V4' }),
     importLog: vi.fn().mockResolvedValue(replay),
     listReplays: vi.fn().mockResolvedValue({ replays: [], warnings: [], directory: '/data/kyoku' }),
+    previewReplayDeletion: vi.fn().mockImplementation(async (key) => ({
+      name: 'test',
+      session_ids: [...stored.values()].filter((s) => s.game?.key === key).map((s) => s.id),
+    })),
+    deleteReplay: vi.fn().mockImplementation(async (_key, ids) => {
+      for (const id of ids) stored.delete(id);
+      return { session_ids: ids, replay_deleted: true, error: null };
+    }),
+    deleteSession: vi.fn().mockImplementation(async (id) => {
+      stored.delete(id);
+    }),
     renameReplay: vi.fn(),
     openReplay: vi.fn().mockResolvedValue(replay),
     openDataDirectory: vi.fn().mockResolvedValue(undefined),
@@ -229,6 +240,190 @@ beforeEach(() => {
   Element.prototype.scrollTo = vi.fn();
 });
 afterEach(cleanup);
+
+describe('删除牌谱和会话', () => {
+  it('长标题列表只提供会话选择，垃圾桶只删除详情中选中的记录', async () => {
+    const bridge = api();
+    const docs = [
+      savedSession(
+        'long',
+        '第一条回答',
+        '感觉下家（同时也是庄家）这个中的大明杠可能会影响后续的防守选择',
+      ),
+      savedSession('short', '第二条回答', '再看一局'),
+    ];
+    vi.mocked(bridge.listSessions).mockResolvedValue({
+      sessions: docs.map((s) => ({ ...s, interrupted: false, failed: false })),
+      warnings: [],
+    });
+    vi.mocked(bridge.getSession).mockImplementation(async (id) => docs.find((s) => s.id === id)!);
+    render(<App api={bridge} />);
+    await userEvent.click(screen.getByRole('button', { name: '历史会话' }));
+    const list = within(screen.getByRole('navigation', { name: '历史会话列表' }));
+    await list.findByText('再看一局');
+    expect(list.getAllByRole('button')).toHaveLength(2);
+    expect(screen.queryByRole('button', { name: '删除会话' })).toBeNull();
+    await userEvent.click(list.getByRole('button', { name: /感觉下家/ }));
+    await screen.findByText('第一条回答');
+    await userEvent.click(list.getByRole('button', { name: /再看一局/ }));
+    await screen.findByText('第二条回答');
+    const actions = within(screen.getByRole('group', { name: '会话操作' }));
+    await userEvent.click(actions.getByRole('button', { name: '删除会话' }));
+    const confirmation = within(screen.getByRole('dialog', { name: '删除会话' }));
+    expect(confirmation.getByText('再看一局')).toBeTruthy();
+    await userEvent.click(confirmation.getByRole('button', { name: '确认删除' }));
+    await waitFor(() => expect(bridge.deleteSession).toHaveBeenCalledWith('short'));
+  });
+
+  async function askOnce(bridge: Bridge) {
+    await load(bridge);
+    await openChat();
+    await userEvent.type(screen.getByLabelText('复盘问题'), '待删除的讨论');
+    await userEvent.click(screen.getByRole('button', { name: '发送问题' }));
+    await screen.findByText('【计算】测试回答');
+    return vi.mocked(bridge.ask).mock.calls[0][3];
+  }
+
+  function library(bridge: Bridge) {
+    vi.mocked(bridge.listReplays).mockResolvedValue({
+      directory: '/data/kyoku',
+      warnings: [],
+      replays: [{ key: replay.game_key, name: 'test', origin: 'file', saved_at: 1 }],
+    });
+  }
+
+  it('删除会话需确认，失败可重试，成功清理当前会话但保留牌桌', async () => {
+    const bridge = api();
+    const id = await askOnce(bridge);
+    await userEvent.click(screen.getByRole('button', { name: '历史会话' }));
+    const history = within(screen.getByRole('dialog', { name: '历史会话' }));
+    expect(history.queryByRole('button', { name: '删除会话' })).toBeNull();
+    await userEvent.click(await history.findByRole('button', { name: /待删除的讨论.*test/ }));
+    expect(
+      within(history.getByRole('navigation', { name: '历史会话列表' })).queryByRole('button', {
+        name: '删除会话',
+      }),
+    ).toBeNull();
+    await userEvent.click(await screen.findByRole('button', { name: '删除会话' }));
+    let confirmation = screen.getByRole('dialog', { name: '删除会话' });
+    expect(within(confirmation).getByText('待删除的讨论')).toBeTruthy();
+    expect(bridge.deleteSession).not.toHaveBeenCalled();
+    await userEvent.click(within(confirmation).getByRole('button', { name: '取消' }));
+    expect(bridge.deleteSession).not.toHaveBeenCalled();
+
+    vi.mocked(bridge.deleteSession).mockRejectedValueOnce({ message: '无法删除会话' });
+    await userEvent.click(screen.getByRole('button', { name: '删除会话' }));
+    confirmation = screen.getByRole('dialog', { name: '删除会话' });
+    await userEvent.click(within(confirmation).getByRole('button', { name: '确认删除' }));
+    await within(confirmation).findByText('无法删除会话');
+    expect(history.getByText('【计算】测试回答')).toBeTruthy();
+    await userEvent.click(within(confirmation).getByRole('button', { name: '确认删除' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '删除会话' })).toBeNull());
+    expect(bridge.deleteSession).toHaveBeenLastCalledWith(id);
+    expect(screen.queryByText('【计算】测试回答')).toBeNull();
+    expect(screen.getByLabelText('牌谱进度')).toBeTruthy();
+    expect(bridge.deleteReplay).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole('button', { name: '关闭历史会话' }));
+    await userEvent.type(screen.getByLabelText('复盘问题'), '新的讨论');
+    await userEvent.click(screen.getByRole('button', { name: '发送问题' }));
+    await screen.findByText('【计算】测试回答');
+    expect(vi.mocked(bridge.ask).mock.calls.at(-1)?.[3]).not.toBe(id);
+  });
+
+  it('删除牌谱展示关联会话数量，成功关闭当前牌桌并清除关联历史', async () => {
+    const bridge = api();
+    library(bridge);
+    const id = await askOnce(bridge);
+    await bridge.importSession('{}');
+    await userEvent.click(screen.getByRole('button', { name: '牌谱库' }));
+    await userEvent.click(await screen.findByRole('button', { name: '删除牌谱：test' }));
+    const confirmation = screen.getByRole('dialog', { name: '删除牌谱' });
+    expect(within(confirmation).getByText(/同时删除关联的 2 个会话/)).toBeTruthy();
+    expect(bridge.deleteReplay).not.toHaveBeenCalled();
+    await userEvent.click(within(confirmation).getByRole('button', { name: '确认删除' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '删除牌谱' })).toBeNull());
+    expect(bridge.deleteReplay).toHaveBeenCalledWith(replay.game_key, [id, 'imported']);
+    expect(screen.queryByLabelText('牌谱进度')).toBeNull();
+    expect(screen.queryByRole('button', { name: '打开牌谱：test' })).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: '关闭牌谱库' }));
+    await userEvent.click(screen.getByRole('button', { name: '历史会话' }));
+    await screen.findByText('暂无历史会话。开始一次问答，或加载已有 JSON。');
+  });
+
+  it('无关联会话时也需确认，取消或删除失败均保留牌谱', async () => {
+    const bridge = api();
+    library(bridge);
+    await load(bridge);
+    await userEvent.click(screen.getByRole('button', { name: '牌谱库' }));
+    await userEvent.click(await screen.findByRole('button', { name: '删除牌谱：test' }));
+    let confirmation = screen.getByRole('dialog', { name: '删除牌谱' });
+    expect(within(confirmation).getByText(/没有关联会话/)).toBeTruthy();
+    await userEvent.click(within(confirmation).getByRole('button', { name: '取消' }));
+    expect(bridge.deleteReplay).not.toHaveBeenCalled();
+    vi.mocked(bridge.deleteReplay).mockRejectedValueOnce({ message: '关联会话已变化' });
+    await userEvent.click(screen.getByRole('button', { name: '删除牌谱：test' }));
+    confirmation = await screen.findByRole('dialog', { name: '删除牌谱' });
+    await userEvent.click(within(confirmation).getByRole('button', { name: '确认删除' }));
+    await within(confirmation).findByText('关联会话已变化');
+    expect(screen.getByLabelText('牌谱进度')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '打开牌谱：test' })).toBeTruthy();
+  });
+
+  it('正在生成回答的会话禁止删除', async () => {
+    const bridge = api();
+    const result = deferred<SessionView>();
+    vi.mocked(bridge.ask).mockImplementation(async (...args) => {
+      const doc = savedSession(args[3]);
+      vi.mocked(bridge.getSession).mockResolvedValue({ ...doc, busy: true });
+      vi.mocked(bridge.listSessions).mockResolvedValue({
+        sessions: [
+          {
+            id: doc.id,
+            title: doc.title,
+            context_label: doc.context_label,
+            updated_at: 1,
+            busy: true,
+            interrupted: false,
+            failed: false,
+          },
+        ],
+        warnings: [],
+      });
+      return result.promise;
+    });
+    await load(bridge);
+    await openChat();
+    await userEvent.type(screen.getByLabelText('复盘问题'), '正在讨论');
+    await userEvent.click(screen.getByRole('button', { name: '发送问题' }));
+    await userEvent.click(screen.getByRole('button', { name: '历史会话' }));
+    await userEvent.click(await screen.findByRole('button', { name: /比较这里的候选切牌.*test/ }));
+    const button = await screen.findByRole('button', { name: '删除会话' });
+    expect((button as HTMLButtonElement).disabled).toBe(true);
+    await userEvent.click(button);
+    expect(bridge.deleteSession).not.toHaveBeenCalled();
+    await act(async () => result.resolve(savedSession(vi.mocked(bridge.ask).mock.calls[0][3])));
+  });
+
+  it('牌谱删除部分失败时清理已删除会话，重试使用剩余的关联集合', async () => {
+    const bridge = api();
+    library(bridge);
+    const id = await askOnce(bridge);
+    vi.mocked(bridge.deleteReplay).mockResolvedValueOnce({
+      session_ids: [id],
+      replay_deleted: false,
+      error: { message: '无法删除牌谱文件' },
+    });
+    await userEvent.click(screen.getByRole('button', { name: '牌谱库' }));
+    await userEvent.click(await screen.findByRole('button', { name: '删除牌谱：test' }));
+    const confirmation = screen.getByRole('dialog', { name: '删除牌谱' });
+    await userEvent.click(within(confirmation).getByRole('button', { name: '确认删除' }));
+    await within(confirmation).findByText(/已删除 1 个会话/);
+    expect(screen.queryByText('【计算】测试回答')).toBeNull();
+    expect(screen.getByLabelText('牌谱进度')).toBeTruthy();
+    await userEvent.click(within(confirmation).getByRole('button', { name: '确认删除' }));
+    await waitFor(() => expect(bridge.deleteReplay).toHaveBeenLastCalledWith(replay.game_key, []));
+  });
+});
 
 describe('复盘工具标签', () => {
   it('东风场保留回放，但不能启动 Mortal 分析', async () => {

@@ -179,6 +179,49 @@ async fn list_replays(app: tauri::AppHandle) -> Result<library::ReplayList, UiEr
 }
 
 #[tauri::command]
+async fn preview_replay_deletion(
+    key: String,
+    app: tauri::AppHandle,
+) -> Result<sessions::ReplayDeletion, UiError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<sessions::SessionStore>()
+            .preview_replay_deletion(&key)
+    })
+    .await
+    .map_err(|_| UiError::new("task", "读取关联会话任务异常结束"))?
+}
+
+#[tauri::command]
+async fn delete_replay(
+    key: String,
+    session_ids: Vec<String>,
+    app: tauri::AppHandle,
+) -> Result<sessions::ReplayDeletionResult, UiError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = app
+            .state::<sessions::SessionStore>()
+            .delete_replay(&key, session_ids)?;
+        if result.replay_deleted {
+            let state = app.state::<Desktop>();
+            let mut game = lock(&state.game)?;
+            if game.as_ref().is_some_and(|game| game.key == key) {
+                *game = None;
+            }
+        }
+        Ok(result)
+    })
+    .await
+    .map_err(|_| UiError::new("task", "删除牌谱任务异常结束"))?
+}
+
+#[tauri::command]
+async fn delete_session(id: String, app: tauri::AppHandle) -> Result<(), UiError> {
+    tauri::async_runtime::spawn_blocking(move || app.state::<sessions::SessionStore>().delete(&id))
+        .await
+        .map_err(|_| UiError::new("task", "删除会话任务异常结束"))?
+}
+
+#[tauri::command]
 async fn rename_replay(
     key: String,
     name: String,
@@ -638,6 +681,8 @@ fn main() {
             import_log,
             import_link,
             list_replays,
+            preview_replay_deletion,
+            delete_replay,
             rename_replay,
             open_replay,
             open_data_directory,
@@ -647,6 +692,7 @@ fn main() {
             analyze_game,
             ask,
             list_sessions,
+            delete_session,
             get_session,
             rename_session,
             continue_session,

@@ -88,6 +88,15 @@ export interface Bridge {
   importLog(json: string, name: string): Promise<Replay>;
   importLink(link: string): Promise<Replay>;
   listReplays(): Promise<ReplayList>;
+  previewReplayDeletion(key: string): Promise<{ name: string; session_ids: string[] }>;
+  deleteReplay(
+    key: string,
+    sessionIds: string[],
+  ): Promise<{
+    session_ids: string[];
+    replay_deleted: boolean;
+    error: { message: string } | null;
+  }>;
   renameReplay(key: string, name: string): Promise<SavedReplay>;
   openReplay(key: string): Promise<Replay>;
   openDataDirectory(): Promise<void>;
@@ -105,6 +114,7 @@ export interface Bridge {
   ): Promise<SessionView>;
   listSessions(): Promise<{ sessions: SessionSummary[]; warnings: string[] }>;
   getSession(id: string): Promise<SessionView>;
+  deleteSession(id: string): Promise<void>;
   renameSession(id: string, title: string): Promise<SessionView>;
   openSessionGame(id: string): Promise<{ replay: Replay; name: string; position: SessionPosition }>;
   setSessionPosition(id: string, gameKey: string, position: SessionPosition): Promise<void>;

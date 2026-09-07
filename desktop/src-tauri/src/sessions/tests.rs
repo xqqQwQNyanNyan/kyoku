@@ -1,5 +1,149 @@
 use serde_json::json;
 
+fn saved_game_session(store: &SessionStore, id: &str, game: &SessionGame) {
+    store
+        .create(
+            id,
+            "待删除牌谱".into(),
+            archive("http://localhost/responses"),
+        )
+        .unwrap();
+    let mut document = store.get(id).unwrap().document;
+    document.version = 2;
+    document.game = Some(game.clone());
+    document.position = Some(SessionPosition {
+        player: 0,
+        event_index: 2,
+    });
+    store.save(&document).unwrap();
+}
+
+#[test]
+fn deleting_one_session_keeps_replay_and_other_sessions_and_rejects_busy_or_invalid_ids() {
+    let directory = Directory::new();
+    let store = new_store(directory.0.clone());
+    let game = fixture_game();
+    saved_game_session(&store, "one", &game);
+    saved_game_session(&store, "two", &game);
+    let operation = store.begin("one").unwrap();
+    assert_eq!(store.delete("one").err().unwrap().code, "busy");
+    drop(operation);
+    assert!(store.delete("../one").is_err());
+    store.delete("one").unwrap();
+    assert!(store.get("one").is_err());
+    assert!(store.get("two").is_ok());
+    assert!(store.library.get(&game.key).is_ok());
+    assert!(store.delete("one").is_err());
+}
+
+#[test]
+fn replay_deletion_checks_confirmed_sessions_and_keeps_unrelated_history() {
+    let directory = Directory::new();
+    let store = new_store(directory.0.clone());
+    let game = fixture_game();
+    saved_game_session(&store, "one", &game);
+    let preview = store.preview_replay_deletion(&game.key).unwrap();
+    assert_eq!(preview.name, "待删除牌谱");
+    assert_eq!(preview.session_ids, ["one"]);
+    saved_game_session(&store, "two", &game);
+    assert_eq!(
+        store
+            .delete_replay(&game.key, preview.session_ids)
+            .err()
+            .unwrap()
+            .code,
+        "session_changed"
+    );
+    let ids = store
+        .preview_replay_deletion(&game.key)
+        .unwrap()
+        .session_ids;
+    let operation = store.begin("new-pending").unwrap();
+    assert_eq!(
+        store
+            .delete_replay(&game.key, ids.clone())
+            .err()
+            .unwrap()
+            .code,
+        "busy"
+    );
+    drop(operation);
+    store
+        .create(
+            "unrelated",
+            "独立记录".into(),
+            archive("http://localhost/responses"),
+        )
+        .unwrap();
+    // 旧版内嵌牌谱也在同一删除范围内。
+    let embedded = store.open_game("two").unwrap();
+    let mut value = serde_json::to_value(embedded).unwrap();
+    value["version"] = json!(2);
+    fs::write(store.path("two").unwrap(), value.to_string()).unwrap();
+    let exports = Directory::new();
+    let exported = fs::read_to_string(store.export("one", &exports.0).unwrap()).unwrap();
+    let result = store.delete_replay(&game.key, ids).unwrap();
+    assert!(result.error.is_none());
+    assert!(result.replay_deleted);
+    assert_eq!(result.session_ids, ["one", "two"]);
+    assert!(store.get("unrelated").is_ok());
+    assert!(store.get("one").is_err());
+    assert!(store.get("two").is_err());
+    assert!(store.library.get(&game.key).is_err());
+    let imported = store.import(&exported).unwrap();
+    assert!(store.open_game(&imported.document.id).is_ok());
+}
+
+#[test]
+fn unreadable_session_blocks_cascade_without_deleting_anything() {
+    let directory = Directory::new();
+    let store = new_store(directory.0.clone());
+    let game = fixture_game();
+    saved_game_session(&store, "one", &game);
+    fs::write(store.path("broken").unwrap(), "broken").unwrap();
+    assert!(store.preview_replay_deletion(&game.key).is_err());
+    assert!(store.delete_replay(&game.key, vec!["one".into()]).is_err());
+    assert!(store.get("one").is_ok());
+    assert!(store.library.get(&game.key).is_ok());
+}
+
+#[test]
+fn mismatched_session_filename_cannot_offer_deletion_of_another_record() {
+    let directory = Directory::new();
+    let store = new_store(directory.0.clone());
+    let game = fixture_game();
+    saved_game_session(&store, "one", &game);
+    fs::copy(
+        store.path("one").unwrap(),
+        store.path("wrong-name").unwrap(),
+    )
+    .unwrap();
+    let list = store.list().unwrap();
+    assert_eq!(list.sessions.len(), 1);
+    assert_eq!(list.warnings.len(), 1);
+    assert!(store.preview_replay_deletion(&game.key).is_err());
+    assert!(store.get("one").is_ok());
+}
+
+#[cfg(unix)]
+#[test]
+fn replay_delete_io_failure_reports_removed_sessions_and_keeps_replay() {
+    let directory = Directory::new();
+    let store = new_store(directory.0.clone());
+    let game = fixture_game();
+    saved_game_session(&store, "one", &game);
+    let marker = directory
+        .0
+        .join("data/replays/imported")
+        .join(format!("{}.deleted", game.key));
+    std::os::unix::fs::symlink(directory.0.join("missing"), marker).unwrap();
+    let result = store.delete_replay(&game.key, vec!["one".into()]).unwrap();
+    assert!(result.error.is_some());
+    assert!(!result.replay_deleted);
+    assert_eq!(result.session_ids, ["one"]);
+    assert!(store.library.get(&game.key).is_ok());
+}
+
 #[test]
 fn session_titles_are_bounded_and_renames_preserve_saved_context() {
     assert_eq!(default_title(&"🀄".repeat(40)).chars().count(), 32);

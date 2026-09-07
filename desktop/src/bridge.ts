@@ -9,6 +9,8 @@ export const bridge: Bridge = {
   importLog: (json, name) => invoke('import_log', { json, name }),
   importLink: (link) => invoke('import_link', { link }),
   listReplays: () => invoke('list_replays'),
+  previewReplayDeletion: (key) => invoke('preview_replay_deletion', { key }),
+  deleteReplay: (key, sessionIds) => invoke('delete_replay', { key, sessionIds }),
   renameReplay: (key, name) => invoke('rename_replay', { key, name }),
   openReplay: (key) => invoke('open_replay', { key }),
   openDataDirectory: () => invoke('open_data_directory'),
@@ -20,6 +22,7 @@ export const bridge: Bridge = {
     invoke('ask', { question: { id, player, event_index, conversation_id, text, context_label } }),
   listSessions: () => invoke('list_sessions'),
   getSession: (id) => invoke('get_session', { id }),
+  deleteSession: (id) => invoke('delete_session', { id }),
   renameSession: (id, title) => invoke('rename_session', { id, title }),
   openSessionGame: (id) => invoke('open_session_game', { id }),
   setSessionPosition: (id, game_key, position) =>

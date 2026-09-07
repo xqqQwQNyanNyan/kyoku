@@ -3,6 +3,7 @@ import type { Bridge, ReplayList, SavedReplay } from './types';
 import { errorMessage } from './bridge';
 import { replayName } from './display';
 import { Select } from './Select';
+import { DeleteDialog } from './DeleteDialog';
 
 const origins = { example: '示例牌谱', file: '本地导入', link: '链接下载', session: '来自会话' };
 const MAX_NAME_CHARS = 80;
@@ -13,6 +14,7 @@ export function ReplayLibrary({
   error,
   onOpen,
   onRenamed,
+  onDeleted,
   onClose,
 }: {
   api: Bridge;
@@ -20,6 +22,7 @@ export function ReplayLibrary({
   error: string;
   onOpen: (replay: SavedReplay) => Promise<void>;
   onRenamed: (replay: SavedReplay) => void;
+  onDeleted: (key: string | null, sessionIds: string[]) => void;
   onClose: () => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
@@ -33,6 +36,12 @@ export function ReplayLibrary({
   const [editing, setEditing] = useState<SavedReplay | null>(null);
   const [name, setName] = useState('');
   const [saving, setSaving] = useState(false);
+  const [deletion, setDeletion] = useState<{
+    key: string;
+    name: string;
+    session_ids: string[];
+  } | null>(null);
+  const [preparingDelete, setPreparingDelete] = useState(false);
   useEffect(() => {
     dialog.current?.showModal();
   }, []);
@@ -92,6 +101,36 @@ export function ReplayLibrary({
       setFailure(errorMessage(error));
     } finally {
       setSaving(false);
+    }
+  }
+  async function prepareDelete(key: string) {
+    setPreparingDelete(true);
+    setFailure('');
+    try {
+      setDeletion({ key, ...(await api.previewReplayDeletion(key)) });
+    } catch (error) {
+      setFailure(errorMessage(error));
+    } finally {
+      setPreparingDelete(false);
+    }
+  }
+  async function remove() {
+    if (!deletion) return;
+    const result = await api.deleteReplay(deletion.key, deletion.session_ids);
+    onDeleted(result.replay_deleted ? deletion.key : null, result.session_ids);
+    if (result.replay_deleted) {
+      setList(
+        (list) => list && { ...list, replays: list.replays.filter((r) => r.key !== deletion.key) },
+      );
+    }
+    if (result.error) {
+      setDeletion({
+        ...deletion,
+        session_ids: deletion.session_ids.filter((id) => !result.session_ids.includes(id)),
+      });
+      throw new Error(
+        `删除未完成，已删除 ${result.session_ids.length} 个会话。${result.error.message}`,
+      );
     }
   }
   return (
@@ -223,6 +262,17 @@ export function ReplayLibrary({
                   <path d="m15 5 4 4M4 20l5-1L20 8a2.8 2.8 0 0 0-4-4L5 15l-1 5Z" />
                 </svg>
               </button>
+              <button
+                className="record-delete"
+                aria-label={`删除牌谱：${replayName(replay.name)}`}
+                title="删除牌谱"
+                disabled={busy || saving || preparingDelete}
+                onClick={() => void prepareDelete(replay.key)}
+              >
+                <svg aria-hidden="true" viewBox="0 0 24 24">
+                  <path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 10v7m4-7v7" />
+                </svg>
+              </button>
             </div>
           ))
         ) : (
@@ -241,6 +291,19 @@ export function ReplayLibrary({
         </span>
         {list && <small title={list.directory}>{list.directory}</small>}
       </footer>
+      {deletion && (
+        <DeleteDialog
+          title="删除牌谱"
+          name={replayName(deletion.name)}
+          description={
+            deletion.session_ids.length
+              ? `同时删除关联的 ${deletion.session_ids.length} 个会话，包括问题、回答和快照。`
+              : '删除这份本地保存的牌谱。没有关联会话。'
+          }
+          onDelete={remove}
+          onClose={() => setDeletion(null)}
+        />
+      )}
     </dialog>
   );
 }

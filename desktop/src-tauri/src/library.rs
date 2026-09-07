@@ -129,6 +129,13 @@ impl ReplayLibrary {
                 key: SessionGame::key(&events)?,
                 events,
             };
+            if self
+                .deleted_path(&game.key)?
+                .try_exists()
+                .map_err(|_| io_error())?
+            {
+                continue;
+            }
             // 已有文件由列表报告损坏，不覆盖用户文件，也不阻止应用启动。
             if self
                 .path(&game.key, true)?
@@ -162,6 +169,13 @@ impl ReplayLibrary {
         }
         game.validate()?;
         let _guard = lock(&self.gate)?;
+        let deleted = self.deleted_path(&game.key)?;
+        if origin == ReplayOrigin::Session && deleted.try_exists().map_err(|_| io_error())? {
+            return Err(UiError::new(
+                "replay_missing",
+                "牌谱已删除，请重新导入后新建会话",
+            ));
+        }
         for example in [true, false] {
             let path = self.path(&game.key, example)?;
             if path.try_exists().map_err(|_| io_error())? {
@@ -171,6 +185,11 @@ impl ReplayLibrary {
                         "replay_format",
                         "已有牌谱内容不匹配，原文件已保留",
                     ));
+                }
+                if origin != ReplayOrigin::Session
+                    && deleted.try_exists().map_err(|_| io_error())?
+                {
+                    fs::remove_file(&deleted).map_err(|_| io_error())?;
                 }
                 return Ok(existing.name);
             }
@@ -190,7 +209,32 @@ impl ReplayLibrary {
         };
         let path = self.path(&game.key, origin == ReplayOrigin::Example)?;
         write_record(&path, &record)?;
+        if deleted.try_exists().map_err(|_| io_error())? {
+            fs::remove_file(deleted).map_err(|_| io_error())?;
+        }
         Ok(record.name)
+    }
+
+    fn deleted_path(&self, key: &str) -> Result<PathBuf, UiError> {
+        Ok(self.path(key, false)?.with_extension("deleted"))
+    }
+
+    /// 调用方先删除关联会话；标记阻止示例在重启时恢复及旧问答重新保存牌谱。
+    pub fn delete(&self, key: &str) -> Result<(), UiError> {
+        let _guard = lock(&self.gate)?;
+        self.get(key)?;
+        let marker = self.deleted_path(key)?;
+        fs::create_dir_all(self.directory(false)).map_err(|_| io_error())?;
+        if !marker.try_exists().map_err(|_| io_error())? {
+            write_new(&marker, b"")?;
+        }
+        for example in [true, false] {
+            let path = self.path(key, example)?;
+            if path.try_exists().map_err(|_| io_error())? {
+                fs::remove_file(path).map_err(|_| io_error())?;
+            }
+        }
+        Ok(())
     }
 
     /// 只修改显示名称，保留内容标识、文件位置和所有 session 引用。

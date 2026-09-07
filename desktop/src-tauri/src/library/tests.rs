@@ -29,6 +29,35 @@ fn game() -> SessionGame {
 }
 
 #[test]
+fn deleted_examples_stay_deleted_until_explicitly_imported() {
+    let directory = Directory::new();
+    let library = ReplayLibrary::new(directory.0.clone());
+    library.initialize().unwrap();
+    let game = game();
+    library.delete(&game.key).unwrap();
+    let restarted = ReplayLibrary::new(directory.0.clone());
+    restarted.initialize().unwrap();
+    assert_eq!(
+        restarted.get(&game.key).err().unwrap().code,
+        "replay_missing"
+    );
+    assert!(
+        restarted
+            .save(&game, "旧问答", ReplayOrigin::Session)
+            .is_err()
+    );
+    restarted
+        .save(&game, "重新导入", ReplayOrigin::File)
+        .unwrap();
+    assert!(restarted.get(&game.key).is_ok());
+    restarted
+        .save(&game, "继续问答", ReplayOrigin::Session)
+        .unwrap();
+    assert!(restarted.delete("../outside").is_err());
+    assert!(restarted.get(&game.key).is_ok());
+}
+
+#[test]
 fn saved_replays_deduplicate_across_sources_and_survive_restart() {
     let directory = Directory::new();
     let library = Arc::new(ReplayLibrary::new(directory.0.clone()));

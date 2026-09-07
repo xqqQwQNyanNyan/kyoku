@@ -68,6 +68,20 @@ pub(crate) struct SessionList {
     warnings: Vec<String>,
 }
 
+#[derive(Serialize)]
+pub(crate) struct ReplayDeletion {
+    name: String,
+    session_ids: Vec<String>,
+}
+
+/// 逐文件删除发生 I/O 失败时，仍返回已删除的会话，供界面清理缓存。
+#[derive(Serialize)]
+pub(crate) struct ReplayDeletionResult {
+    session_ids: Vec<String>,
+    pub replay_deleted: bool,
+    error: Option<UiError>,
+}
+
 enum SessionQuestion<'a> {
     New(&'a str),
     Retry(usize),
@@ -339,17 +353,19 @@ impl SessionStore {
                 continue;
             }
             match read(&path) {
-                Ok(doc) => result.sessions.push(SessionSummary {
-                    failed: doc.archive.last_error().is_some(),
-                    busy: busy.contains(&doc.id),
-                    interrupted: doc.pending_question.is_some() && !busy.contains(&doc.id),
-                    game_key: doc.game.map(|game| game.key),
-                    id: doc.id,
-                    title: doc.title,
-                    context_label: doc.context_label,
-                    updated_at: doc.updated_at,
-                }),
-                Err(_) => result.warnings.push(format!(
+                Ok(doc) if path.file_stem().and_then(|stem| stem.to_str()) == Some(&doc.id) => {
+                    result.sessions.push(SessionSummary {
+                        failed: doc.archive.last_error().is_some(),
+                        busy: busy.contains(&doc.id),
+                        interrupted: doc.pending_question.is_some() && !busy.contains(&doc.id),
+                        game_key: doc.game.map(|game| game.key),
+                        id: doc.id,
+                        title: doc.title,
+                        context_label: doc.context_label,
+                        updated_at: doc.updated_at,
+                    })
+                }
+                _ => result.warnings.push(format!(
                     "无法读取会话 {}，原文件已保留",
                     path.file_name().unwrap_or_default().to_string_lossy()
                 )),
@@ -394,6 +410,91 @@ impl SessionStore {
             document,
             busy: false,
         })
+    }
+
+    /// 删除会话文件，保留关联牌谱；与问答和位置保存互斥。
+    pub fn delete(&self, id: &str) -> Result<(), UiError> {
+        let _operation = self.begin(id)?;
+        fs::remove_file(self.path(id)?).map_err(|_| io_error())
+    }
+
+    fn replay_session_ids(&self, key: &str) -> Result<Vec<String>, UiError> {
+        let mut ids = Vec::new();
+        let entries = match fs::read_dir(&self.directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(ids),
+            Err(_) => return Err(io_error()),
+        };
+        for entry in entries {
+            let path = entry.map_err(|_| io_error())?.path();
+            if path.extension().is_none_or(|extension| extension != "json") {
+                continue;
+            }
+            // 无法确认关联关系时不跳过坏文件，避免漏删后留下失去牌谱的会话。
+            let document = read(&path).map_err(|_| {
+                UiError::new(
+                    "session_format",
+                    "有会话文件无法读取，暂时无法确认牌谱的关联会话，请先检查数据文件夹",
+                )
+            })?;
+            if path.file_stem().and_then(|stem| stem.to_str()) != Some(&document.id) {
+                return Err(UiError::new(
+                    "session_format",
+                    "会话文件名与编号不一致，无法删除牌谱",
+                ));
+            }
+            if document.game.as_ref().is_some_and(|game| game.key == key) {
+                ids.push(document.id);
+            }
+        }
+        ids.sort();
+        Ok(ids)
+    }
+
+    /// 确认框展示的关联会话集合；实际删除前再次核对。
+    pub fn preview_replay_deletion(&self, key: &str) -> Result<ReplayDeletion, UiError> {
+        let _guard = lock(&self.gate)?;
+        Ok(ReplayDeletion {
+            name: self.library.get(key)?.name,
+            session_ids: self.replay_session_ids(key)?,
+        })
+    }
+
+    pub fn delete_replay(
+        &self,
+        key: &str,
+        mut expected: Vec<String>,
+    ) -> Result<ReplayDeletionResult, UiError> {
+        // 新会话在首次落盘前还没有关联记录，因此有写操作时暂不删除牌谱。
+        let busy = lock(&self.gate)?;
+        if !busy.is_empty() {
+            return Err(UiError::new("busy", "有会话正在处理，请稍后再删除牌谱"));
+        }
+        self.library.get(key)?;
+        let ids = self.replay_session_ids(key)?;
+        expected.sort();
+        if ids != expected {
+            return Err(UiError::new(
+                "session_changed",
+                "关联会话已变化，请取消后重新确认删除",
+            ));
+        }
+        let mut result = ReplayDeletionResult {
+            session_ids: Vec::new(),
+            replay_deleted: false,
+            error: None,
+        };
+        let remove = || -> Result<(), UiError> {
+            for id in ids {
+                fs::remove_file(self.path(&id)?).map_err(|_| io_error())?;
+                result.session_ids.push(id);
+            }
+            self.library.delete(key)?;
+            result.replay_deleted = true;
+            Ok(())
+        };
+        result.error = remove().err();
+        Ok(result)
     }
 
     pub fn set_position(
@@ -442,6 +543,11 @@ impl SessionStore {
         );
         document.updated_at = now().max(document.updated_at.saturating_add(1));
         let _operation = self.begin(&document.id)?;
+        // 用户主动加载导出文件，允许恢复此前删除的牌谱。
+        if let Some(game) = &document.game {
+            self.library
+                .save(game, &document.context_label, ReplayOrigin::File)?;
+        }
         self.save(&document)?;
         Ok(SessionView {
             document,
