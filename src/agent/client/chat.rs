@@ -1,6 +1,6 @@
 use serde_json::{Value, json};
 
-use super::super::{AgentError, INSTRUCTIONS, invalid, required_string, tool_definition};
+use super::super::{AgentError, INSTRUCTIONS, invalid, required_string, tool_definitions};
 
 pub(super) fn request(
     model: &str,
@@ -33,14 +33,17 @@ pub(super) fn request(
             return Err(invalid("unsupported chat history item"));
         }
     }
-    let mut function = tool_definition();
-    function
-        .as_object_mut()
-        .ok_or(invalid("invalid tool definition"))?
-        .remove("type");
+    let mut tools = Vec::new();
+    for mut function in tool_definitions() {
+        function
+            .as_object_mut()
+            .ok_or(invalid("invalid tool definition"))?
+            .remove("type");
+        tools.push(json!({"type": "function", "function": function}));
+    }
     Ok(json!({
         "model": model, "messages": messages,
-        "tools": [{"type": "function", "function": function}],
+        "tools": tools,
         "tool_choice": if needs_evidence { json!({"type": "function", "function": {"name": "get_review"}}) } else { json!("auto") },
         "parallel_tool_calls": false, "store": false, "max_completion_tokens": 4096,
     }))

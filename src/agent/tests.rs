@@ -397,7 +397,12 @@ fn connection_test_requires_a_valid_tool_call_without_sending_review_data() {
     assert_eq!(requests[0]["store"], false);
     assert_eq!(requests[0]["tool_choice"]["name"], "get_review");
     assert_eq!(requests[0]["input"].as_array().unwrap().len(), 1);
-    assert!(!requests[0].to_string().contains("concealed"));
+    assert_eq!(
+        requests[0]["input"],
+        json!([{
+            "role":"user", "content":"连接测试：请调用 get_review，不必回答。"
+        }])
+    );
 }
 
 #[test]
@@ -857,31 +862,85 @@ fn live_issue9_two_turn_explanation() {
     for question in [
         "现在我的手牌和牌河是啥样的？",
         "为什么这里不切 3m 呢？反正是个浮牌。或者东风也行？",
+        "具体核验一下：比较切 2p 和切 3m，假设之后都摸到 4m，各自再切什么、直接进张怎样？这能证明切 2p 整体更好吗？",
     ] {
         let (text, next) = answer(
             &evidence,
             &history,
             !history.is_empty(),
             question,
-            |input, forced| {
-                let response = client.respond(input, forced)?;
-                for item in response["output"].as_array().into_iter().flatten() {
-                    if item["type"] != "message" {
-                        continue;
-                    }
-                    for part in item["content"].as_array().into_iter().flatten() {
-                        if let Some(text) = part["text"].as_str()
-                            && let Err(reason) = output::render(text, &evidence)
-                        {
-                            eprintln!("在线回答校验：{reason}");
-                        }
-                    }
-                }
-                Ok(response)
-            },
+            |input, forced| client.respond(input, forced),
         )
         .unwrap();
         println!("问题：{question}\n{text}\n");
         history = next;
+    }
+}
+
+#[test]
+fn comparison_roundtrip_and_followup_citations_work_in_both_protocols() {
+    let log =
+        convlog::tenhou::Log::from_json_str(include_str!("../../fixtures/tenhou/ranked_game.json"))
+            .unwrap();
+    let events = convlog::tenhou_to_mjai(&log).unwrap();
+    let mut context = AgentContext::from_events(&events, PlayerIndex::new(0).unwrap(), 2).unwrap();
+    context.evidence["analysis_status"] = json!("available");
+    context.evidence["discards"] = json!([{"discard":"2p"},{"discard":"E"}]);
+    let args = r#"{"first":"2p","second":"E","draw":null}"#;
+    let reply = json!({"sections":[{"source":"assessment","text":"两种切法都是两向听，但不能据此断言整体价值一样。","facts":[
+        {"path":"/comparisons/2p_E_none/first/shanten","value":2},
+        {"path":"/comparisons/2p_E_none/second/shanten","value":2}
+    ]}]}).to_string();
+    for chat in [false, true] {
+        let tool_response = |id: &str, name: &str, arguments: &str| {
+            if chat {
+                json!({"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[
+                    {"id":id,"type":"function","function":{"name":name,"arguments":arguments}}
+                ]}}]}).to_string()
+            } else {
+                response(vec![call(id, name, arguments)]).to_string()
+            }
+        };
+        let text_response = if chat {
+            json!({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":reply}}]}).to_string()
+        } else {
+            response(vec![raw_message(&reply)]).to_string()
+        };
+        let (endpoint, handle) = server_at(
+            if chat {
+                "/v1/chat/completions"
+            } else {
+                "/v1/responses"
+            },
+            vec![
+                (200, tool_response("review", "get_review", "{}")),
+                (200, tool_response("compare", "compare_discards", args)),
+                (200, text_response.clone()),
+                (200, text_response),
+            ],
+        );
+        let config = AgentConfig {
+            endpoint: &endpoint,
+            model: "test",
+            api_key: None,
+        };
+        let mut session = AgentSession::with_context(&context, &config).unwrap();
+        let text = session.ask("比较切 2p 和东").unwrap();
+        assert!(text.starts_with("【判断】"));
+        assert_eq!(session.ask("再解释一下").unwrap(), text);
+        let requests = handle.join().unwrap();
+        assert_eq!(requests.len(), 4);
+        let definition = if chat {
+            &requests[0]["tools"][1]["function"]
+        } else {
+            &requests[0]["tools"][1]
+        };
+        assert_eq!(definition["name"], "compare_discards");
+        assert_eq!(definition["strict"], true);
+        assert_eq!(
+            definition["parameters"]["required"],
+            json!(["first", "second", "draw"])
+        );
+        assert_eq!(requests[3]["tool_choice"], "auto");
     }
 }

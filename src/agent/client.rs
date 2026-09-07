@@ -3,7 +3,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use ureq::http::{HeaderValue, Uri};
 
-use super::{AgentConfig, AgentError, INSTRUCTIONS, invalid, tool_definition};
+use super::{AgentConfig, AgentError, INSTRUCTIONS, invalid, tool_definitions};
 
 mod chat;
 
@@ -92,7 +92,7 @@ impl Client {
             Protocol::ChatCompletions => chat::request(&self.model, input, needs_evidence)?,
             Protocol::Responses => json!({
             "model": self.model, "instructions": INSTRUCTIONS,
-            "input": input, "tools": [tool_definition()],
+            "input": input, "tools": tool_definitions(),
             "tool_choice": if needs_evidence { json!({"type": "function", "name": "get_review"}) } else { json!("auto") },
             "parallel_tool_calls": false, "store": false,
             "include": ["reasoning.encrypted_content"],

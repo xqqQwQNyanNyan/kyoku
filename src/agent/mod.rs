@@ -11,6 +11,7 @@ use crate::{
 };
 
 mod client;
+mod comparison;
 mod evidence;
 mod output;
 
@@ -252,10 +253,18 @@ fn tool_definition() -> Value {
     })
 }
 
+fn tool_definitions() -> Vec<Value> {
+    vec![tool_definition(), comparison::definition()]
+}
+
 fn execute_tool(evidence: &Value, name: &str, arguments: &str) -> (Value, bool) {
+    if name == "compare_discards" {
+        // 比较成功也不能代替首次读取完整局面。
+        return (comparison::execute(evidence, arguments), false);
+    }
     if name != "get_review" {
         return (
-            json!({"ok": false, "error": {"code": "unknown_tool", "message": "Only get_review is available."}}),
+            json!({"ok": false, "error": {"code": "unknown_tool", "message": "Available tools: get_review, compare_discards."}}),
             false,
         );
     }
@@ -282,6 +291,16 @@ fn answer(
         return Err(AgentError::InvalidQuestion);
     }
     let mut staged = history.to_vec();
+    let mut verified = evidence.clone();
+    verified["comparisons"] = json!({});
+    for item in history {
+        if item["type"] == "function_call_output"
+            && let Some(output) = item["output"].as_str()
+            && let Ok(result) = serde_json::from_str::<Value>(output)
+        {
+            comparison::remember(&mut verified, &result);
+        }
+    }
     let mut corrections = 0;
     let mut call_ids: HashSet<String> = history
         .iter()
@@ -319,6 +338,7 @@ fn answer(
                         .as_str()
                         .ok_or(invalid("missing function arguments"))?;
                     let (result, success) = execute_tool(evidence, name, arguments);
+                    comparison::remember(&mut verified, &result);
                     has_evidence |= success;
                     tool_results.push(json!({"type": "function_call_output", "call_id": id, "output": result.to_string()}));
                 }
@@ -349,7 +369,7 @@ fn answer(
             if text.trim().is_empty() {
                 return Err(invalid("no answer or tool call"));
             }
-            match output::render(&text, evidence) {
+            match output::render(&text, &verified) {
                 Ok(rendered) => {
                     accepted.extend(output.iter().cloned());
                     check_history(&accepted)?;

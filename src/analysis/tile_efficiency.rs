@@ -128,6 +128,15 @@ pub fn discard_efficiency(
     discard: Tile,
 ) -> Result<DiscardEfficiency, AnalysisError> {
     let hand = state.player(player).hand();
+    analyze_discard(hand, discard, |kind| unseen_count(state, player, kind))
+}
+
+// 假设分支复用同一套牌效率计算，枚数由分支的可见信息提供。
+pub(super) fn analyze_discard(
+    hand: &Hand,
+    discard: Tile,
+    unseen: impl Fn(TileKind) -> u8,
+) -> Result<DiscardEfficiency, AnalysisError> {
     validate_hand_size(hand, Hand::MAX_TILE_COUNT)?;
     if !hand.concealed().contains(&discard) {
         return Err(AnalysisError::DiscardNotFound { discard });
@@ -141,14 +150,12 @@ pub fn discard_efficiency(
 
     let candidates = match shanten {
         1.. => DrawCandidates::Effective(with_availability(
-            state,
-            player,
             effective_tile_kinds(&after_discard)?,
+            &unseen,
         )),
         0 => DrawCandidates::Winning(with_availability(
-            state,
-            player,
             winning_tile_kinds(&after_discard)?,
+            &unseen,
         )),
         actual => return Err(AnalysisError::InvalidShantenAfterDiscard { actual }),
     };
@@ -228,15 +235,14 @@ fn all_hand_counts(hand: &Hand) -> [u8; TILE_KIND_COUNT] {
 }
 
 fn with_availability(
-    state: &RoundState,
-    player: PlayerIndex,
     kinds: Vec<TileKind>,
+    unseen: impl Fn(TileKind) -> u8,
 ) -> Vec<TileAvailability> {
     kinds
         .into_iter()
         .map(|kind| TileAvailability {
             kind,
-            unseen: unseen_count(state, player, kind),
+            unseen: unseen(kind),
         })
         .collect()
 }

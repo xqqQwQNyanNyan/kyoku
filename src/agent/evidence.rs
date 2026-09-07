@@ -1,6 +1,6 @@
 use serde_json::{Value, json};
 
-use crate::analysis::DrawCandidates;
+use crate::analysis::{DiscardEfficiency, DrawCandidates};
 use crate::mahjong::{
     meld::Meld,
     player::RiichiState,
@@ -16,28 +16,7 @@ use crate::review::{Review, VisiblePosition};
 pub fn review_evidence(review: &Review) -> Value {
     let mut evidence =
         position_evidence(review.event_index, review.player.get_id(), &review.position);
-    let discards: Vec<_> = review
-        .discards
-        .iter()
-        .map(|discard| {
-            let (kind, candidates) = match &discard.candidates {
-                DrawCandidates::Effective(tiles) => ("effective", tiles),
-                DrawCandidates::Winning(tiles) => ("winning_shape", tiles),
-            };
-            let draws: Vec<_> = candidates
-                .iter()
-                .map(|candidate| {
-                    json!({
-                        "tile": tile_kind(candidate.kind.as_u8()), "unseen": candidate.unseen,
-                    })
-                })
-                .collect();
-            json!({
-                "discard": format_tile(discard.discard), "shanten": discard.shanten,
-                "draw_kind": kind, "draws": draws, "total_unseen": discard.total_unseen,
-            })
-        })
-        .collect();
+    let discards: Vec<_> = review.discards.iter().map(discard_evidence).collect();
     let decision = review.decision.as_ref().map(|decision| {
         let candidates: Vec<_> = decision
             .candidates
@@ -75,6 +54,25 @@ pub fn review_evidence(review: &Review) -> Value {
         "decision": decision,
     });
     evidence
+}
+
+pub(super) fn discard_evidence(discard: &DiscardEfficiency) -> Value {
+    let (kind, candidates) = match &discard.candidates {
+        DrawCandidates::Effective(tiles) => ("effective", tiles),
+        DrawCandidates::Winning(tiles) => ("winning_shape", tiles),
+    };
+    let draws: Vec<_> = candidates
+        .iter()
+        .map(|candidate| {
+            json!({
+                "tile": tile_kind(candidate.kind.as_u8()), "unseen": candidate.unseen,
+            })
+        })
+        .collect();
+    json!({
+        "discard": format_tile(discard.discard), "shanten": discard.shanten,
+        "draw_kind": kind, "draws": draws, "total_unseen": discard.total_unseen,
+    })
 }
 
 pub(super) fn position_evidence(

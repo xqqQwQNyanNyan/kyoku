@@ -1,6 +1,7 @@
 pub mod agari;
 mod agari_context;
 mod bonus;
+pub(crate) mod discard_comparison;
 mod points;
 mod scoring;
 pub mod shanten;

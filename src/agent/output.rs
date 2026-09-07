@@ -24,6 +24,7 @@ enum Source {
     Position,
     Calculation,
     Mortal,
+    Assessment,
     Limitation,
 }
 
@@ -74,6 +75,7 @@ pub(super) fn render(text: &str, evidence: &Value) -> Result<String, String> {
                 }
                 ("Mortal", "/mortal/decision/")
             }
+            Source::Assessment => ("判断", ""),
             Source::Limitation => ("说明", ""),
         };
         if section.facts.len() > 24 || (!prefix.is_empty() && section.facts.is_empty()) {
@@ -81,14 +83,46 @@ pub(super) fn render(text: &str, evidence: &Value) -> Result<String, String> {
                 "事实段落必须引用 1 至 24 项与来源一致的证据，使用相对于 review 的 JSON Pointer 和原始 value。".into(),
             );
         }
+        if section.draws_for.is_some()
+            && section
+                .facts
+                .iter()
+                .any(|fact| fact.path.starts_with("/comparisons/"))
+        {
+            return Err("draws_for 只展示当前 /discards 的进张，不能用于假设摸牌后的结果；请直接引用比较分支并说明摸牌和后续切牌。".into());
+        }
+        if matches!(section.source, Source::Assessment) {
+            // 判断必须绑定同一次比较的双方，防止只引用推荐或单边数据就给出取舍。
+            let paired = section.facts.iter().any(|first| {
+                let Some(rest) = first.path.strip_prefix("/comparisons/") else {
+                    return false;
+                };
+                let Some((key, path)) = rest.split_once('/') else {
+                    return false;
+                };
+                (path == "first" || path.starts_with("first/"))
+                    && section.facts.iter().any(|second| {
+                        second.path == format!("/comparisons/{key}/second")
+                            || second
+                                .path
+                                .starts_with(&format!("/comparisons/{key}/second/"))
+                    })
+            });
+            if !paired {
+                return Err("判断必须引用 compare_discards 同一次结果的 first 和 second 两方证据；先比较并核对代价，不能只根据 Q 编理由。".into());
+            }
+        }
         for fact in section.facts {
-            if (!prefix.is_empty() && !fact.path.starts_with(prefix))
+            let comparison_calculation = matches!(section.source, Source::Calculation)
+                && fact.path.starts_with("/comparisons/");
+            if (!prefix.is_empty() && !fact.path.starts_with(prefix) && !comparison_calculation)
                 || !(fact.path.starts_with("/position/")
                     || fact.path.starts_with("/discards/")
-                    || fact.path.starts_with("/mortal/decision/"))
+                    || fact.path.starts_with("/mortal/decision/")
+                    || fact.path.starts_with("/comparisons/"))
             {
                 return Err(format!(
-                    "{label}段落的 facts 来源不匹配；请仅引用 {prefix} 下的证据，其他来源拆成独立段落。"
+                    "{label}段落的 facts 来源不匹配；请引用 {prefix} 下的证据，计算也可引用 /comparisons/，其他来源拆成独立段落。"
                 ));
             }
             let expected = evidence
