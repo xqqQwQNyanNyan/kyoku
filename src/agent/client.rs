@@ -1,9 +1,9 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use ureq::http::{HeaderValue, Uri};
 
-use super::{AgentConfig, AgentError, INSTRUCTIONS, invalid, tool_definitions};
+use super::{AgentConfig, AgentError, INSTRUCTIONS, RequestMode, invalid, tool_definitions};
 
 mod chat;
 mod provider_error;
@@ -85,26 +85,22 @@ impl Client {
         })
     }
 
-    fn request(&self, input: &[Value], needs_evidence: bool) -> Result<Value, AgentError> {
+    fn request(&self, input: &[Value], mode: RequestMode) -> Result<Value, AgentError> {
         Ok(match self.protocol {
-            Protocol::ChatCompletions => chat::request(&self.model, input, needs_evidence)?,
+            Protocol::ChatCompletions => chat::request(&self.model, input, mode)?,
             Protocol::Responses => json!({
             "model": self.model, "instructions": INSTRUCTIONS,
-            "input": input, "tools": available_tools(needs_evidence),
-            "tool_choice": "auto",
-            "parallel_tool_calls": false, "store": false,
+            "input": input, "tools": available_tools(mode),
+            "tool_choice": if mode == RequestMode::Repair { "none" } else { "auto" },
+            "parallel_tool_calls": mode == RequestMode::Analysis, "store": false,
             "include": ["reasoning.encrypted_content"],
             "max_output_tokens": 4096,
             }),
         })
     }
 
-    pub(super) fn respond(
-        &self,
-        input: &[Value],
-        needs_evidence: bool,
-    ) -> Result<Value, AgentError> {
-        let request = self.request(input, needs_evidence)?;
+    pub(super) fn respond(&self, input: &[Value], mode: RequestMode) -> Result<Value, AgentError> {
+        let request = self.request(input, mode)?;
         let mut call = self
             .agent
             .post(&self.endpoint)
@@ -112,7 +108,10 @@ impl Client {
         if let Some(authorization) = &self.authorization {
             call = call.header("Authorization", authorization.clone());
         }
-        let mut response = call.send(request.to_string()).map_err(transport)?;
+        let request = request.to_string();
+        let request_bytes = request.len();
+        let started = Instant::now();
+        let mut response = call.send(request).map_err(transport)?;
         if !response.status().is_success() {
             let status = response.status().as_u16();
             let secret = self
@@ -138,18 +137,29 @@ impl Client {
             .map_err(transport)?;
         let response =
             serde_json::from_str(&body).map_err(|_| invalid("body is not valid JSON"))?;
-        match self.protocol {
-            Protocol::Responses => Ok(response),
-            Protocol::ChatCompletions => chat::response(response),
-        }
+        let mut response = match self.protocol {
+            Protocol::Responses => response,
+            Protocol::ChatCompletions => chat::response(response)?,
+        };
+        // 用量沿用供应商原值；字节数不能当成 token 数，未返回的用量不补零。
+        let metrics = json!({
+            "request_bytes": request_bytes,
+            "response_bytes": body.len(),
+            "elapsed_ms": started.elapsed().as_millis() as u64,
+        });
+        response
+            .as_object_mut()
+            .ok_or(invalid("response must be an object"))?
+            .insert("_metrics".into(), metrics);
+        Ok(response)
     }
 }
 
-fn available_tools(needs_evidence: bool) -> Vec<Value> {
+fn available_tools(mode: RequestMode) -> Vec<Value> {
     // 通过可用工具集合约束取证阶段，避免强制 tool_choice 与思考模式冲突。
     tool_definitions()
         .into_iter()
-        .filter(|tool| !needs_evidence || tool["name"] == "get_review")
+        .filter(|tool| mode != RequestMode::ReviewProbe || tool["name"] == "get_review")
         .collect()
 }
 
@@ -197,13 +207,28 @@ mod tests {
                 api_key: Some("test-only-key"),
             })
             .unwrap();
-            for needs_evidence in [true, false] {
+            for mode in [
+                RequestMode::ReviewProbe,
+                RequestMode::Analysis,
+                RequestMode::Repair,
+            ] {
                 let request = client
-                    .request(&[json!({"role":"user","content":"测试"})], needs_evidence)
+                    .request(&[json!({"role":"user","content":"测试"})], mode)
                     .unwrap();
-                assert_eq!(request["tool_choice"], "auto");
+                assert_eq!(
+                    request["tool_choice"],
+                    if mode == RequestMode::Repair {
+                        "none"
+                    } else {
+                        "auto"
+                    }
+                );
+                assert_eq!(
+                    request["parallel_tool_calls"],
+                    mode == RequestMode::Analysis
+                );
                 let tools = request["tools"].as_array().unwrap();
-                if needs_evidence {
+                if mode == RequestMode::ReviewProbe {
                     assert_eq!(tools.len(), 1);
                     let name = if endpoint.ends_with("/responses") {
                         &tools[0]["name"]
@@ -228,7 +253,10 @@ mod tests {
                 api_key: Some("test-only-key"),
             })
             .unwrap()
-            .request(&[json!({"role":"user","content":"测试"})], false)
+            .request(
+                &[json!({"role":"user","content":"测试"})],
+                RequestMode::Analysis,
+            )
             .unwrap()
         };
         assert_eq!(

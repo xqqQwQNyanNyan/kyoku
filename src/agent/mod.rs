@@ -27,6 +27,13 @@ const MAX_REQUESTS: usize = 10;
 const MAX_HISTORY_BYTES: usize = 1024 * 1024;
 const MAX_QUESTION_BYTES: usize = 16 * 1024;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RequestMode {
+    ReviewProbe,
+    Analysis,
+    Repair,
+}
+
 /// 固定事件的可见证据；可从已有分析或只回放牌谱建立，不要求运行 Mortal。
 pub struct AgentContext {
     evidence: Value,
@@ -115,7 +122,7 @@ impl AgentConfig<'_> {
         let mut input = vec![
             json!({"role": "user", "content": "连接测试：请调用 get_review；收到 connection_test=true 后直接确认连接成功，不再调用工具。这不是牌谱分析。"}),
         ];
-        let response = client.respond(&input, true)?;
+        let response = client.respond(&input, RequestMode::ReviewProbe)?;
         if response["status"] != "completed" {
             return Err(AgentError::IncompleteResponse);
         }
@@ -144,7 +151,7 @@ impl AgentConfig<'_> {
             json!({"type":"function_call_output","call_id":calls[0]["call_id"],
             "output":json!({"ok":true,"connection_test":true}).to_string()}),
         );
-        let response = client.respond(&input, false)?;
+        let response = client.respond(&input, RequestMode::Analysis)?;
         if response["status"] != "completed" {
             return Err(AgentError::IncompleteResponse);
         }
@@ -306,7 +313,7 @@ impl AgentSession {
         &self.evidence
     }
 
-    /// 提问或追问。首次必须成功取得工具证据，最多请求模型十次。
+    /// 提问或追问。首次直接附带固定局面证据，最多请求模型十次。
     pub fn ask(&mut self, question: &str) -> Result<String, AgentError> {
         if serde_json::to_vec(&self.archive)
             .map_err(|_| AgentError::HistoryLimit)?
@@ -321,7 +328,7 @@ impl AgentSession {
             &self.history,
             self.has_evidence,
             question,
-            |input, needs_evidence| self.client.respond(input, needs_evidence),
+            |input, mode| self.client.respond(input, mode),
             &mut trace,
         );
         match result {
@@ -402,7 +409,7 @@ fn answer(
     history: &[Value],
     has_evidence: bool,
     question: &str,
-    respond: impl FnMut(&[Value], bool) -> Result<Value, AgentError>,
+    respond: impl FnMut(&[Value], RequestMode) -> Result<Value, AgentError>,
 ) -> Result<(String, Vec<Value>), AgentError> {
     answer_traced(
         evidence,
@@ -419,7 +426,7 @@ fn answer_traced(
     history: &[Value],
     mut has_evidence: bool,
     question: &str,
-    mut respond: impl FnMut(&[Value], bool) -> Result<Value, AgentError>,
+    mut respond: impl FnMut(&[Value], RequestMode) -> Result<Value, AgentError>,
     trace: &mut Vec<Value>,
 ) -> Result<(String, Vec<Value>), AgentError> {
     let question = question.trim();
@@ -427,6 +434,11 @@ fn answer_traced(
         return Err(AgentError::InvalidQuestion);
     }
     let mut staged = history.to_vec();
+    if !has_evidence {
+        // 快照已由本地生成，不必让模型花一次请求来索取同一份证据。
+        staged.insert(0, initial_evidence(evidence));
+        has_evidence = true;
+    }
     let mut verified = evidence.clone();
     verified["comparisons"] = json!({});
     verified["analyses"] = json!({});
@@ -440,6 +452,7 @@ fn answer_traced(
         }
     }
     let mut corrections = 0;
+    let mut previous_error = None;
     let mut call_ids: HashSet<String> = history
         .iter()
         .filter(|item| item["type"] == "function_call")
@@ -453,8 +466,16 @@ fn answer_traced(
         if json!(trace).to_string().len() > 8 * 1024 * 1024 {
             return Err(AgentError::HistoryLimit);
         }
-        trace.push(json!({"kind": "request", "input": staged, "needs_evidence": !has_evidence}));
-        let response = respond(&staged, !has_evidence)?;
+        let mode = if corrections > 0 {
+            RequestMode::Repair
+        } else {
+            RequestMode::Analysis
+        };
+        trace.push(
+            json!({"kind": "request", "input": staged, "needs_evidence": !has_evidence,
+            "answer_only": mode == RequestMode::Repair}),
+        );
+        let response = respond(&staged, mode)?;
         trace.push(json!({"kind": "response", "output": response}));
         if response["status"] != "completed" {
             return Err(AgentError::IncompleteResponse);
@@ -469,6 +490,12 @@ fn answer_traced(
                 // 原样保留推理项及 encrypted_content，以支持 store=false 的后续请求。
                 Some("reasoning") => {}
                 Some("function_call") => {
+                    if mode == RequestMode::Repair {
+                        trace.push(
+                            json!({"kind":"validation","error":"回答纠错阶段不允许再次调用工具。"}),
+                        );
+                        return Err(invalid("tool calls are not allowed during answer repair"));
+                    }
                     if item["status"] != "completed" {
                         return Err(invalid("expected completed function call"));
                     }
@@ -510,9 +537,16 @@ fn answer_traced(
             if !has_evidence {
                 return Err(AgentError::MissingEvidence);
             }
-            let text = text.join("\n");
+            let mut text = text.join("\n");
             if text.trim().is_empty() {
                 return Err(invalid("no answer or tool call"));
+            }
+            let repair = output::repair_references(&text, &verified);
+            let mut repair_hint = String::new();
+            if let Some((repaired, paths)) = repair {
+                text = repaired;
+                repair_hint = format!(" 引用路径已在本地核对：{paths}，请使用这些完整路径。");
+                trace.push(json!({"kind":"reference_repair","repairs":paths}));
             }
             match output::render(&text, &verified) {
                 Ok(rendered) => {
@@ -520,15 +554,16 @@ fn answer_traced(
                     check_history(&accepted)?;
                     return Ok((rendered, accepted));
                 }
-                Err(reason) if corrections < 2 => {
-                    corrections += 1;
+                Err(reason) => {
                     trace.push(json!({"kind": "validation", "error": reason}));
-                    staged.push(json!({"role": "developer", "content": format!("回答校验失败：{reason} 请按原问题重新回答；无依据的结论应删去或说明证据不足。") }));
-                }
-                Err(_) => {
-                    return Err(invalid(
-                        "answer format or evidence references failed validation",
-                    ));
+                    if corrections >= 2 || previous_error.as_ref() == Some(&reason) {
+                        return Err(invalid(
+                            "answer format or evidence references failed validation",
+                        ));
+                    }
+                    corrections += 1;
+                    staged.push(json!({"role": "developer", "content": format!("回答校验失败：\n{reason}{repair_hint}\n仅修正这份回答的格式和证据引用，复用已有工具结果。不要调用工具、增加新分析或重写已正确的内容；缺少支持证据的判断应删去或改为说明证据不足。") }));
+                    previous_error = Some(reason);
                 }
             }
         }
@@ -539,6 +574,13 @@ fn answer_traced(
         staged.extend(tool_results);
     }
     Err(AgentError::RequestLimit)
+}
+
+fn initial_evidence(evidence: &Value) -> Value {
+    json!({"role": "developer", "content": format!(
+        "当前固定局面的 review 证据（已提供，无需再调用 get_review）：{}",
+        evidence
+    )})
 }
 
 fn check_history(history: &[Value]) -> Result<(), AgentError> {

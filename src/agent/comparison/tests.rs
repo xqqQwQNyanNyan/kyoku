@@ -1,5 +1,5 @@
 use super::*;
-use crate::agent::{AgentContext, answer, execute_tool, output};
+use crate::agent::{AgentContext, RequestMode, answer, execute_tool, output};
 use crate::mahjong::player_index::PlayerIndex;
 
 fn evidence() -> Value {
@@ -214,11 +214,7 @@ fn successful_comparison_is_citable_in_current_answer_and_followup() {
         step += 1;
         Ok(response(match step {
             1 => {
-                assert!(forced);
-                vec![call("review", "get_review", "{}")]
-            }
-            2 => {
-                assert!(!forced);
+                assert_eq!(forced, RequestMode::Analysis);
                 vec![call("compare", "compare_discards", args)]
             }
             _ => vec![raw_message(&reply)],
@@ -226,7 +222,7 @@ fn successful_comparison_is_citable_in_current_answer_and_followup() {
     })
     .unwrap();
     assert!(text.starts_with("【判断】"));
-    assert_eq!(step, 3);
+    assert_eq!(step, 2);
     assert!(
         answer(&evidence, &history, true, "再说一下", |_, _| Ok(
             response(vec![raw_message(&reply)])

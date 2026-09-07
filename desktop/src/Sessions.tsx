@@ -95,7 +95,8 @@ function Trace({ turn }: { turn: SessionTurn }) {
     request: '请求模型',
     response: '模型返回',
     tool: '执行工具',
-    validation: '回答校验未通过，要求修正',
+    validation: '回答校验未通过',
+    reference_repair: '本地修正证据引用',
   };
   return (
     <details className="session-trace">
@@ -336,37 +337,50 @@ export function HistoryDialog({
   const dialog = useRef<HTMLDialogElement>(null);
   const input = useRef<HTMLInputElement>(null);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const [listing, setListing] = useState(true);
+  const [listError, setListError] = useState('');
+  const [listRevision, setListRevision] = useState(0);
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [loading, setLoading] = useState(false);
   const selection = useRef(0);
+  const listRequest = useRef<ReturnType<Bridge['listSessions']> | null>(null);
   useEffect(() => {
     dialog.current?.showModal();
   }, []);
   useEffect(() => {
     let active = true;
-    const refresh = () =>
-      api
-        .listSessions()
-        .then((result) => {
-          if (active) {
-            setSessions(result.sessions);
-            if (result.warnings.length) setNotice(result.warnings.join('；'));
-          }
-        })
-        .catch((e) => {
-          if (active) setError(errorMessage(e));
-        });
+    let timer: number | undefined;
+    setListing(true);
+    const refresh = async () => {
+      // 状态变化重启 effect 时，也要等上一次读取完成，不能积压后台请求。
+      if (listRequest.current) await listRequest.current.catch(() => undefined);
+      if (!active) return;
+      const request = api.listSessions();
+      listRequest.current = request;
+      try {
+        const result = await request;
+        if (active) {
+          setSessions(result.sessions);
+          setListError(result.warnings.join('；'));
+        }
+      } catch (e) {
+        if (active) setListError(errorMessage(e));
+      } finally {
+        if (listRequest.current === request) listRequest.current = null;
+        if (active) setListing(false);
+        if (active && Object.keys(w.pending).length) {
+          timer = window.setTimeout(() => void refresh(), 1500);
+        }
+      }
+    };
     void refresh();
-    const timer = Object.keys(w.pending).length
-      ? window.setInterval(() => void refresh(), 1500)
-      : undefined;
     return () => {
       active = false;
-      window.clearInterval(timer);
+      window.clearTimeout(timer);
     };
-  }, [api, w.revision, w.pending]);
+  }, [api, w.revision, w.pending, listRevision]);
   async function open(id: string) {
     const job = ++selection.current;
     setError('');
@@ -463,10 +477,24 @@ export function HistoryDialog({
           {notice}
         </p>
       )}
+      {listError && (
+        <p className="chat-error" role="alert">
+          {listError}
+          <button disabled={listing} onClick={() => setListRevision((r) => r + 1)}>
+            重新读取历史
+          </button>
+        </p>
+      )}
       <div className="history-body">
         <nav aria-label="历史会话列表">
           {!sessions.length && (
-            <p className="muted">暂无历史会话。开始一次问答，或加载已有 JSON。</p>
+            <p className="muted">
+              {listing
+                ? '正在读取历史会话…'
+                : listError
+                  ? '历史会话未能完整读取。'
+                  : '暂无历史会话。开始一次问答，或加载已有 JSON。'}
+            </p>
           )}
           {sessions.map((s) => (
             <button

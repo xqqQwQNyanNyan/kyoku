@@ -72,7 +72,7 @@ fn chat_roundtrip_preserves_tool_groups_and_followups_and_reuses_answer_validati
     let request = &requests[0];
     assert_eq!(request["messages"][0]["role"], "system");
     assert_eq!(
-        request["messages"][1],
+        request["messages"][2],
         json!({"role":"user", "content":"第一问"})
     );
     assert_eq!(request["tools"][0]["function"]["name"], "get_review");
@@ -83,14 +83,14 @@ fn chat_roundtrip_preserves_tool_groups_and_followups_and_reuses_answer_validati
     assert_eq!(request["tool_choice"], json!("auto"));
     assert_eq!(request["max_completion_tokens"], 4096);
     assert_eq!(request["store"], false);
-    assert_eq!(request["parallel_tool_calls"], false);
+    assert_eq!(request["parallel_tool_calls"], true);
     for field in ["instructions", "input", "include", "max_output_tokens"] {
         assert!(request.get(field).is_none());
     }
     let messages = requests[1]["messages"].as_array().unwrap();
-    assert_eq!(messages.len(), 5);
-    assert_eq!(messages[2], calls);
-    for (index, id) in [(3, "a"), (4, "b")] {
+    assert_eq!(messages.len(), 6);
+    assert_eq!(messages[3], calls);
+    for (index, id) in [(4, "a"), (5, "b")] {
         assert_eq!(messages[index]["role"], "tool");
         assert_eq!(messages[index]["tool_call_id"], id);
         let output: Value =
@@ -98,13 +98,15 @@ fn chat_roundtrip_preserves_tool_groups_and_followups_and_reuses_answer_validati
         assert_eq!(output["review"], review_evidence(&review()));
     }
     assert_eq!(requests[1]["tool_choice"], "auto");
-    assert_eq!(requests[3]["messages"][5], text_message(&first));
+    assert_eq!(requests[3]["messages"][6], text_message(&first));
     assert!(!requests[3].to_string().contains("失败问题"));
     assert_eq!(
         requests[4]["messages"].as_array().unwrap().last().unwrap()["role"],
         "system"
     );
     assert!(requests[4].to_string().contains("回答校验失败"));
+    assert_eq!(requests[4]["tool_choice"], "none");
+    assert_eq!(requests[4]["parallel_tool_calls"], false);
     assert!(!requests[5].to_string().contains("坏格式"));
     assert!(!requests[5].to_string().contains("回答校验失败"));
     assert!(!requests[5].to_string().contains("_chat_message"));
@@ -151,14 +153,11 @@ fn chat_endpoint_variants_and_connection_probe_use_chat_protocol() {
 }
 
 #[test]
-fn chat_requires_evidence_and_can_correct_invalid_tool_arguments() {
+fn chat_includes_evidence_and_can_correct_invalid_tool_arguments() {
     let (endpoint, handle) = server_at(
         "/v1/chat/completions",
         vec![
-            (
-                200,
-                completion(text_message(&valid_answer("没有取证。")), "stop").to_string(),
-            ),
+            (200, completion(text_message("截断"), "length").to_string()),
             (
                 200,
                 completion(
@@ -193,7 +192,7 @@ fn chat_requires_evidence_and_can_correct_invalid_tool_arguments() {
     .unwrap();
     assert!(matches!(
         session.ask("失败取证"),
-        Err(AgentError::MissingEvidence)
+        Err(AgentError::IncompleteResponse)
     ));
     assert!(session.history.is_empty());
     assert_eq!(
@@ -202,7 +201,10 @@ fn chat_requires_evidence_and_can_correct_invalid_tool_arguments() {
     );
     let requests = handle.join().unwrap();
     assert_eq!(requests[2]["tool_choice"], "auto");
-    assert_eq!(requests[2]["tools"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        requests[2]["tools"].as_array().unwrap().len(),
+        tool_definitions().len()
+    );
     assert!(requests[2].to_string().contains("invalid_arguments"));
     assert!(!requests[2].to_string().contains("失败取证"));
 }
@@ -242,7 +244,7 @@ fn chat_rejects_incomplete_refused_and_malformed_messages() {
             api_key: None,
         })
         .unwrap()
-        .respond(&[], true)
+        .respond(&[], RequestMode::ReviewProbe)
         .unwrap_err();
         assert!(
             matches!(error, AgentError::InvalidResponse { .. }),
@@ -268,7 +270,7 @@ fn chat_rejects_incomplete_refused_and_malformed_messages() {
             api_key: None,
         })
         .unwrap()
-        .respond(&[], true)
+        .respond(&[], RequestMode::ReviewProbe)
         .unwrap_err();
         assert!(if refused {
             matches!(error, AgentError::Refused)
@@ -334,10 +336,10 @@ fn chat_archive_restores_tool_messages_and_provider_reasoning() {
     let mut resumed = AgentSession::from_archive(&archive, &config).unwrap();
     resumed.ask("再解释").unwrap();
     let requests = server.join().unwrap();
-    assert_eq!(requests[2]["messages"][2], tool);
-    assert_eq!(requests[2]["messages"][3]["role"], "tool");
-    assert_eq!(requests[2]["messages"].as_array().unwrap().len(), 6);
+    assert_eq!(requests[2]["messages"][3], tool);
+    assert_eq!(requests[2]["messages"][4]["role"], "tool");
+    assert_eq!(requests[2]["messages"].as_array().unwrap().len(), 7);
     let mut tampered: Value = serde_json::from_str(&json).unwrap();
-    tampered["history"][1]["_chat_message"]["role"] = json!("system");
+    tampered["history"][2]["_chat_message"]["role"] = json!("system");
     assert!(SessionArchive::from_json(&tampered.to_string()).is_err());
 }

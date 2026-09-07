@@ -23,7 +23,7 @@ impl fmt::Display for SessionFormatError {
 impl Error for SessionFormatError {}
 
 /// 完整的可续聊上下文和执行轨迹；不包含连接密钥或完整牌谱。
-/// 字段只通过序列化查看，加载必须经过 `from_json` 校验。
+/// 导入用 `from_json` 完整校验；本地浏览可用 `validate_for_display`，续聊仍会检查全部工具证据。
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionArchive {
@@ -84,8 +84,14 @@ impl SessionArchive {
         }
         let archive: Self =
             serde_json::from_str(json).map_err(|_| SessionFormatError::InvalidJson)?;
-        archive.validate()?;
+        archive.validate(true)?;
         Ok(archive)
+    }
+
+    /// 校验浏览所需的格式、消息配对和固定证据，不重新执行分析工具。
+    /// 此检查不证明历史计算结果正确；导入用 `from_json`，续聊用 `AgentSession::from_archive`。
+    pub fn validate_for_display(&self) -> Result<(), SessionFormatError> {
+        self.validate(false)
     }
 
     /// 最近一轮的失败说明，用于历史任务状态；成功或尚未提问时为 None。
@@ -98,7 +104,7 @@ impl SessionArchive {
         &self.evidence
     }
 
-    fn validate(&self) -> Result<(), SessionFormatError> {
+    fn validate(&self, verify_results: bool) -> Result<(), SessionFormatError> {
         use SessionFormatError as E;
         if self.version != 1 {
             return Err(E::IncompatibleVersion);
@@ -163,6 +169,7 @@ impl SessionArchive {
                 return Err(bad());
             }
             match item["type"].as_str() {
+                None if index == 0 && *item == initial_evidence(&self.evidence) => {}
                 None if item["role"] == "user" && item["content"].is_string() => {
                     if !pending.is_empty() {
                         return Err(bad());
@@ -182,10 +189,13 @@ impl SessionArchive {
                     let id = required_string(item, "call_id").map_err(|_| bad())?;
                     let name = required_string(item, "name").map_err(|_| bad())?;
                     let args = item["arguments"].as_str().ok_or_else(bad)?;
-                    if calls
-                        .insert(id, execute_tool(&self.evidence, name, args).0)
-                        .is_some()
-                    {
+                    // 浏览历史不能触发昂贵的牌形枚举；导入和续聊仍重算校验。
+                    let expected = if verify_results || name == "get_review" {
+                        Some(execute_tool(&self.evidence, name, args).0)
+                    } else {
+                        None
+                    };
+                    if calls.insert(id, expected).is_some() {
                         return Err(bad());
                     }
                     pending.insert(id);
@@ -195,7 +205,14 @@ impl SessionArchive {
                     let result: Value =
                         serde_json::from_str(item["output"].as_str().ok_or_else(bad)?)
                             .map_err(|_| bad())?;
-                    if !pending.remove(id) || calls.get(id) != Some(&result) {
+                    if !pending.remove(id)
+                        || !result.is_object()
+                        || result["ok"].as_bool().is_none()
+                        || calls
+                            .get(id)
+                            .and_then(Option::as_ref)
+                            .is_some_and(|expected| *expected != result)
+                    {
                         return Err(bad());
                     }
                 }
@@ -224,6 +241,12 @@ impl SessionArchive {
                             && step["result"].is_object()
                     }
                     Some("validation") => step["error"].is_string(),
+                    Some("reference_repair") => step["repairs"].as_array().is_some_and(|repairs| {
+                        !repairs.is_empty()
+                            && repairs.iter().all(|repair| {
+                                repair["from"].is_string() && repair["to"].is_string()
+                            })
+                    }),
                     _ => false,
                 };
                 if !valid {
@@ -246,9 +269,7 @@ impl AgentSession {
         archive: &SessionArchive,
         config: &AgentConfig<'_>,
     ) -> Result<Self, AgentError> {
-        archive
-            .validate()
-            .map_err(|_| invalid("invalid session archive"))?;
+        // 旧协议不能续聊时直接返回原因，不先花时间重算历史分析。
         if archive.instructions != INSTRUCTIONS || archive.tools != tool_definitions() {
             return Err(AgentError::InvalidConfig {
                 field: "session",
@@ -261,17 +282,21 @@ impl AgentSession {
                 reason: "请在设置中恢复此会话的服务地址和模型，或在当前局面新建会话",
             });
         }
+        archive
+            .validate(true)
+            .map_err(|_| invalid("invalid session archive"))?;
         Ok(Self {
             client: client::Client::new(config)?,
             evidence: archive.evidence.clone(),
             history: archive.history.clone(),
-            has_evidence: archive.history.iter().any(|item| {
-                item["type"] == "function_call"
-                    && item["name"] == "get_review"
-                    && item["arguments"].as_str().is_some_and(|args| {
-                        serde_json::from_str::<Value>(args).is_ok_and(|v| v == json!({}))
-                    })
-            }),
+            has_evidence: archive.history.first() == Some(&initial_evidence(&archive.evidence))
+                || archive.history.iter().any(|item| {
+                    item["type"] == "function_call"
+                        && item["name"] == "get_review"
+                        && item["arguments"].as_str().is_some_and(|args| {
+                            serde_json::from_str::<Value>(args).is_ok_and(|v| v == json!({}))
+                        })
+                }),
             archive: archive.clone(),
         })
     }

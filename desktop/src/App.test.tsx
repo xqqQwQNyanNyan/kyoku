@@ -770,6 +770,55 @@ describe('独立会话与历史上下文', () => {
     expect(bridge.exportSession).toHaveBeenCalledWith(id);
   });
 
+  it('历史列表慢读时不积压轮询，问答完成后仍重新取得已保存的会话', async () => {
+    const bridge = api();
+    await start(bridge);
+    const id = vi.mocked(bridge.ask).mock.calls[0][3];
+    const answering = deferred<SessionView>();
+    vi.mocked(bridge.continueSession).mockReturnValueOnce(answering.promise);
+    await userEvent.type(screen.getByLabelText('复盘问题'), '继续');
+    await userEvent.click(screen.getByRole('button', { name: '发送问题' }));
+    const listing = deferred<Awaited<ReturnType<Bridge['listSessions']>>>();
+    vi.mocked(bridge.listSessions).mockReturnValueOnce(listing.promise);
+    await userEvent.click(screen.getByRole('button', { name: '历史会话' }));
+    expect(screen.getByText('正在读取历史会话…')).toBeTruthy();
+    expect(screen.queryByText(/暂无历史会话/)).toBeNull();
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(6000);
+      });
+      expect(bridge.listSessions).toHaveBeenCalledOnce();
+      await act(async () => {
+        answering.resolve(savedSession(id, '新回答'));
+      });
+      expect(bridge.listSessions).toHaveBeenCalledOnce();
+      await act(async () => {
+        listing.resolve({ sessions: [], warnings: [] });
+      });
+      expect(bridge.listSessions).toHaveBeenCalledTimes(2);
+      expect(screen.getByRole('button', { name: /比较这里的候选切牌.*test.json/ })).toBeTruthy();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(6000);
+      });
+      expect(bridge.listSessions).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('历史读取失败不显示为空，重试成功后清除错误', async () => {
+    const bridge = api();
+    vi.mocked(bridge.listSessions).mockRejectedValueOnce({ message: '无法读取测试目录' });
+    render(<App api={bridge} />);
+    await userEvent.click(screen.getByRole('button', { name: '历史会话' }));
+    await screen.findByText('历史会话未能完整读取。');
+    expect(screen.queryByText(/暂无历史会话/)).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: '重新读取历史' }));
+    await screen.findByText(/暂无历史会话/);
+    expect(screen.queryByRole('button', { name: '重新读取历史' })).toBeNull();
+  });
+
   it('从 JSON 加载历史会话后可以继续问答；过大文件被拒绝', async () => {
     const bridge = api();
     render(<App api={bridge} />);

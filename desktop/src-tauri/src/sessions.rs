@@ -59,6 +59,20 @@ pub(crate) struct SessionStore {
     gate: Mutex<HashSet<String>>,
 }
 
+// 只登记同一会话的写操作；计算和文件读写期间不持有全局锁。
+struct SessionOperation<'a> {
+    store: &'a SessionStore,
+    id: String,
+}
+
+impl Drop for SessionOperation<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut busy) = self.store.gate.lock() {
+            busy.remove(&self.id);
+        }
+    }
+}
+
 fn io_error() -> UiError {
     UiError::new(
         "session_io",
@@ -83,7 +97,7 @@ fn parse(text: &str) -> Result<SessionDocument, UiError> {
     if text.len() as u64 > MAX_FILE_BYTES {
         return Err(UiError::new("session_format", "会话文件不能超过 32 MiB"));
     }
-    let mut document: SessionDocument = serde_json::from_str(text)
+    let document: SessionDocument = serde_json::from_str(text)
         .map_err(|_| UiError::new("session_format", "不是有效的 Kyoku 会话 JSON"))?;
     if document.version != 1
         || !valid_id(&document.id)
@@ -96,10 +110,10 @@ fn parse(text: &str) -> Result<SessionDocument, UiError> {
     {
         return Err(UiError::new("session_format", "会话版本、编号或描述无效"));
     }
-    document.archive = SessionArchive::from_json(
-        &serde_json::to_string(&document.archive).map_err(|_| io_error())?,
-    )
-    .map_err(|e| UiError::new("session_format", e.to_string()))?;
+    document
+        .archive
+        .validate_for_display()
+        .map_err(|e| UiError::new("session_format", e.to_string()))?;
     Ok(document)
 }
 
@@ -142,6 +156,17 @@ impl SessionStore {
         Ok(self.directory.join(format!("{id}.json")))
     }
 
+    fn begin(&self, id: &str) -> Result<SessionOperation<'_>, UiError> {
+        self.path(id)?;
+        if !lock(&self.gate)?.insert(id.into()) {
+            return Err(UiError::new("busy", "此会话仍在处理，请稍后重试"));
+        }
+        Ok(SessionOperation {
+            store: self,
+            id: id.into(),
+        })
+    }
+
     fn save(&self, document: &SessionDocument) -> Result<(), UiError> {
         fs::create_dir_all(&self.directory).map_err(|_| io_error())?;
         let bytes = serde_json::to_vec(document).map_err(|_| io_error())?;
@@ -166,7 +191,7 @@ impl SessionStore {
     }
 
     pub fn list(&self) -> Result<SessionList, UiError> {
-        let busy = lock(&self.gate)?;
+        let busy = lock(&self.gate)?.clone();
         let entries = match fs::read_dir(&self.directory) {
             Ok(entries) => entries,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -209,16 +234,19 @@ impl SessionStore {
     }
 
     pub fn get(&self, id: &str) -> Result<SessionView, UiError> {
-        let busy = lock(&self.gate)?;
-        let document = read(&self.path(id)?)?;
-        Ok(SessionView {
-            document,
-            busy: busy.contains(id),
-        })
+        let was_busy = lock(&self.gate)?.contains(id);
+        let path = self.path(id)?;
+        let mut document = read(&path)?;
+        let busy = lock(&self.gate)?.contains(id);
+        // 若读取期间恰好完成，返回已保存的结果，避免把旧的 pending 误报为中断。
+        if was_busy && !busy {
+            document = read(&path)?;
+        }
+        Ok(SessionView { document, busy })
     }
 
     pub fn create(&self, id: &str, label: String, archive: SessionArchive) -> Result<(), UiError> {
-        let _gate = lock(&self.gate)?;
+        let _operation = self.begin(id)?;
         if label.len() > 2048 {
             return Err(UiError::new("session", "会话局面描述过长"));
         }
@@ -239,7 +267,11 @@ impl SessionStore {
 
     pub fn import(&self, text: &str) -> Result<SessionView, UiError> {
         let mut document = parse(text)?;
-        let _gate = lock(&self.gate)?;
+        // 外部导入仍完整重算证据；普通列表、打开和导出只做浏览校验。
+        document.archive = SessionArchive::from_json(
+            &serde_json::to_string(&document.archive).map_err(|_| io_error())?,
+        )
+        .map_err(|e| UiError::new("session_format", e.to_string()))?;
         // 导入始终创建副本，不能覆盖现有会话或正在运行的任务。
         document.id = format!(
             "import-{}-{}",
@@ -247,6 +279,7 @@ impl SessionStore {
             FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
         );
         document.updated_at = now().max(document.updated_at.saturating_add(1));
+        let _operation = self.begin(&document.id)?;
         self.save(&document)?;
         Ok(SessionView {
             document,
@@ -255,7 +288,6 @@ impl SessionStore {
     }
 
     pub fn export(&self, id: &str, directory: &Path) -> Result<String, UiError> {
-        let _gate = lock(&self.gate)?;
         let document = read(&self.path(id)?)?;
         let path = directory.join(format!(
             "Kyoku-session-{id}-{}-{}.json",
@@ -279,10 +311,7 @@ impl SessionStore {
         if question.is_empty() || question.len() > 16 * 1024 {
             return Err(UiError::new("question", "问题不能为空，且不能超过 16 KiB"));
         }
-        let mut busy = lock(&self.gate)?;
-        if busy.contains(id) {
-            return Err(UiError::new("busy", "此会话仍在生成回答"));
-        }
+        let _operation = self.begin(id)?;
         let mut document = read(&self.path(id)?)?;
         let mut session = AgentSession::from_archive(&document.archive, config)
             .map_err(|e| UiError::new("agent", e.to_string()))?;
@@ -292,15 +321,10 @@ impl SessionStore {
         document.pending_question = Some(question.into());
         document.updated_at = now().max(document.updated_at.saturating_add(1));
         self.save(&document)?;
-        busy.insert(id.into());
-        drop(busy);
-        // 网络请求期间不占用仓库锁，允许打开其他会话及导入牌谱。
         let result = session.ask(question);
         document.archive = session.archive().clone();
         document.pending_question = None;
         document.updated_at = now().max(document.updated_at.saturating_add(1));
-        let mut busy = lock(&self.gate)?;
-        busy.remove(id);
         self.save(&document)?;
         result.map_err(|e| UiError::new("agent", e.to_string()))?;
         Ok(SessionView {

@@ -1,12 +1,12 @@
 use serde_json::{Value, json};
 
-use super::super::{AgentError, INSTRUCTIONS, invalid, required_string};
+use super::super::{AgentError, INSTRUCTIONS, RequestMode, invalid, required_string};
 use super::available_tools;
 
 pub(super) fn request(
     model: &str,
     input: &[Value],
-    needs_evidence: bool,
+    mode: RequestMode,
 ) -> Result<Value, AgentError> {
     let mut messages = vec![json!({"role": "system", "content": INSTRUCTIONS})];
     let mut items = input.iter();
@@ -35,7 +35,7 @@ pub(super) fn request(
         }
     }
     let mut tools = Vec::new();
-    for mut function in available_tools(needs_evidence) {
+    for mut function in available_tools(mode) {
         function
             .as_object_mut()
             .ok_or(invalid("invalid tool definition"))?
@@ -45,8 +45,8 @@ pub(super) fn request(
     Ok(json!({
         "model": model, "messages": messages,
         "tools": tools,
-        "tool_choice": "auto",
-        "parallel_tool_calls": false, "store": false, "max_completion_tokens": 4096,
+        "tool_choice": if mode == RequestMode::Repair { "none" } else { "auto" },
+        "parallel_tool_calls": mode == RequestMode::Analysis, "store": false, "max_completion_tokens": 4096,
     }))
 }
 
@@ -125,5 +125,9 @@ pub(super) fn response(response: Value) -> Result<Value, AgentError> {
         .ok_or(invalid("no chat answer or tool call"))?;
     first["_chat_message"] = original;
     first["_chat_output_count"] = json!(count);
-    Ok(json!({"status": "completed", "output": output}))
+    let mut normalized = json!({"status": "completed", "output": output});
+    if let Some(usage) = response.get("usage") {
+        normalized["usage"] = usage.clone();
+    }
+    Ok(normalized)
 }

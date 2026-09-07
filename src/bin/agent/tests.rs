@@ -147,11 +147,10 @@ fn browse_questions_reset_history_on_switch_but_keep_it_on_invalid_selection() {
     listener.set_nonblocking(true).unwrap();
     let endpoint = format!("http://{}/v1/responses", listener.local_addr().unwrap());
     let handle = thread::spawn(move || {
-        let call = json!({"status":"completed","output":[{"type":"function_call","status":"completed","call_id":"a","name":"get_review","arguments":"{}"}]}).to_string();
         let answer = json!({"status":"completed","output":[{"type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":json!({"sections":[{"source":"limitation","text":"当前证据不足。","facts":[]}]}).to_string()}]}]}).to_string();
         let mut requests = Vec::<Value>::new();
-        // 首问两次请求，同局面追问一次；每次切换后的首问都重新取证。
-        for body in [&call, &answer, &answer, &call, &answer, &call, &answer] {
+        // 首问和追问均可直接回答，切换时只保留新局面证据。
+        for body in [&answer; 4] {
             let deadline = Instant::now() + Duration::from_secs(10);
             let mut stream = loop {
                 match listener.accept() {
@@ -197,23 +196,23 @@ fn browse_questions_reset_history_on_switch_but_keep_it_on_invalid_selection() {
         &b"first-position-question\n/select 999\n/select 2\nfollow-up\n/next\nsecond-position-question\n/prev\nreturn-question\n/quit\n"[..],
         Vec::new(), Vec::new(), false).unwrap();
     let requests = handle.join().unwrap();
-    assert_eq!(requests[2]["tool_choice"], "auto");
-    assert!(requests[2].to_string().contains("first-position-question"));
-    for (first, second, event_index) in [(0, 1, 2), (3, 4, 12), (5, 6, 2)] {
-        assert_eq!(requests[first]["input"].as_array().unwrap().len(), 1);
+    assert_eq!(requests.len(), 4);
+    assert_eq!(requests[1]["tool_choice"], "auto");
+    assert!(requests[1].to_string().contains("first-position-question"));
+    for (first, event_index) in [(0, 2), (2, 12), (3, 2)] {
+        assert_eq!(requests[first]["input"].as_array().unwrap().len(), 2);
         assert_eq!(requests[first]["tool_choice"], "auto");
-        assert_eq!(requests[first]["tools"].as_array().unwrap().len(), 1);
-        let tool = requests[second]["input"]
-            .as_array()
+        assert!(requests[first]["tools"].as_array().unwrap().len() > 1);
+        let content = requests[first]["input"][0]["content"]
+            .as_str()
             .unwrap()
-            .iter()
-            .find(|item| item["type"] == "function_call_output")
+            .split_once('：')
             .unwrap();
-        let evidence: Value = serde_json::from_str(tool["output"].as_str().unwrap()).unwrap();
-        assert_eq!(evidence["review"]["event_index"], event_index);
-        assert!(evidence["review"].get("actual").is_none());
+        let evidence: Value = serde_json::from_str(content.1).unwrap();
+        assert_eq!(evidence["event_index"], event_index);
+        assert!(evidence.get("actual").is_none());
         assert!(
-            !requests[second]
+            !requests[first]
                 .to_string()
                 .contains("second-position-question")
                 || event_index == 12

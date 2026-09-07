@@ -111,6 +111,85 @@ fn invalid_import_path_and_corrupt_files_do_not_replace_saved_sessions() {
 }
 
 #[test]
+fn history_browsing_keeps_saved_answers_even_when_tool_results_no_longer_match() {
+    let directory = Directory::new();
+    let store = SessionStore::new(directory.0.clone());
+    let mut saved = serde_json::to_value(archive("http://localhost/responses")).unwrap();
+    saved["history"] = serde_json::json!([
+        {"type":"function_call","status":"completed","call_id":"old-score",
+            "name":"analyze_score_targets","arguments":"{\"target\":1}"},
+        {"type":"function_call_output","call_id":"old-score","output":
+            "{\"ok\":true,\"analysis\":{\"old_result\":true}}"}
+    ]);
+    saved["turns"] = serde_json::json!([
+        {"question":"以前的问题","answer":"已经保存的回答","error":null,"trace":[]}
+    ]);
+    let old = serde_json::from_value(saved.clone()).unwrap();
+    store.create("old", "旧会话".into(), old).unwrap();
+    let original = fs::read(directory.0.join("old.json")).unwrap();
+    let list = store.list().unwrap();
+    assert_eq!(list.sessions.len(), 1);
+    assert!(list.warnings.is_empty());
+    assert_eq!(
+        serde_json::to_value(store.get("old").unwrap().document.archive).unwrap(),
+        saved
+    );
+    let export_directory = directory.0.join("exports");
+    fs::create_dir(&export_directory).unwrap();
+    let exported = store.export("old", &export_directory).unwrap();
+    let json = fs::read_to_string(&exported).unwrap();
+    assert!(json.contains("已经保存的回答"));
+    // 展示旧记录不意味着允许把不一致的证据作为新导入或续聊的上下文。
+    assert!(store.import(&json).is_err());
+    assert!(
+        store
+            .ask(
+                "old",
+                "继续",
+                &AgentConfig {
+                    endpoint: "http://localhost/responses",
+                    model: "test",
+                    api_key: None,
+                }
+            )
+            .is_err()
+    );
+    assert!(!store.get("old").unwrap().busy);
+    assert_eq!(fs::read(directory.0.join("old.json")).unwrap(), original);
+}
+
+#[test]
+fn session_operations_exclude_only_the_same_session_and_release_on_failure() {
+    let directory = Directory::new();
+    let store = SessionStore::new(directory.0.clone());
+    let context = archive("http://localhost/responses");
+    store
+        .create("one", "会话一".into(), context.clone())
+        .unwrap();
+    let operation = store.begin("one").unwrap();
+    assert!(store.begin("one").is_err());
+    assert!(store.get("one").unwrap().busy);
+    store
+        .create("two", "会话二".into(), context.clone())
+        .unwrap();
+    assert!(!store.get("two").unwrap().busy);
+    assert_eq!(store.list().unwrap().sessions.len(), 2);
+    drop(operation);
+    assert!(!store.get("one").unwrap().busy);
+
+    let config = AgentConfig {
+        endpoint: "http://localhost/responses",
+        model: "test",
+        api_key: None,
+    };
+    assert!(store.ask("missing", "无法读取", &config).is_err());
+    store
+        .create("missing", "失败后可重新创建".into(), context)
+        .unwrap();
+    assert!(!store.get("missing").unwrap().busy);
+}
+
+#[test]
 fn unfinished_question_survives_restart_and_is_not_automatically_retried() {
     let directory = Directory::new();
     let store = SessionStore::new(directory.0.clone());
