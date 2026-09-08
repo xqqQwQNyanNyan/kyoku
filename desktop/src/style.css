@@ -2144,3 +2144,34 @@ button.session-location:hover {
   display: block;
   margin-top: 4px;
 }
+
+.storage-settings input[readonly] {
+  color: inherit;
+  text-overflow: ellipsis;
+}
+.storage-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0 20px;
+}
+.storage-destination {
+  border-top: 1px solid var(--line);
+  padding-top: 18px;
+}
+.storage-destination > button {
+  margin: 14px 0;
+}
+.storage-help {
+  display: block;
+  margin-top: 16px;
+}
+.storage-progress progress {
+  display: block;
+  width: 100%;
+  accent-color: var(--gold);
+  margin: 10px 0;
+}
+.settings-footer[hidden] {
+  display: none;
+}

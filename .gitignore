@@ -37,10 +37,12 @@ Icon?
 /mortal/models/*.part
 /docs/*
 !/docs/majsoul-service.md
+!/docs/windows-release.md
 !/docs/analysis/
 /docs/analysis/*
 !/docs/analysis/design.md
 !/docs/analysis/algorithm.md
+!/docs/analysis/mahjong-knowledge.md
 /fixtures/*
 !/fixtures/tenhou/
 /fixtures/tenhou/*

@@ -6,8 +6,12 @@ const toolLabels: Record<string, string> = {
   get_review: '读取局面证据',
   compare_discards: '比较候选切牌',
   compare_improvements: '比较后续改良',
-  compare_discard_facts: '比较切牌取舍',
-  analyze_hand: '分析手牌与打点',
+  compare_discard_safety: '比较切牌防守',
+  analyze_discard_followup: '核验指定摸切',
+  analyze_waits: '分析待牌与打点',
+  analyze_action_details: '展开指定动作',
+  analyze_yaku_progression: '分析役种推进牌',
+  analyze_hand: '分析手牌与进张',
   analyze_yaku_route: '分析役种路线',
   analyze_defense: '检查防守依据',
   analyze_actions: '分析吃碰杠与立直',
@@ -34,11 +38,13 @@ export function QuestionStatus({
   const stage = progress?.stage;
   const label = progress?.stopping
     ? '正在停止…'
-    : stage?.phase === 'model'
-      ? `正在等待模型 · 第 ${stage.request} 次请求`
-      : stage?.phase === 'tool'
-        ? `${toolLabels[stage.name] ?? '正在执行分析工具'}…`
-        : '正在准备局面…';
+    : stage?.phase === 'verifying'
+      ? `正在核查答案 · 第 ${stage.request} 次请求`
+      : stage?.phase === 'model'
+        ? `正在等待模型 · 第 ${stage.request} 次请求`
+        : stage?.phase === 'tool'
+          ? `${toolLabels[stage.name] ?? '正在执行分析工具'}…`
+          : '正在准备局面…';
   const seconds = progress ? Math.max(0, Math.floor((now - progress.startedAt) / 1000)) : 0;
   const elapsed =
     seconds < 60 ? `${seconds} 秒` : `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;

@@ -29,7 +29,7 @@ fn chat_answer(text: &str) -> String {
 #[test]
 fn switching_context_preserves_history_and_scopes_tool_results_in_both_protocols() {
     let (first, next) = contexts();
-    let comparison_answer = "之前和当前观察玩家的手牌分别来自各自的快照。";
+    let comparison_answer = "当前观察玩家的手牌来自当前快照。";
     for chat in [false, true] {
         let responses = if chat {
             vec![
@@ -68,11 +68,11 @@ fn switching_context_preserves_history_and_scopes_tool_results_in_both_protocols
             options: Default::default(),
         };
         let mut session = AgentSession::with_context(&first, &config).unwrap();
-        session.ask("看看这里的点差").unwrap();
+        session.ask_draft("看看这里的点差").unwrap();
         let original_history = session.history.clone();
         session.set_context(&next);
-        let answer = session.ask("换到这里，和刚才的手牌相比呢？").unwrap();
-        assert!(answer.contains("之前和当前"));
+        let answer = session.ask_draft("换到这里，看看当前的手牌呢？").unwrap();
+        assert!(answer.contains("当前观察玩家"));
         assert_eq!(
             &session.history[..original_history.len()],
             original_history.as_slice()
@@ -106,7 +106,7 @@ fn switching_context_preserves_history_and_scopes_tool_results_in_both_protocols
         assert_eq!(saved["turns"][1]["evidence"]["event_index"], 4);
         assert_eq!(saved["turns"][1]["evidence"]["player"], 1);
         let mut restored = AgentSession::from_archive(&archive, &config).unwrap();
-        restored.ask("继续").unwrap();
+        restored.ask_draft("继续").unwrap();
         assert_eq!(
             restored.history.iter().filter_map(context_evidence).count(),
             2
@@ -118,8 +118,10 @@ fn switching_context_preserves_history_and_scopes_tool_results_in_both_protocols
         } else {
             &requests[4]["input"]
         };
-        assert!(final_input.to_string().contains("看看这里的点差"));
+        assert!(!final_input.to_string().contains("看看这里的点差"));
         assert!(final_input.to_string().contains("换到这里"));
+        assert!(!final_input.to_string().contains("old-score"));
+        assert!(saved["history"].to_string().contains("old-score"));
         // 重算校验必须在各自快照中执行，不能拿当前玩家校验之前的点差工具。
         let mut tampered = saved;
         let history = tampered["history"].as_array_mut().unwrap();
@@ -147,10 +149,10 @@ fn failed_context_change_survives_restart_without_polluting_accepted_history() {
         options: Default::default(),
     };
     let mut session = AgentSession::with_context(&first, &config).unwrap();
-    session.ask("第一处").unwrap();
+    session.ask_draft("第一处").unwrap();
     let accepted = session.history.clone();
     session.set_context(&next);
-    assert!(session.ask("第二处失败").is_err());
+    assert!(session.ask_draft("第二处失败").is_err());
     assert_eq!(session.history, accepted);
     let archive =
         SessionArchive::from_json(&serde_json::to_string(session.archive()).unwrap()).unwrap();
@@ -159,7 +161,7 @@ fn failed_context_change_survives_restart_without_polluting_accepted_history() {
     assert_eq!(context.evidence(), next.evidence());
     assert!(archive.failed_turn_context(0).is_none());
     let mut restored = AgentSession::from_archive(&archive, &config).unwrap();
-    restored.ask(question).unwrap();
+    restored.ask_draft(question).unwrap();
     assert_eq!(
         restored.history.iter().filter_map(context_evidence).count(),
         2
@@ -197,7 +199,7 @@ fn analysis_arriving_at_the_same_event_creates_a_new_snapshot() {
         "分析后",
         |input, _| {
             assert_eq!(
-                context_evidence(&input[input.len() - 2]).unwrap()["analysis_status"],
+                context_evidence(&input[0]).unwrap()["analysis_status"],
                 "available"
             );
             Ok(response(vec![message("已更新快照")]))

@@ -2,12 +2,43 @@
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Channel } from '@tauri-apps/api/core';
-import type { QuestionProgress } from './types';
+import type { MigrationProgress, QuestionProgress } from './types';
 import { bridge, errorMessage } from './bridge';
 
 afterEach(clearMocks);
 
 describe('桌面通信', () => {
+  it('数据迁移传递 Windows 原路径、编号和进度，取消对应同一次迁移', async () => {
+    const directory = 'D:\\复盘资料\\Kyoku';
+    const progress = vi.fn();
+    const calls: string[] = [];
+    mockIPC((command, args) => {
+      calls.push(command);
+      if (command === 'migrate_data') {
+        if (!args || !('onProgress' in args)) throw new Error('缺少迁移进度通道');
+        expect(args).toEqual({
+          directory,
+          requestId: 'migration-one',
+          onProgress: expect.any(Channel),
+        });
+        (args.onProgress as Channel<MigrationProgress>).onmessage({
+          copied_files: 1,
+          total_files: 2,
+          copied_bytes: 100,
+          total_bytes: 200,
+        });
+        return { directory, available: true };
+      }
+      expect(args).toEqual({ requestId: 'migration-one' });
+    });
+    expect(await bridge.migrateData(directory, 'migration-one', progress)).toEqual({
+      directory,
+      available: true,
+    });
+    await bridge.cancelDataMigration('migration-one');
+    expect(progress).toHaveBeenCalledOnce();
+    expect(calls).toEqual(['migrate_data', 'cancel_data_migration']);
+  });
   it('新问题、续聊和重试都传递本轮编号与进度通道，停止使用同一编号', async () => {
     const progress = vi.fn();
     const run = { requestId: 'request-one', onProgress: progress };

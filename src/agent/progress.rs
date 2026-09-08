@@ -18,6 +18,8 @@ pub enum QuestionProgress {
     },
     /// 正在等待本轮第几次模型请求。
     Model { request: usize },
+    /// 草稿已完成，正在进行独立核查；此次请求也计入本轮用量。
+    Verifying { request: usize },
     /// 正在执行模型选择的本地工具。
     Tool { name: String },
 }

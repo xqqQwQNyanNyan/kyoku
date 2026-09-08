@@ -16,6 +16,7 @@ mod evidence;
 mod options;
 mod position;
 mod progress;
+mod request_context;
 mod usage;
 pub use options::{ChatTokenLimit, ModelOptions, Thinking, TokenPrices};
 pub use usage::RequestUsage;
@@ -23,6 +24,7 @@ pub use usage::RequestUsage;
 mod progress_tests;
 mod session;
 mod strategy;
+mod verification;
 
 pub use progress::{QuestionControl, QuestionProgress};
 pub use session::{SessionArchive, SessionFormatError};
@@ -38,6 +40,16 @@ const MAX_QUESTION_BYTES: usize = 16 * 1024;
 enum RequestMode {
     ReviewProbe,
     Analysis,
+    Verification,
+}
+
+impl RequestMode {
+    fn instructions(self) -> &'static str {
+        match self {
+            Self::Verification => verification::INSTRUCTIONS,
+            _ => INSTRUCTIONS,
+        }
+    }
 }
 
 /// 固定事件的可见证据；可从已有分析或只回放牌谱建立，不要求运行 Mortal。
@@ -228,6 +240,10 @@ pub enum AgentError {
     InvalidResponse {
         reason: &'static str,
     },
+    /// 独立核查未完成，原草稿不会作为最终回答交付。
+    VerificationFailed {
+        source: Box<AgentError>,
+    },
     Refused,
     IncompleteResponse,
     /// 服务明确报告输出额度耗尽，不能把截断内容作为完整答案。
@@ -302,6 +318,9 @@ impl fmt::Display for AgentError {
             Self::InvalidResponse { reason } => {
                 write!(f, "invalid LLM API response: {reason}")
             }
+            Self::VerificationFailed { source } => {
+                write!(f, "答案核查未完成，草稿未作为回答展示：{source}")
+            }
             Self::Refused => write!(f, "LLM declined this request"),
             Self::IncompleteResponse => write!(
                 f,
@@ -325,7 +344,14 @@ impl fmt::Display for AgentError {
     }
 }
 
-impl Error for AgentError {}
+impl Error for AgentError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::VerificationFailed { source } => Some(source.as_ref()),
+            _ => None,
+        }
+    }
+}
 
 /// 只持有可见复盘证据与内存对话的会话，不持有完整牌谱或 Mortal 进程。
 ///
@@ -373,7 +399,7 @@ impl AgentSession {
         }
     }
 
-    /// 提问或追问。首次或局面改变后直接附带证据，最多请求模型十次。
+    /// 提问或追问。取证最多请求模型十次，草稿生成后另作一次独立核查。
     pub fn ask(&mut self, question: &str) -> Result<String, AgentError> {
         self.ask_with_control(question, &QuestionControl::default())
     }
@@ -383,6 +409,30 @@ impl AgentSession {
         &mut self,
         question: &str,
         control: &QuestionControl,
+    ) -> Result<String, AgentError> {
+        self.ask_internal(question, control, true)
+    }
+
+    // 既有协议测试单独覆盖草稿阶段；正式入口始终启用核查。
+    #[cfg(test)]
+    fn ask_draft(&mut self, question: &str) -> Result<String, AgentError> {
+        self.ask_internal(question, &QuestionControl::default(), false)
+    }
+
+    #[cfg(test)]
+    fn ask_draft_with_control(
+        &mut self,
+        question: &str,
+        control: &QuestionControl,
+    ) -> Result<String, AgentError> {
+        self.ask_internal(question, control, false)
+    }
+
+    fn ask_internal(
+        &mut self,
+        question: &str,
+        control: &QuestionControl,
+        verify: bool,
     ) -> Result<String, AgentError> {
         if serde_json::to_vec(&self.archive)
             .map_err(|_| AgentError::HistoryLimit)?
@@ -402,6 +452,21 @@ impl AgentSession {
             &mut trace,
             control,
         );
+        let result = result.and_then(|(draft, history)| {
+            if verify {
+                verification::finish(
+                    &self.evidence,
+                    question,
+                    draft,
+                    history,
+                    &mut trace,
+                    |input, mode| self.client.respond_with_control(input, mode, control),
+                    control,
+                )
+            } else {
+                Ok((draft, history))
+            }
+        });
         match result {
             Ok((answer, history)) => {
                 self.history = history;
@@ -551,8 +616,9 @@ fn answer_controlled(
         if json!(trace).to_string().len() > 8 * 1024 * 1024 {
             return Err(AgentError::HistoryLimit);
         }
-        trace.push(json!({"kind": "request", "input": staged, "needs_evidence": !has_evidence}));
-        let response = respond(&staged, RequestMode::Analysis)?;
+        let input = request_context::prepare(&staged);
+        trace.push(json!({"kind": "request", "input": input, "needs_evidence": !has_evidence}));
+        let response = respond(&input, RequestMode::Analysis)?;
         trace.push(json!({"kind": "response", "output": response}));
         control.check()?;
         if response["status"] != "completed" {

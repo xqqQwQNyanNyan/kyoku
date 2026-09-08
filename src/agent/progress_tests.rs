@@ -76,7 +76,7 @@ fn cancellation_before_network_keeps_the_question_without_changing_accepted_hist
     let control = QuestionControl::default();
     control.cancel();
     assert!(matches!(
-        session.ask_with_control("停止的问题", &control),
+        session.ask_draft_with_control("停止的问题", &control),
         Err(AgentError::Cancelled)
     ));
     let archive = serde_json::to_value(session.archive()).unwrap();
@@ -120,7 +120,7 @@ fn stopping_interrupts_waiting_for_headers_and_body_in_both_protocols() {
                         .unwrap();
                 }
                 ready_tx.send(()).unwrap();
-                // 请求停止后连接必须关闭，不能继续等原来的 120 秒超时。
+                // 请求停止后连接必须关闭，不能继续等完整的 5 分钟超时。
                 let closed = stream.read(&mut [0]);
                 assert!(
                     matches!(closed, Ok(0))
@@ -140,7 +140,7 @@ fn stopping_interrupts_waiting_for_headers_and_body_in_both_protocols() {
                     options: Default::default(),
                 };
                 let mut session = AgentSession::with_context(&context(), &config).unwrap();
-                let result = session.ask_with_control("等待中的问题", &worker_control);
+                let result = session.ask_draft_with_control("等待中的问题", &worker_control);
                 assert!(matches!(result, Err(AgentError::Cancelled)));
                 let archive = serde_json::to_value(session.archive()).unwrap();
                 assert_eq!(archive["history"], json!([]));

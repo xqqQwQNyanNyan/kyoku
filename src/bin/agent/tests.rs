@@ -151,8 +151,8 @@ fn browse_questions_reset_history_on_switch_but_keep_it_on_invalid_selection() {
     let handle = thread::spawn(move || {
         let answer = json!({"status":"completed","output":[{"type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":json!({"sections":[{"source":"limitation","text":"当前证据不足。","facts":[]}]}).to_string()}]}]}).to_string();
         let mut requests = Vec::<Value>::new();
-        // 首问和追问均可直接回答，切换时只保留新局面证据。
-        for body in [&answer; 4] {
+        // 每轮包含草稿和独立核查；检查取证请求的局面切换。
+        for body in [&answer; 8] {
             let deadline = Instant::now() + Duration::from_secs(10);
             let mut stream = loop {
                 match listener.accept() {
@@ -199,11 +199,12 @@ fn browse_questions_reset_history_on_switch_but_keep_it_on_invalid_selection() {
         &b"first-position-question\n/select 999\n/select 2\nfollow-up\n/next\nsecond-position-question\n/prev\nreturn-question\n/quit\n"[..],
         Vec::new(), Vec::new(), false).unwrap();
     let requests = handle.join().unwrap();
-    assert_eq!(requests.len(), 4);
+    assert_eq!(requests.len(), 8);
+    let requests: Vec<_> = requests.into_iter().step_by(2).collect();
     assert_eq!(requests[1]["tool_choice"], "auto");
     assert!(requests[1].to_string().contains("first-position-question"));
     for (first, event_index) in [(0, 2), (2, 12), (3, 2)] {
-        assert_eq!(requests[first]["input"].as_array().unwrap().len(), 2);
+        assert_eq!(requests[first]["input"].as_array().unwrap().len(), 3);
         assert_eq!(requests[first]["tool_choice"], "auto");
         assert!(requests[first]["tools"].as_array().unwrap().len() > 1);
         let content = requests[first]["input"][0]["content"]

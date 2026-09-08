@@ -78,6 +78,7 @@ fn replay_fact_sweep() {
                 .unwrap()
                 .evidence()
                 .clone();
+            evidence["analysis_status"] = json!("available");
             let snapshot = position::Snapshot::read(&evidence).unwrap();
             let mut choices = snapshot.hand.concealed().to_vec();
             choices.dedup();
@@ -102,8 +103,7 @@ fn replay_fact_sweep() {
             for draw in [None, draw] {
                 let args = json!({"first":first,"second":second,"draw":draw});
                 let start = Instant::now();
-                let result =
-                    strategy::execute("compare_discard_facts", &evidence, &args.to_string());
+                let result = comparison::execute(&evidence, &args.to_string());
                 let elapsed = start.elapsed().as_secs_f64() * 1000.0;
                 if result["ok"] != true {
                     failures.push(json!({"replay":path,"event":event,"result":result}));
@@ -167,7 +167,7 @@ fn live_replay_fact_comparisons() {
             let review = crate::review::review_at(&events, player, event, &config).unwrap();
             review_evidence(&review)
         };
-        let mut history = Vec::new();
+        let mut history = case["history"].as_array().cloned().unwrap_or_default();
         for (question_index, question) in case["questions"].as_array().unwrap().iter().enumerate() {
             let question = question.as_str().unwrap();
             eprintln!("开始 {label} 问题{}：{question}", question_index + 1);

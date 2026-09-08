@@ -10,6 +10,114 @@ use crate::{
 use serde_json::{Value, json};
 
 pub(super) fn analyze(snapshot: &Snapshot, evidence: &Value) -> Result<Value, ToolError> {
+    analyze_selected(snapshot, evidence, None)
+}
+
+struct Selection<'a> {
+    action: &'a str,
+    variant: Option<&'a str>,
+    discard: Option<&'a str>,
+    draw: Option<Tile>,
+}
+
+pub(super) fn detail(
+    snapshot: &Snapshot,
+    evidence: &Value,
+    args: &Value,
+) -> Result<(String, Value), ToolError> {
+    let optional = |key: &str| -> Result<Option<&str>, ToolError> {
+        if args[key].is_null() {
+            Ok(None)
+        } else {
+            args[key]
+                .as_str()
+                .map(Some)
+                .ok_or_else(super::invalid_arguments)
+        }
+    };
+    let action = args["action"]
+        .as_str()
+        .ok_or_else(super::invalid_arguments)?;
+    let variant = optional("variant")?;
+    let discard = optional("discard")?;
+    let draw = optional("draw")?
+        .map(|name| {
+            parse_tile(name)
+                .filter(|t| !t.is_aka())
+                .ok_or_else(super::invalid_arguments)
+        })
+        .transpose()?;
+    let valid = match action {
+        "pass" => variant.is_none() && discard.is_none() && draw.is_none(),
+        "riichi" => variant.is_none() && discard.is_some() && draw.is_none(),
+        "chi_low" | "chi_middle" | "chi_high" | "pon" => {
+            variant.is_some() && discard.is_some() && draw.is_none()
+        }
+        "kan" => variant.is_some() && discard.is_none(),
+        _ => false,
+    };
+    if !valid {
+        return Err(("invalid_arguments", "过牌不带分支；立直指定discard；吃碰指定variant和discard；杠指定variant，可用draw查看一张岭上牌。".into()));
+    }
+    if draw.is_some_and(|t| snapshot.unseen[t.kind().as_u8() as usize] == 0) {
+        return Err(("exhausted_draw", "指定摸牌已无不可见副本。".into()));
+    }
+    let selected = Selection {
+        action,
+        variant,
+        discard,
+        draw,
+    };
+    let all = analyze_selected(snapshot, evidence, Some(&selected))?;
+    let result = match action {
+        "pass" => &all["pass"],
+        "riichi" => &all["riichi"]["by_discard"][discard.unwrap()],
+        "kan" => &all["kan"]["variants"][variant.unwrap()],
+        _ => &all[action]["variants"][variant.unwrap()]["next_discards"][discard.unwrap()],
+    };
+    if result.is_null() {
+        return Err((
+            "candidate_not_provided",
+            "请从analyze_actions返回的动作、variant和切牌中选择；禁止食替的切牌不能展开。".into(),
+        ));
+    }
+    Ok((
+        format!(
+            "action_{}_{}_{}_{}",
+            action,
+            variant.unwrap_or("none"),
+            discard.unwrap_or("none"),
+            draw.map(format_tile).unwrap_or_else(|| "none".into())
+        ),
+        json!({"action":action,"variant":variant,"discard":discard,"draw":draw.map(format_tile),"result":result}),
+    ))
+}
+
+fn discard_report(
+    snapshot: &Snapshot,
+    hand: &Hand,
+    discard: Tile,
+    can_riichi: bool,
+    detail: bool,
+) -> Result<Value, ToolError> {
+    if detail {
+        return super::hand::report(snapshot, hand, Some(discard), can_riichi);
+    }
+    let efficiency = super::hand::efficiency(hand, &snapshot.unseen)?;
+    let closed = hand.melds().iter().all(|m| !m.is_open());
+    Ok(
+        json!({"shanten":efficiency["shanten"],"total_unseen":efficiency["total_unseen"],"closed":closed,
+        "can_declare_riichi_under_current_conditions":can_riichi && closed && efficiency["shanten"]==0
+            && snapshot.position.players[snapshot.player].riichi=="not_declared"
+            && snapshot.position.players[snapshot.player].score >= 1000 && snapshot.position.remaining_draws >= 4}),
+    )
+}
+
+fn analyze_selected(
+    snapshot: &Snapshot,
+    evidence: &Value,
+    selection: Option<&Selection<'_>>,
+) -> Result<Value, ToolError> {
     if evidence["mortal"]["status"] != "available" {
         return Err((
             "analysis_unavailable",
@@ -21,26 +129,32 @@ pub(super) fn analyze(snapshot: &Snapshot, evidence: &Value) -> Result<Value, To
         .ok_or_else(bad_position)?;
     let defense = super::defense::analyze(snapshot)?;
     let offered = |kind: &str| candidates.iter().any(|c| c["action"]["kind"] == kind);
+    let wanted = |kind: &str| offered(kind) && selection.is_none_or(|s| s.action == kind);
     let mut result = serde_json::Map::new();
     let phase = &snapshot.position.phase;
-    if offered("pass") && snapshot.hand.effective_tile_count() == 13 {
+    if wanted("pass") && snapshot.hand.effective_tile_count() == 13 {
         let mut report = pass_report(snapshot, evidence, offered("win"))?;
         report["structure"] = super::facts::structure(&snapshot.hand);
         report["safe_inventory"] = super::facts::inventory(snapshot, &snapshot.hand, &defense, &[]);
         result.insert("pass".into(), report);
     }
-    if offered("riichi") && phase["kind"] == "after_draw" && phase["player"] == snapshot.player {
+    if wanted("riichi") && phase["kind"] == "after_draw" && phase["player"] == snapshot.player {
         let mut discards = serde_json::Map::new();
         for candidate in evidence["discards"].as_array().into_iter().flatten() {
             let name = candidate["discard"].as_str().ok_or_else(bad_position)?;
+            if selection.is_some_and(|s| s.discard != Some(name)) {
+                continue;
+            }
             let tile = snapshot.require_discard(evidence, name)?;
             let mut hand = snapshot.hand.clone();
             hand.discard(tile).map_err(|_| bad_position())?;
             if hand_shanten(&hand) != 0 {
                 continue;
             }
-            let mut report = super::hand::report(snapshot, &hand, Some(tile), true)?;
-            report["safe_inventory"] = super::facts::inventory(snapshot, &hand, &defense, &[]);
+            let mut report = discard_report(snapshot, &hand, tile, true, selection.is_some())?;
+            if selection.is_some() {
+                report["safe_inventory"] = super::facts::inventory(snapshot, &hand, &defense, &[]);
+            }
             if report["can_declare_riichi_under_current_conditions"] == true {
                 discards.insert(name.into(), report);
             }
@@ -66,7 +180,7 @@ pub(super) fn analyze(snapshot: &Snapshot, evidence: &Value) -> Result<Value, To
             .ok_or_else(bad_position)?;
         let from_player = PlayerIndex::new(from as u8).unwrap();
         for kind in ["chi_low", "chi_middle", "chi_high", "pon"] {
-            if !offered(kind) {
+            if !wanted(kind) {
                 continue;
             }
             if snapshot.position.remaining_draws == 0
@@ -103,6 +217,9 @@ pub(super) fn analyze(snapshot: &Snapshot, evidence: &Value) -> Result<Value, To
                         continue;
                     }
                     let key = consumed.map(format_tile).join("_");
+                    if selection.is_some_and(|s| s.variant != Some(key.as_str())) {
+                        continue;
+                    }
                     if variants.contains_key(&key) {
                         continue;
                     }
@@ -115,12 +232,19 @@ pub(super) fn analyze(snapshot: &Snapshot, evidence: &Value) -> Result<Value, To
                             forbidden.push(format_tile(tile));
                             continue;
                         }
+                        if selection.is_some_and(|s| s.discard != Some(format_tile(tile).as_str()))
+                        {
+                            continue;
+                        }
                         let mut after = hand.clone();
                         after.discard(tile).map_err(|_| bad_position())?;
-                        let mut report = super::hand::report(snapshot, &after, Some(tile), false)?;
-                        report["safe_inventory"] =
-                            super::facts::inventory(snapshot, &after, &defense, &[]);
-                        report["structure"] = super::facts::structure(&after);
+                        let mut report =
+                            discard_report(snapshot, &after, tile, false, selection.is_some())?;
+                        if selection.is_some() {
+                            report["safe_inventory"] =
+                                super::facts::inventory(snapshot, &after, &defense, &[]);
+                            report["structure"] = super::facts::structure(&after);
+                        }
                         discards.insert(format_tile(tile), report);
                     }
                     // 没有合法切牌的消耗组合不能作为可执行变体返回。
@@ -133,7 +257,7 @@ pub(super) fn analyze(snapshot: &Snapshot, evidence: &Value) -> Result<Value, To
             }
             result.insert(kind.into(), json!({"variants":variants}));
         }
-        if offered("kan") {
+        if wanted("kan") {
             let matching: Vec<_> = snapshot
                 .hand
                 .concealed()
@@ -141,15 +265,16 @@ pub(super) fn analyze(snapshot: &Snapshot, evidence: &Value) -> Result<Value, To
                 .filter(|t| t.kind() == called.kind())
                 .copied()
                 .collect();
-            if let Ok(consumed) = <[Tile; 3]>::try_from(matching) {
+            if let Ok(consumed) = <[Tile; 3]>::try_from(matching)
+                && selection.is_none_or(|s| s.variant == Some("daiminkan"))
+            {
                 let mut hand = snapshot.hand.clone();
                 hand.daiminkan(called, from_player, consumed)
                     .map_err(|_| bad_position())?;
-                result.insert("kan".into(),json!({"variants":{"daiminkan":kan_report(snapshot,&hand,"daiminkan",&consumed)?}}));
+                result.insert("kan".into(),json!({"variants":{"daiminkan":kan_report(snapshot,&hand,"daiminkan",&consumed,selection.and_then(|s|s.draw))?}}));
             }
         }
-    } else if offered("kan") && phase["kind"] == "after_draw" && phase["player"] == snapshot.player
-    {
+    } else if wanted("kan") && phase["kind"] == "after_draw" && phase["player"] == snapshot.player {
         let decision = &evidence["mortal"]["decision"];
         let mut allowed = Vec::new();
         for candidate in decision["kan_candidates"].as_array().into_iter().flatten() {
@@ -182,24 +307,43 @@ pub(super) fn analyze(snapshot: &Snapshot, evidence: &Value) -> Result<Value, To
                 .filter(|t| t.kind() == kind)
                 .copied()
                 .collect();
-            if let Ok(consumed) = <[Tile; 4]>::try_from(matching.clone()) {
+            if let Ok(consumed) = <[Tile; 4]>::try_from(matching.clone())
+                && selection.is_none_or(|s| {
+                    s.variant == Some(format!("ankan_{}", kind_name(kind)).as_str())
+                })
+            {
                 let mut hand = snapshot.hand.clone();
                 hand.ankan(consumed).map_err(|_| bad_position())?;
                 variants.insert(
                     format!("ankan_{}", kind_name(kind)),
-                    kan_report(snapshot, &hand, "ankan", &consumed)?,
+                    kan_report(
+                        snapshot,
+                        &hand,
+                        "ankan",
+                        &consumed,
+                        selection.and_then(|s| s.draw),
+                    )?,
                 );
             }
             for meld in snapshot.hand.melds() {
                 if let Meld::Pon { tiles, .. } = meld
                     && tiles[0].kind() == kind
                     && let Some(&added) = matching.first()
+                    && selection.is_none_or(|s| {
+                        s.variant == Some(format!("kakan_{}", kind_name(kind)).as_str())
+                    })
                 {
                     let mut hand = snapshot.hand.clone();
                     hand.kakan(added, *tiles).map_err(|_| bad_position())?;
                     variants.insert(
                         format!("kakan_{}", kind_name(kind)),
-                        kan_report(snapshot, &hand, "kakan", &[added])?,
+                        kan_report(
+                            snapshot,
+                            &hand,
+                            "kakan",
+                            &[added],
+                            selection.and_then(|s| s.draw),
+                        )?,
                     );
                 }
             }
@@ -225,58 +369,7 @@ pub(super) fn analyze(snapshot: &Snapshot, evidence: &Value) -> Result<Value, To
         "safe_inventory_before_action".into(),
         super::facts::inventory(snapshot, &snapshot.hand, &defense, &[]),
     );
-    if let Some(comparison) = call_comparison(snapshot, &result, &defense) {
-        result.insert("call_comparison".into(), comparison);
-    }
     Ok(Value::Object(result))
-}
-
-// 将实际摸切后的结果并列，避免解释时把碰后未切牌与过牌的手牌、安牌数量混在一起。
-fn call_comparison(
-    snapshot: &Snapshot,
-    actions: &serde_json::Map<String, Value>,
-    defense: &Value,
-) -> Option<Value> {
-    let pass = actions.get("pass")?;
-    let mut choices = Vec::new();
-    for action in ["chi_low", "chi_middle", "chi_high", "pon"] {
-        let Some(variants) = actions
-            .get(action)
-            .and_then(|value| value["variants"].as_object())
-        else {
-            continue;
-        };
-        for variant in variants.values() {
-            for (discard, hand) in variant["next_discards"].as_object()? {
-                choices.push(json!({"action":action,"consumed":variant["consumed"],
-                    "discard":discard,"shanten":hand["shanten"],"closed":hand["closed"],
-                    "concealed_count_after_discard":hand["concealed_after"].as_array()?.len(),
-                    "known_safe_tiles_by_player":hand["safe_inventory"]["by_player"]}));
-            }
-        }
-    }
-    if choices.is_empty() {
-        return None;
-    }
-    let opponents: serde_json::Map<_, _> = (0..4)
-        .filter(|&player| player != snapshot.player)
-        .map(|player| {
-            let facts = &defense["opponents"][player.to_string()];
-            (
-                player.to_string(),
-                json!({"riichi":facts["riichi"],
-                "open_meld_count":facts["open_meld_count"],
-                "riichi_blocked_by_open_melds":facts["riichi_blocked_by_open_melds"]}),
-            )
-        })
-        .collect();
-    Some(
-        json!({"pass":{"shanten":pass["shanten"],"closed":pass["closed"],
-        "concealed_count":snapshot.hand.concealed().len(),
-        "structure":pass["structure"],"known_safe_tiles_by_player":pass["safe_inventory"]["by_player"]},
-        "after_call_and_discard":choices,"opponents":opponents,
-        "scope":{"safe_tiles_are_opponent_specific":true,"does_not_compare_future_defense_or_overall_value":true}}),
-    )
 }
 
 fn pass_report(snapshot: &Snapshot, evidence: &Value, can_ron: bool) -> Result<Value, ToolError> {
@@ -389,14 +482,15 @@ fn kan_report(
     hand: &Hand,
     kind: &str,
     consumed: &[Tile],
+    selected_draw: Option<Tile>,
 ) -> Result<Value, ToolError> {
     if snapshot.position.remaining_draws == 0 {
         return Err(("unsupported_state", "牌山耗尽后不能模拟岭上摸牌。".into()));
     }
     let mut draws = serde_json::Map::new();
     let locked = snapshot.position.players[snapshot.player].riichi == "accepted";
-    for draw in (0..34u8).filter(|&k| snapshot.unseen[k as usize] > 0) {
-        let tile = Tile::new(draw).unwrap();
+    if let Some(tile) = selected_draw {
+        let draw = tile.kind().as_u8();
         let mut complete = hand.clone();
         complete.draw(tile).map_err(|_| bad_position())?;
         let completed = hand_shanten(&complete) == -1;
@@ -427,7 +521,7 @@ fn kan_report(
         json!({"kind":kind,"consumed":consumed.iter().copied().map(format_tile).collect::<Vec<_>>(),
         "concealed_after":hand.concealed().iter().copied().map(format_tile).collect::<Vec<_>>(),
         "closed_after":hand.melds().iter().all(|m|!m.is_open()),"shanten_before_replacement":hand_shanten(hand),
-        "replacement_draws":draws,"scope":{"new_dora_and_ura_unknown":true,"shape_only":true,
+        "replacement_draws":draws,"replacement_draws_expanded":selected_draw.is_some(),"scope":{"new_dora_and_ura_unknown":true,"shape_only":true,
             "no_robbing_kan_risk_estimate":true,"unseen_is_not_rinshan_probability":true,"riichi_draw_discard_lock":locked}}),
     )
 }

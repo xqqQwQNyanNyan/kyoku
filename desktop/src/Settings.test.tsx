@@ -23,6 +23,10 @@ function api(): Bridge {
     renameReplay: vi.fn(),
     openReplay: vi.fn().mockResolvedValue(undefined),
     openDataDirectory: vi.fn().mockResolvedValue(undefined),
+    getStorage: vi.fn().mockResolvedValue({ directory: '/data/kyoku', available: true }),
+    chooseDataDirectory: vi.fn().mockResolvedValue(null),
+    migrateData: vi.fn(),
+    cancelDataMigration: vi.fn().mockResolvedValue(undefined),
     importLink: vi.fn(),
     majsoulStatus: vi.fn().mockResolvedValue(false),
     loginMajsoul: vi.fn(),
@@ -213,7 +217,88 @@ it('标签页支持键盘切换，草稿和统一保存操作始终保留', asyn
   expect(document.querySelector('select')).toBeNull();
   expect(screen.getByRole('button', { name: '保存设置' })).toBeTruthy();
   await userEvent.keyboard('{End}');
-  expect(screen.getByRole('tabpanel').getAttribute('id')).toBe('settings-panel-runtime');
+  expect(screen.getByRole('tabpanel').getAttribute('id')).toBe('settings-panel-storage');
   await userEvent.keyboard('{Home}');
   expect((screen.getByLabelText('模型名') as HTMLInputElement).value).toBe('draft-model');
+});
+
+it('数据目录独立于问答配置，选择取消不迁移，完成后显示新位置', async () => {
+  const bridge = api();
+  vi.mocked(bridge.getSettings).mockRejectedValue(new Error('问答配置损坏'));
+  render(<SettingsPanel api={bridge} onClose={vi.fn()} />);
+  await userEvent.click(screen.getByRole('tab', { name: '数据保存' }));
+  await waitFor(() =>
+    expect((screen.getByLabelText('当前保存位置') as HTMLInputElement).value).toBe('/data/kyoku'),
+  );
+  expect(screen.queryByRole('button', { name: '保存设置' })).toBeNull();
+  await userEvent.click(screen.getByRole('button', { name: '选择新位置…' }));
+  expect(bridge.migrateData).not.toHaveBeenCalled();
+  vi.mocked(bridge.chooseDataDirectory).mockResolvedValue('D:\\复盘资料\\Kyoku');
+  vi.mocked(bridge.migrateData).mockResolvedValue({
+    directory: 'D:\\复盘资料\\Kyoku',
+    available: true,
+  });
+  await userEvent.click(screen.getByRole('button', { name: '选择新位置…' }));
+  expect((screen.getByLabelText('新的保存位置') as HTMLInputElement).value).toBe(
+    'D:\\复盘资料\\Kyoku',
+  );
+  expect(bridge.migrateData).not.toHaveBeenCalled();
+  await userEvent.click(screen.getByRole('button', { name: '迁移并使用此位置' }));
+  await screen.findByText('保存位置已切换，后续牌谱和对话会写入新目录。原目录副本已保留。');
+  expect((screen.getByLabelText('当前保存位置') as HTMLInputElement).value).toBe(
+    'D:\\复盘资料\\Kyoku',
+  );
+  expect(bridge.saveSettings).not.toHaveBeenCalled();
+});
+
+it('迁移期间显示进度并可取消，失败时保留原位置和待选目录', async () => {
+  const bridge = api();
+  const close = vi.fn();
+  vi.mocked(bridge.chooseDataDirectory).mockResolvedValue('/new/location');
+  let rejectMove: (e: Error) => void = () => {};
+  vi.mocked(bridge.migrateData).mockImplementation((_directory, _id, progress) => {
+    progress({ copied_files: 1, total_files: 5, copied_bytes: 100, total_bytes: 500 });
+    return new Promise((_resolve, reject) => {
+      rejectMove = reject;
+    });
+  });
+  render(<SettingsPanel api={bridge} onClose={close} />);
+  await userEvent.click(screen.getByRole('tab', { name: '数据保存' }));
+  await userEvent.click(screen.getByRole('button', { name: '选择新位置…' }));
+  await userEvent.click(screen.getByRole('button', { name: '迁移并使用此位置' }));
+  await screen.findByText('已复制 1 / 5 个文件');
+  expect(screen.getByRole('progressbar').getAttribute('max')).toBe('500');
+  expect((screen.getByRole('button', { name: '关闭设置' }) as HTMLButtonElement).disabled).toBe(
+    true,
+  );
+  await userEvent.click(screen.getByRole('button', { name: '关闭设置' }));
+  expect(close).not.toHaveBeenCalled();
+  await userEvent.click(screen.getByRole('button', { name: '取消迁移' }));
+  expect(bridge.cancelDataMigration).toHaveBeenCalledWith(
+    vi.mocked(bridge.migrateData).mock.calls[0][1],
+  );
+  rejectMove(new Error('迁移已取消，仍使用原数据目录'));
+  await screen.findByText('迁移已取消，仍使用原数据目录');
+  expect((screen.getByLabelText('当前保存位置') as HTMLInputElement).value).toBe('/data/kyoku');
+  expect((screen.getByLabelText('新的保存位置') as HTMLInputElement).value).toBe('/new/location');
+  expect(
+    (screen.getByRole('button', { name: '迁移并使用此位置' }) as HTMLButtonElement).disabled,
+  ).toBe(false);
+});
+
+it('自选磁盘不可用时说明原路径，不允许用空库替代', async () => {
+  const bridge = api();
+  vi.mocked(bridge.getStorage).mockResolvedValue({
+    directory: '/Volumes/离线盘/资料',
+    available: false,
+  });
+  render(<SettingsPanel api={bridge} onClose={vi.fn()} />);
+  await userEvent.click(screen.getByRole('tab', { name: '数据保存' }));
+  await screen.findByText(/数据目录不可用。请重新连接/);
+  expect((screen.getByRole('button', { name: '选择新位置…' }) as HTMLButtonElement).disabled).toBe(
+    true,
+  );
+  expect((screen.getByLabelText('当前保存位置') as HTMLInputElement).value).toBe(
+    '/Volumes/离线盘/资料',
+  );
 });

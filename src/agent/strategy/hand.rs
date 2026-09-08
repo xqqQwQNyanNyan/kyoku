@@ -70,8 +70,7 @@ pub(super) fn analyze(
     args: &Value,
 ) -> Result<(String, Value), ToolError> {
     let (hand, discard) = after_discard(snapshot, evidence, args)?;
-    let can_declare = discard.is_some() && snapshot.position.phase["kind"] == "after_draw";
-    let report = report(snapshot, &hand, discard, can_declare)?;
+    let report = shape(snapshot, &hand, discard)?;
     Ok((
         format!(
             "hand_{}",
@@ -81,10 +80,59 @@ pub(super) fn analyze(
     ))
 }
 
+pub(super) fn waits(
+    snapshot: &Snapshot,
+    evidence: &Value,
+    args: &Value,
+) -> Result<(String, Value), ToolError> {
+    let (hand, discard) = after_discard(snapshot, evidence, args)?;
+    Ok((
+        format!(
+            "waits_{}",
+            discard.map(format_tile).unwrap_or_else(|| "current".into())
+        ),
+        report(
+            snapshot,
+            &hand,
+            discard,
+            discard.is_some() && snapshot.position.phase["kind"] == "after_draw",
+        )?,
+    ))
+}
+
+pub(super) fn shape(
+    snapshot: &Snapshot,
+    hand: &Hand,
+    discard: Option<Tile>,
+) -> Result<Value, ToolError> {
+    let mut result = efficiency(hand, &snapshot.unseen)?;
+    let indicators = parse_tiles(&snapshot.position.dora_indicators)?;
+    let bonus = analysis::known_bonus(
+        hand.concealed()
+            .iter()
+            .chain(hand.melds().iter().flat_map(|m| m.tiles())),
+        &indicators,
+    );
+    result["discard"] = json!(discard.map(format_tile));
+    result["concealed_after"] = json!(
+        hand.concealed()
+            .iter()
+            .copied()
+            .map(format_tile)
+            .collect::<Vec<_>>()
+    );
+    result["closed"] = json!(hand.melds().iter().all(|m| !m.is_open()));
+    result["known_bonus"] = json!({"dora":bonus.dora,"aka_dora":bonus.aka_dora,"not_a_hand_value":true,
+        "dora_tiles":indicators.into_iter().map(analysis::dora_from_indicator).map(kind_name).collect::<Vec<_>>()});
+    result["structure"] = super::facts::structure(hand);
+    Ok(result)
+}
+
 pub(super) fn route(
     snapshot: &Snapshot,
     evidence: &Value,
     args: &Value,
+    expand: bool,
 ) -> Result<(String, Value), ToolError> {
     let (hand, discard) = after_discard(snapshot, evidence, args)?;
     let name = args["yaku"].as_str().ok_or_else(super::invalid_arguments)?;
@@ -93,7 +141,8 @@ pub(super) fn route(
         .find(|(n, _)| *n == name)
         .map(|(_, y)| *y)
         .ok_or_else(|| ("unsupported_yaku", "该役种尚未提供距离计算。".into()))?;
-    let expand = snapshot.position.players[snapshot.player].riichi == "not_declared"
+    let expand = expand
+        && snapshot.position.players[snapshot.player].riichi == "not_declared"
         && snapshot.position.remaining_draws > 0;
     let facts = analysis::route_facts::analyze(&hand, &snapshot.unseen, yaku, expand)
         .map_err(route_error)?;
@@ -132,24 +181,13 @@ pub(super) fn route(
         "is_completion_probability":false,"not_a_recommendation":true});
     Ok((
         format!(
-            "route_{}_{}",
+            "route_{}_{}_{}",
+            if expand { "progression" } else { "distance" },
             discard.map(format_tile).unwrap_or_else(|| "current".into()),
             name
         ),
         result,
     ))
-}
-
-pub(super) fn routes(hand: &Hand, unseen: &[u8; 34]) -> Result<Value, ToolError> {
-    ROUTES[..8]
-        .iter()
-        .map(|(name, yaku)| {
-            let facts =
-                analysis::route_facts::analyze(hand, unseen, *yaku, false).map_err(route_error)?;
-            Ok(((*name).to_owned(), route_distance(facts.distance)))
-        })
-        .collect::<Result<serde_json::Map<_, _>, _>>()
-        .map(Value::Object)
 }
 
 fn route_distance(distance: analysis::route_facts::RouteDistance) -> Value {
@@ -228,9 +266,6 @@ fn report_internal(
             .map(format_tile)
             .collect::<Vec<_>>()
     );
-    if continuation.is_none() {
-        result["routes"] = routes(hand, unseen)?;
-    }
     let closed = hand.melds().iter().all(|m| !m.is_open());
     result["closed"] = json!(closed);
     let own = &snapshot.position.players[snapshot.player];
@@ -321,15 +356,12 @@ fn report_internal(
                 methods.insert(method.into(),json!({"has_yaku":!values.is_empty(),
                     "blocked_by_discard_furiten":method=="ron" && result["discard_furiten"]["blocked"]==true,
                     "best_interpretations":values.into_iter().map(|v| {
-                        let settlements = super::scores::winning_outcomes(snapshot, &v.payments,
-                            label=="declare_riichi" || own.riichi=="declared")?;
-                        Ok(json!({
+                        json!({
                         "yaku":v.yaku.iter().map(|y| format!("{y:?}")).collect::<Vec<_>>(),"fu":v.value.fu,"yaku_han":v.value.han,
                         "total_han":v.value.total_han(&v.bonus),"yakuman":v.value.yakuman,"wait_type":v.wait,
                         "bonus":{"dora":v.bonus.dora,"aka_dora":v.bonus.aka_dora,"ura_dora":v.bonus.ura_dora},
                         "payments":payments(&v.payments),"base_receipts":total_payment(&v.payments),
-                        "conditional_settlements":settlements,
-                    }))}).collect::<Result<Vec<_>,ToolError>>()?}));
+                    })}).collect::<Vec<_>>()}));
             }
             scenarios.insert(label.into(), Value::Object(methods));
         }

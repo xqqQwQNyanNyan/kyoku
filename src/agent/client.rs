@@ -7,13 +7,16 @@ use std::{
 use serde_json::{Value, json};
 use ureq::http::{HeaderValue, Uri};
 
-use super::{
-    AgentConfig, AgentError, INSTRUCTIONS, QuestionControl, RequestMode, invalid, tool_definitions,
-};
+use super::{AgentConfig, AgentError, QuestionControl, RequestMode, invalid, tool_definitions};
 
 mod chat;
 mod compact;
 mod provider_error;
+
+#[cfg(test)]
+mod knowledge_tests;
+#[cfg(test)]
+mod verification_tests;
 
 #[cfg(test)]
 pub(super) use compact::tests::expand as expand_test;
@@ -78,7 +81,7 @@ impl Client {
         };
         let mut builder = reqwest::Client::builder()
             // 多工具结果的归纳在实测中会超过一分钟，仍保留单次请求的明确上限。
-            .timeout(Duration::from_secs(120))
+            .timeout(Duration::from_secs(300))
             .retry(reqwest::retry::never())
             .redirect(reqwest::redirect::Policy::none());
         if local {
@@ -161,7 +164,7 @@ impl Client {
             }
             Protocol::Responses => {
                 let mut request = json!({
-                    "model": self.model, "instructions": INSTRUCTIONS,
+                    "model": self.model, "instructions": mode.instructions(),
                     "input": input, "tools": available_tools(mode), "tool_choice": "auto",
                     "parallel_tool_calls": mode == RequestMode::Analysis, "store": false,
                     "max_output_tokens": self.options.max_output_tokens,
@@ -175,6 +178,14 @@ impl Client {
                 request
             }
         };
+        if mode == RequestMode::Verification {
+            // 核查只读已取得的证据，不开放工具，也不续传取证阶段的供应商状态。
+            if let Some(object) = request.as_object_mut() {
+                object.remove("tools");
+                object.remove("tool_choice");
+                object.remove("parallel_tool_calls");
+            }
+        }
         // 无法为任意模型准确分词。用完整请求的 UTF-8 字节数加封装余量作保守预检，
         // 实际用量只认供应商 usage；既不截断工具消息，也不把估算显示为实耗。
         let estimated_input = request.to_string().len() as u64 + 1024;
@@ -321,6 +332,9 @@ impl Client {
 }
 
 fn available_tools(mode: RequestMode) -> Vec<Value> {
+    if mode == RequestMode::Verification {
+        return Vec::new();
+    }
     // 通过可用工具集合约束取证阶段，避免强制 tool_choice 与思考模式冲突。
     tool_definitions()
         .into_iter()

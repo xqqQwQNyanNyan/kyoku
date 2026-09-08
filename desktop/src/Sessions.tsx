@@ -402,7 +402,15 @@ function Trace({ turn }: { turn: SessionTurn }) {
                   {i + 1}
                 </span>
                 <span>
-                  {names[step.kind] ?? step.kind}
+                  {step.stage === 'verification'
+                    ? step.kind === 'request'
+                      ? '请求独立核查'
+                      : step.kind === 'response'
+                        ? '核查后终稿'
+                        : '核查未完成'
+                    : step.stage === 'draft'
+                      ? '回答草稿（未核查）'
+                      : (names[step.kind] ?? step.kind)}
                   {step.kind === 'tool' ? ` · ${String(step.name)}` : ''}
                 </span>
               </summary>

@@ -23,18 +23,33 @@ fn definition(name: &str, description: &str, properties: Value) -> Value {
 pub(super) fn definitions() -> Vec<Value> {
     vec![
         definition(
-            "compare_discard_facts",
-            "完整比较两个已有切牌候选时首先调用。已包含双方analyze_hand的事实、舍牌安全依据、防守库存和流局组合，不需为相同问题再调用analyze_hand或analyze_defense。draw=null比较当前事实；指定普通牌则保留该次假设摸牌后的所有切牌事实，不按受入筛选。没有综合评分，不模拟他家未来。",
-            json!({"first":{"type":"string"},"second":{"type":"string"},"draw":{"type":["string","null"]}}),
+            "compare_discard_safety",
+            "只比较两个切牌对各家的安全依据、切后现物库存及公开信息允许的鸣牌。牌形用compare_discards，待牌打点用analyze_waits；不算放铳率。",
+            json!({"first":{"type":"string"},"second":{"type":"string"}}),
+        ),
+        definition(
+            "analyze_discard_followup",
+            "只核验指定的切牌→普通摸牌→再次切牌这一条分支，返回待牌打点、结构和现物库存；不枚举其他分支。先用compare_discards的draw参数查看后续切牌候选；摸牌完成牌形时next_discard=null查看条件自摸打点。",
+            json!({"discard":{"type":"string"},"draw":{"type":"string"},"next_discard":{"type":["string","null"]}}),
+        ),
+        definition(
+            "analyze_waits",
+            "只分析等效13张或指定切牌后的待牌、有役、舍牌振听及默听/立直的条件符番支付；不展开役种路线、后续摸切或四家结算。discard=null分析当前13张。",
+            json!({"discard":{"type":["string","null"]}}),
         ),
         definition(
             "analyze_hand",
-            "分析当前等效13张手牌，或当前候选切牌之后的手牌：向听、常用役种路线、完整待牌及荣和/自摸条件打点，符合条件时比较立直。检查自家舍牌振听，不声称已完成全部和牌合法性检查。discard=null 分析当前13张，否则须用当前 discards 中的牌。",
+            "只看当前等效13张或指定切牌后的向听、直接进张、结构和已知宝牌。打点另用analyze_waits，役种距离另用analyze_yaku_route。discard=null分析当前13张。",
             json!({"discard":{"type":["string","null"]}}),
         ),
         definition(
             "analyze_yaku_route",
-            "计算当前13张手牌或切牌后到指定役种完成形的向听。不可达与尚未支持不同；距离不代表完成概率或预计打点。",
+            "只计算当前13张或切牌后到一个指定役种的距离，不展开后续摸切。需要推进牌时另用analyze_yaku_progression。距离不是完成概率。",
+            json!({"discard":{"type":["string","null"]},"yaku":{"type":"string","enum":hand::ROUTES.iter().map(|(name,_)| *name).collect::<Vec<_>>()}}),
+        ),
+        definition(
+            "analyze_yaku_progression",
+            "明确研究某一役种的推进牌时调用，展开该役种的一次摸切。只研究距离时用analyze_yaku_route；不返回其他役种、待牌打点或结算。",
             json!({"discard":{"type":["string","null"]},"yaku":{"type":"string","enum":hand::ROUTES.iter().map(|(name,_)| *name).collect::<Vec<_>>()}}),
         ),
         definition(
@@ -44,8 +59,14 @@ pub(super) fn definitions() -> Vec<Value> {
         ),
         definition(
             "analyze_actions",
-            "分析当前 Mortal 已提供的吃碰杠、立直和跳过候选的具体后果；跳过检查见逃后的即时振听，null 表示原状态不明；吃碰枚举赤牌消耗差异及禁止食替后的切牌，杠只作固定公开信息下的岭上牌形分支。没有总体收益、放铳率或未知新宝牌。",
+            "先列出当前Mortal提供的动作、吃碰赤牌变体、可切牌的向听和进张总数，以及过牌后的即时振听。不批量计算吃碰后打点、役种或所有岭上摸牌；需要细节时用analyze_action_details点选。",
             json!({}),
+        ),
+        definition(
+            "analyze_action_details",
+            "展开analyze_actions中的一个分支。过牌三个附加字段全为null；立直指定discard；吃碰指定variant与discard；杠指定variant，draw=null仅看杠后状态，指定普通draw仅展开这一张岭上牌。variant原样使用摘要中的键。",
+            json!({"action":{"type":"string","enum":["pass","riichi","chi_low","chi_middle","chi_high","pon","kan"]},
+                "variant":{"type":["string","null"]},"discard":{"type":["string","null"]},"draw":{"type":["string","null"]}}),
         ),
         definition(
             "analyze_score_targets",
@@ -86,11 +107,15 @@ pub(super) fn execute(name: &str, evidence: &Value, arguments: &str) -> Value {
         }
         let snapshot = Snapshot::read(evidence)?;
         let (key, analysis) = match name {
-            "compare_discard_facts" => facts::compare(&snapshot, evidence, &args)?,
+            "compare_discard_safety" => facts::compare_safety(&snapshot, evidence, &args)?,
+            "analyze_discard_followup" => facts::followup(&snapshot, evidence, &args)?,
+            "analyze_waits" => hand::waits(&snapshot, evidence, &args)?,
             "analyze_hand" => hand::analyze(&snapshot, evidence, &args)?,
-            "analyze_yaku_route" => hand::route(&snapshot, evidence, &args)?,
+            "analyze_yaku_route" => hand::route(&snapshot, evidence, &args, false)?,
+            "analyze_yaku_progression" => hand::route(&snapshot, evidence, &args, true)?,
             "analyze_defense" => ("defense".into(), defense::analyze(&snapshot)?),
             "analyze_actions" => ("actions".into(), actions::analyze(&snapshot, evidence)?),
+            "analyze_action_details" => actions::detail(&snapshot, evidence, &args)?,
             "analyze_score_targets" => scores::analyze(&snapshot, &args)?,
             "analyze_draw_outcomes" => ("draw_outcomes".into(), scores::draws(&snapshot)),
             "analyze_win_outcome" => scores::win(&snapshot, &args)?,

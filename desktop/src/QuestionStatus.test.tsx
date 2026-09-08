@@ -23,7 +23,7 @@ it('阶段变化保留累计用时，停止状态优先于工具状态', () => {
       progress={{ startedAt, stopping: false, stage: { phase: 'tool', name: 'analyze_hand' } }}
     />,
   );
-  expect(screen.getByText('分析手牌与打点…')).toBeTruthy();
+  expect(screen.getByText('分析手牌与进张…')).toBeTruthy();
   expect(screen.getByText('已用 1 分 5 秒')).toBeTruthy();
   rerender(
     <QuestionStatus
@@ -31,5 +31,21 @@ it('阶段变化保留累计用时，停止状态优先于工具状态', () => {
     />,
   );
   expect(screen.getByText('正在停止…')).toBeTruthy();
-  expect(screen.queryByText('分析手牌与打点…')).toBeNull();
+  expect(screen.queryByText('分析手牌与进张…')).toBeNull();
+});
+
+it('核查阶段有明确提示并保留停止能力', () => {
+  const startedAt = Date.now();
+  const { rerender } = render(
+    <QuestionStatus
+      progress={{ startedAt, stopping: false, stage: { phase: 'verifying', request: 3 } }}
+    />,
+  );
+  expect(screen.getByText('正在核查答案 · 第 3 次请求')).toBeTruthy();
+  rerender(
+    <QuestionStatus
+      progress={{ startedAt, stopping: true, stage: { phase: 'verifying', request: 3 } }}
+    />,
+  );
+  expect(screen.getByText('正在停止…')).toBeTruthy();
 });

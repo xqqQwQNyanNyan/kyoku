@@ -8,6 +8,7 @@ mod questions;
 mod replay;
 mod sessions;
 mod settings;
+mod storage;
 
 use convlog::Event;
 use kyoku::{
@@ -120,10 +121,11 @@ async fn import_log(
     app: tauri::AppHandle,
 ) -> Result<Imported, UiError> {
     let id = state.sequence.fetch_add(1, Ordering::SeqCst) + 1;
-    let library = app.state::<Arc<library::ReplayLibrary>>().inner().clone();
     let (events, data, name) = tauri::async_runtime::spawn_blocking(move || {
+        let storage = app.state::<storage::Storage>();
+        let stores = storage.read()?;
         let (events, data) = library::parse_input(&json)?;
-        let name = library.save(
+        let name = stores.library().save(
             &sessions::SessionGame {
                 key: sessions::SessionGame::key(&events)?,
                 events: events.clone(),
@@ -146,11 +148,12 @@ async fn import_link(
 ) -> Result<Imported, UiError> {
     let id = state.sequence.fetch_add(1, Ordering::SeqCst) + 1;
     let account = Arc::clone(&state.majsoul);
-    let library = app.state::<Arc<library::ReplayLibrary>>().inner().clone();
     let (events, data, name) = tauri::async_runtime::spawn_blocking(move || {
+        let storage = app.state::<storage::Storage>();
+        let stores = storage.read()?;
         let json = log_link::download(&link, &account)?;
         let (events, data) = replay::parse(&json)?;
-        let name = library.save(
+        let name = stores.library().save(
             &sessions::SessionGame {
                 key: sessions::SessionGame::key(&events)?,
                 events: events.clone(),
@@ -168,8 +171,10 @@ async fn import_link(
 #[tauri::command]
 async fn list_replays(app: tauri::AppHandle) -> Result<library::ReplayList, UiError> {
     tauri::async_runtime::spawn_blocking(move || {
-        let migration = app.state::<sessions::SessionStore>().migrate_embedded();
-        let mut list = app.state::<Arc<library::ReplayLibrary>>().list()?;
+        let storage = app.state::<storage::Storage>();
+        let stores = storage.read()?;
+        let migration = stores.sessions().migrate_embedded();
+        let mut list = stores.library().list()?;
         match migration {
             Ok(warnings) => list.warnings.extend(warnings),
             Err(error) => list.warnings.push(error.message),
@@ -186,7 +191,9 @@ async fn preview_replay_deletion(
     app: tauri::AppHandle,
 ) -> Result<sessions::ReplayDeletion, UiError> {
     tauri::async_runtime::spawn_blocking(move || {
-        app.state::<sessions::SessionStore>()
+        app.state::<storage::Storage>()
+            .read()?
+            .sessions()
             .preview_replay_deletion(&key)
     })
     .await
@@ -201,7 +208,9 @@ async fn delete_replay(
 ) -> Result<sessions::ReplayDeletionResult, UiError> {
     tauri::async_runtime::spawn_blocking(move || {
         let result = app
-            .state::<sessions::SessionStore>()
+            .state::<storage::Storage>()
+            .read()?
+            .sessions()
             .delete_replay(&key, session_ids)?;
         if result.replay_deleted {
             let state = app.state::<Desktop>();
@@ -218,9 +227,14 @@ async fn delete_replay(
 
 #[tauri::command]
 async fn delete_session(id: String, app: tauri::AppHandle) -> Result<(), UiError> {
-    tauri::async_runtime::spawn_blocking(move || app.state::<sessions::SessionStore>().delete(&id))
-        .await
-        .map_err(|_| UiError::new("task", "删除会话任务异常结束"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<storage::Storage>()
+            .read()?
+            .sessions()
+            .delete(&id)
+    })
+    .await
+    .map_err(|_| UiError::new("task", "删除会话任务异常结束"))?
 }
 
 #[tauri::command]
@@ -230,7 +244,9 @@ async fn rename_replay(
     app: tauri::AppHandle,
 ) -> Result<library::ReplaySummary, UiError> {
     tauri::async_runtime::spawn_blocking(move || {
-        app.state::<Arc<library::ReplayLibrary>>()
+        app.state::<storage::Storage>()
+            .read()?
+            .library()
             .rename(&key, &name)
     })
     .await
@@ -245,7 +261,11 @@ async fn open_replay(
 ) -> Result<Imported, UiError> {
     let id = state.sequence.fetch_add(1, Ordering::SeqCst) + 1;
     let (events, data, name) = tauri::async_runtime::spawn_blocking(move || {
-        let saved = app.state::<Arc<library::ReplayLibrary>>().get(&key)?;
+        let saved = app
+            .state::<storage::Storage>()
+            .read()?
+            .library()
+            .get(&key)?;
         let data = replay::replay(&saved.game.events)?;
         Ok::<_, UiError>((saved.game.events, data, saved.name))
     })
@@ -257,10 +277,65 @@ async fn open_replay(
 #[tauri::command]
 async fn open_data_directory(app: tauri::AppHandle) -> Result<(), UiError> {
     tauri::async_runtime::spawn_blocking(move || {
-        app.state::<Arc<library::ReplayLibrary>>().open_directory()
+        app.state::<storage::Storage>()
+            .read()?
+            .library()
+            .open_directory()
     })
     .await
     .map_err(|_| UiError::new("task", "打开数据文件夹任务异常结束"))?
+}
+
+#[tauri::command]
+fn get_storage(app: tauri::AppHandle) -> Result<storage::StorageView, UiError> {
+    app.state::<storage::Storage>().view()
+}
+
+#[tauri::command]
+async fn choose_data_directory(app: tauri::AppHandle) -> Result<Option<String>, UiError> {
+    use tauri_plugin_dialog::DialogExt;
+    tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .set_title("选择牌谱与对话保存目录")
+            .blocking_pick_folder()
+            .map(|path| {
+                let path = path
+                    .into_path()
+                    .map_err(|_| UiError::new("storage_path", "请选择本地文件夹"))?;
+                path.to_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| UiError::new("storage_path", "目录路径需为 Unicode 文本"))
+            })
+            .transpose()
+    })
+    .await
+    .map_err(|_| UiError::new("task", "选择目录异常结束"))?
+}
+
+#[tauri::command]
+async fn migrate_data(
+    directory: String,
+    request_id: String,
+    on_progress: Channel<storage::MigrationProgress>,
+    app: tauri::AppHandle,
+) -> Result<storage::StorageView, UiError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<storage::Storage>().migrate(
+            std::path::Path::new(&directory),
+            &request_id,
+            |progress| {
+                let _ = on_progress.send(progress);
+            },
+        )
+    })
+    .await
+    .map_err(|_| UiError::new("task", "数据迁移异常结束，请检查当前保存位置"))?
+}
+
+#[tauri::command]
+fn cancel_data_migration(request_id: String, app: tauri::AppHandle) -> Result<(), UiError> {
+    app.state::<storage::Storage>().cancel(&request_id)
 }
 
 #[tauri::command]
@@ -417,17 +492,20 @@ async fn ask(
             key: game.key.clone(),
             events: game.events.clone(),
         };
-        app.state::<sessions::SessionStore>().ask_with_control(
-            &question.conversation_id,
-            &question.text,
-            &config.borrowed(),
-            Some(sessions::SessionSource {
-                game: &saved_game,
-                label: &question.context_label,
-                context: &context,
-            }),
-            control,
-        )
+        app.state::<storage::Storage>()
+            .read()?
+            .sessions()
+            .ask_with_control(
+                &question.conversation_id,
+                &question.text,
+                &config.borrowed(),
+                Some(sessions::SessionSource {
+                    game: &saved_game,
+                    label: &question.context_label,
+                    context: &context,
+                }),
+                control,
+            )
     })
     .await
 }
@@ -463,16 +541,20 @@ fn cancel_question(id: String, request_id: String, app: tauri::AppHandle) -> Res
 
 #[tauri::command]
 async fn list_sessions(app: tauri::AppHandle) -> Result<sessions::SessionList, UiError> {
-    tauri::async_runtime::spawn_blocking(move || app.state::<sessions::SessionStore>().list())
-        .await
-        .map_err(|_| UiError::new("task", "读取历史会话任务异常结束"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<storage::Storage>().read()?.sessions().list()
+    })
+    .await
+    .map_err(|_| UiError::new("task", "读取历史会话任务异常结束"))?
 }
 
 #[tauri::command]
 async fn get_session(id: String, app: tauri::AppHandle) -> Result<sessions::SessionView, UiError> {
-    tauri::async_runtime::spawn_blocking(move || app.state::<sessions::SessionStore>().get(&id))
-        .await
-        .map_err(|_| UiError::new("task", "读取会话任务异常结束"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<storage::Storage>().read()?.sessions().get(&id)
+    })
+    .await
+    .map_err(|_| UiError::new("task", "读取会话任务异常结束"))?
 }
 
 #[tauri::command]
@@ -482,7 +564,10 @@ async fn rename_session(
     app: tauri::AppHandle,
 ) -> Result<sessions::SessionView, UiError> {
     tauri::async_runtime::spawn_blocking(move || {
-        app.state::<sessions::SessionStore>().rename(&id, &title)
+        app.state::<storage::Storage>()
+            .read()?
+            .sessions()
+            .rename(&id, &title)
     })
     .await
     .map_err(|_| UiError::new("task", "修改会话标题任务异常结束"))?
@@ -503,13 +588,10 @@ async fn continue_session(
         on_progress,
         move |app, control| {
             let config = app.state::<settings::SettingsStore>().load()?;
-            app.state::<sessions::SessionStore>().ask_with_control(
-                &id,
-                &text,
-                &config.borrowed(),
-                None,
-                control,
-            )
+            app.state::<storage::Storage>()
+                .read()?
+                .sessions()
+                .ask_with_control(&id, &text, &config.borrowed(), None, control)
         },
     )
     .await
@@ -530,12 +612,10 @@ async fn retry_session(
         on_progress,
         move |app, control| {
             let config = app.state::<settings::SettingsStore>().load()?;
-            app.state::<sessions::SessionStore>().retry_with_control(
-                &id,
-                turn,
-                &config.borrowed(),
-                control,
-            )
+            app.state::<storage::Storage>()
+                .read()?
+                .sessions()
+                .retry_with_control(&id, turn, &config.borrowed(), control)
         },
     )
     .await
@@ -555,7 +635,10 @@ async fn open_session_game(
     app: tauri::AppHandle,
 ) -> Result<OpenedSessionGame, UiError> {
     let document = tauri::async_runtime::spawn_blocking(move || {
-        app.state::<sessions::SessionStore>().open_game(&id)
+        app.state::<storage::Storage>()
+            .read()?
+            .sessions()
+            .open_game(&id)
     })
     .await
     .map_err(|_| UiError::new("task", "读取会话牌谱异常结束"))??;
@@ -612,7 +695,9 @@ async fn set_session_position(
     app: tauri::AppHandle,
 ) -> Result<(), UiError> {
     tauri::async_runtime::spawn_blocking(move || {
-        app.state::<sessions::SessionStore>()
+        app.state::<storage::Storage>()
+            .read()?
+            .sessions()
             .set_position(&id, &game_key, position)
     })
     .await
@@ -625,7 +710,10 @@ async fn import_session(
     app: tauri::AppHandle,
 ) -> Result<sessions::SessionView, UiError> {
     tauri::async_runtime::spawn_blocking(move || {
-        app.state::<sessions::SessionStore>().import(&json)
+        app.state::<storage::Storage>()
+            .read()?
+            .sessions()
+            .import(&json)
     })
     .await
     .map_err(|_| UiError::new("task", "导入会话任务异常结束"))?
@@ -638,7 +726,9 @@ async fn export_session(id: String, app: tauri::AppHandle) -> Result<String, UiE
         .download_dir()
         .map_err(|_| UiError::new("session_io", "无法定位下载目录"))?;
     tauri::async_runtime::spawn_blocking(move || {
-        app.state::<sessions::SessionStore>()
+        app.state::<storage::Storage>()
+            .read()?
+            .sessions()
             .export(&id, &directory)
     })
     .await
@@ -722,22 +812,17 @@ async fn runtime_status(check: bool, app: tauri::AppHandle) -> Result<RuntimeSta
 
 fn main() {
     let result = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(Desktop::default())
         .setup(|app| {
-            let data_directory = app.path().app_data_dir()?;
-            let library = Arc::new(library::ReplayLibrary::new(data_directory.clone()));
-            library
-                .initialize()
-                .map_err(|error| std::io::Error::other(error.message))?;
+            app.manage(
+                storage::Storage::new(app.path().app_config_dir()?, app.path().app_data_dir()?)
+                    .map_err(|error| std::io::Error::other(error.message))?,
+            );
             app.manage(settings::SettingsStore::new(
                 app.path().app_config_dir()?,
                 config::development_home(),
             ));
-            app.manage(sessions::SessionStore::new(
-                data_directory.join("sessions"),
-                library.clone(),
-            ));
-            app.manage(library);
             app.manage(Arc::new(questions::Questions::default()));
             Ok(())
         })
@@ -750,6 +835,10 @@ fn main() {
             rename_replay,
             open_replay,
             open_data_directory,
+            get_storage,
+            choose_data_directory,
+            migrate_data,
+            cancel_data_migration,
             majsoul_status,
             login_majsoul,
             logout_majsoul,

@@ -185,7 +185,7 @@ fn tool_rejects_unknown_names_and_nonempty_or_malformed_arguments() {
 }
 
 #[test]
-fn initial_evidence_and_followup_preserve_reasoning_and_history() {
+fn current_tool_chain_preserves_reasoning_and_followup_keeps_it_only_in_history() {
     let evidence = review_evidence(&review());
     let reasoning =
         json!({"type": "reasoning", "id": "rs_test", "summary": [], "encrypted_content": "opaque"});
@@ -199,7 +199,7 @@ fn initial_evidence_and_followup_preserve_reasoning_and_history() {
             requests += 1;
             if requests == 1 {
                 assert_eq!(forced, RequestMode::Analysis);
-                assert_eq!(input.len(), 2);
+                assert_eq!(input.len(), 3);
                 assert_eq!(input[0], initial_evidence(&evidence));
                 Ok(response(vec![
                     reasoning.clone(),
@@ -208,9 +208,15 @@ fn initial_evidence_and_followup_preserve_reasoning_and_history() {
             } else {
                 assert_eq!(forced, RequestMode::Analysis);
                 assert_eq!(input[2], reasoning);
-                let tool: Value =
-                    serde_json::from_str(input.last().unwrap()["output"].as_str().unwrap())
-                        .unwrap();
+                let tool: Value = serde_json::from_str(
+                    input
+                        .iter()
+                        .find(|item| item["type"] == "function_call_output")
+                        .unwrap()["output"]
+                        .as_str()
+                        .unwrap(),
+                )
+                .unwrap();
                 assert_eq!(tool["review"], evidence);
                 Ok(response(vec![message(
                     "听牌，完成牌形的东风有 3 枚不可见。",
@@ -221,19 +227,31 @@ fn initial_evidence_and_followup_preserve_reasoning_and_history() {
     .unwrap();
     assert_eq!(requests, 2);
     assert!(text.contains("3 枚"));
-    let (_, next) = answer(
-        &evidence,
-        &history,
-        true,
-        "这就是剩余牌山吗？",
-        |input, forced| {
-            assert_eq!(forced, RequestMode::Analysis);
-            assert_eq!(&input[..history.len()], &history);
-            Ok(response(vec![message("不是，不可见牌也可能在对手手中。")]))
-        },
-    )
-    .unwrap();
+    let (_, next) =
+        answer(
+            &evidence,
+            &history,
+            true,
+            "这就是剩余牌山吗？",
+            |input, forced| {
+                assert_eq!(forced, RequestMode::Analysis);
+                assert_eq!(input[0], initial_evidence(&evidence));
+                assert!(input.iter().any(|item| {
+                    item["role"] == "assistant"
+                        && item["content"]
+                            .as_str()
+                            .is_some_and(|text| text.contains("3 枚"))
+                }));
+                assert!(
+                    !input.iter().any(|item| item["type"] == "reasoning"
+                        || item["type"] == "function_call_output")
+                );
+                Ok(response(vec![message("不是，不可见牌也可能在对手手中。")]))
+            },
+        )
+        .unwrap();
     assert_eq!(next.len(), history.len() + 2);
+    assert_eq!(&next[..history.len()], &history);
 }
 
 #[test]
@@ -250,7 +268,10 @@ fn invalid_tool_arguments_can_be_corrected_with_initial_evidence() {
             2 => {
                 assert_eq!(forced, RequestMode::Analysis);
                 assert!(
-                    input.last().unwrap()["output"]
+                    input
+                        .iter()
+                        .find(|item| item["type"] == "function_call_output")
+                        .unwrap()["output"]
                         .as_str()
                         .unwrap()
                         .contains("invalid_arguments")
@@ -542,13 +563,13 @@ fn http_session_handles_tool_roundtrip_followup_and_rolls_back_failed_turn() {
         },
     )
     .unwrap();
-    assert_eq!(session.ask("第一问").unwrap(), "首次解释");
+    assert_eq!(session.ask_draft("第一问").unwrap(), "首次解释");
     let history = session.history.clone();
-    let error = session.ask("失败的问题").unwrap_err();
+    let error = session.ask_draft("失败的问题").unwrap_err();
     assert!(matches!(error, AgentError::Http { status: 429, .. }));
     assert!(!error.to_string().contains("do-not-print"));
     assert_eq!(session.history, history);
-    assert_eq!(session.ask("第二问").unwrap(), "追问解释");
+    assert_eq!(session.ask_draft("第二问").unwrap(), "追问解释");
     let requests = handle.join().unwrap();
     assert_eq!(requests[0]["model"], "test-model");
     assert_eq!(requests[0]["store"], false);
@@ -558,9 +579,14 @@ fn http_session_handles_tool_roundtrip_followup_and_rolls_back_failed_turn() {
         json!(["reasoning.encrypted_content"])
     );
     assert_eq!(requests[1]["tool_choice"], "auto");
-    assert_eq!(
-        requests[3]["input"].as_array().unwrap().len(),
-        history.len() + 1
+    assert!(requests[3]["input"].to_string().contains("首次解释"));
+    assert!(requests[3]["input"].to_string().contains("第二问"));
+    assert!(
+        !requests[3]["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["type"] == "function_call_output")
     );
     assert!(!requests[3].to_string().contains("失败的问题"));
     assert!(requests[0]["input"].to_string().contains("5mr"));
@@ -603,7 +629,7 @@ fn initial_evidence_answers_in_one_request_and_survives_restore_in_both_protocol
             options: Default::default(),
         };
         let mut session = AgentSession::new(&review(), &config).unwrap();
-        assert_eq!(session.ask("说明局面").unwrap(), reply);
+        assert_eq!(session.ask_draft("说明局面").unwrap(), reply);
         let saved = serde_json::to_value(session.archive()).unwrap();
         let trace = saved["turns"][0]["trace"].as_array().unwrap();
         assert_eq!(trace.iter().filter(|s| s["kind"] == "request").count(), 1);
@@ -617,7 +643,7 @@ fn initial_evidence_answers_in_one_request_and_survives_restore_in_both_protocol
         );
         let archive = SessionArchive::from_json(&saved.to_string()).unwrap();
         let mut restored = AgentSession::from_archive(&archive, &config).unwrap();
-        assert_eq!(restored.ask("继续说明").unwrap(), reply);
+        assert_eq!(restored.ask_draft("继续说明").unwrap(), reply);
         let requests = handle.join().unwrap();
         assert_eq!(requests.len(), 2);
         assert_eq!(
@@ -823,9 +849,9 @@ fn archive_restores_exact_context_and_keeps_failed_execution_trace() {
         options: Default::default(),
     };
     let mut original = AgentSession::new(&review(), &config).unwrap();
-    original.ask("第一问").unwrap();
+    original.ask_draft("第一问").unwrap();
     let accepted = original.history.clone();
-    assert!(original.ask("失败但应保留的问题").is_err());
+    assert!(original.ask_draft("失败但应保留的问题").is_err());
     let serialized = serde_json::to_string(original.archive()).unwrap();
     assert!(!serialized.contains("not-in-archive"));
     assert!(!serialized.contains("remote-body-not-saved"));
@@ -844,17 +870,15 @@ fn archive_restores_exact_context_and_keeps_failed_execution_trace() {
     let mut restored = AgentSession::from_archive(&archive, &config).unwrap();
     assert_eq!(restored.history, accepted);
     assert_eq!(restored.evidence(), &review_evidence(&review()));
-    assert_eq!(restored.ask("第二问").unwrap(), "加载之后的追问");
+    assert_eq!(restored.ask_draft("第二问").unwrap(), "加载之后的追问");
     let requests = handle.join().unwrap();
-    let mut expected = accepted;
-    expected.push(json!({"role": "user", "content": "第二问"}));
-    assert_eq!(
-        expand_wire_input(requests[3]["input"].as_array().unwrap()),
-        expected
-    );
+    let input = expand_wire_input(requests[3]["input"].as_array().unwrap());
+    assert_eq!(input[0], initial_evidence(restored.evidence()));
+    assert!(input.contains(&json!({"role":"assistant","content":"保存之前的回答"})));
+    assert!(input.contains(&json!({"role":"user","content":"第二问"})));
     assert_eq!(requests[3]["tool_choice"], "auto");
     assert!(
-        requests[3]["input"]
+        !requests[3]["input"]
             .as_array()
             .unwrap()
             .contains(&reasoning)
@@ -982,12 +1006,12 @@ fn comparison_roundtrip_and_restored_answers_work_in_both_protocols() {
             options: Default::default(),
         };
         let mut session = AgentSession::with_context(&context, &config).unwrap();
-        let text = session.ask("比较切 2p 和东").unwrap();
+        let text = session.ask_draft("比较切 2p 和东").unwrap();
         assert_eq!(text, reply);
         let archive =
             SessionArchive::from_json(&serde_json::to_string(session.archive()).unwrap()).unwrap();
         let mut restored = AgentSession::from_archive(&archive, &config).unwrap();
-        assert_eq!(restored.ask("再解释一下").unwrap(), text);
+        assert_eq!(restored.ask_draft("再解释一下").unwrap(), text);
         let requests = handle.join().unwrap();
         assert_eq!(requests.len(), 3);
         let definition = if chat {
@@ -1063,11 +1087,11 @@ fn analysis_tools_roundtrip_without_mortal_and_survive_session_restore() {
             options: Default::default(),
         };
         let mut session = AgentSession::with_context(&context, &config).unwrap();
-        let answer = session.ask("和玩家1的点差如何？").unwrap();
+        let answer = session.ask_draft("和玩家1的点差如何？").unwrap();
         let saved = serde_json::to_value(session.archive()).unwrap();
         let archive = SessionArchive::from_json(&saved.to_string()).unwrap();
         let mut restored = AgentSession::from_archive(&archive, &config).unwrap();
-        assert_eq!(restored.ask("再说一次").unwrap(), answer);
+        assert_eq!(restored.ask_draft("再说一次").unwrap(), answer);
         let requests = handle.join().unwrap();
         assert_eq!(requests.len(), 3);
         let trace = saved["turns"][0]["trace"].as_array().unwrap();
@@ -1337,19 +1361,24 @@ fn cancelled_followup_preserves_accepted_history_and_can_continue_after_restore(
         options: Default::default(),
     };
     let mut session = AgentSession::new(&review(), &config).unwrap();
-    session.ask("之前的问题").unwrap();
+    session.ask_draft("之前的问题").unwrap();
     let history = session.history.clone();
     let control = QuestionControl::default();
     control.cancel();
     assert!(matches!(
-        session.ask_with_control("停止的追问", &control),
+        session.ask_draft_with_control("停止的追问", &control),
         Err(AgentError::Cancelled)
     ));
     assert_eq!(session.history, history);
     let saved = serde_json::to_string(session.archive()).unwrap();
     let archive = SessionArchive::from_json(&saved).unwrap();
     let mut restored = AgentSession::from_archive(&archive, &config).unwrap();
-    assert!(restored.ask("新的追问").unwrap().ends_with("继续完成"));
+    assert!(
+        restored
+            .ask_draft("新的追问")
+            .unwrap()
+            .ends_with("继续完成")
+    );
     let requests = server.join().unwrap();
     assert_eq!(requests.len(), 2);
     assert!(!requests[1].to_string().contains("停止的追问"));
@@ -1361,3 +1390,6 @@ mod live_replays;
 
 #[path = "usage_tests.rs"]
 mod accounting;
+
+#[path = "verification_tests.rs"]
+mod verification_tests;

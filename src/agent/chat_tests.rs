@@ -53,15 +53,21 @@ fn chat_roundtrip_preserves_tool_groups_markdown_and_followups_without_repairs()
         },
     )
     .unwrap();
-    assert_eq!(session.ask("第一问").unwrap(), "现有证据不能解释推荐原因。");
+    assert_eq!(
+        session.ask_draft("第一问").unwrap(),
+        "现有证据不能解释推荐原因。"
+    );
     let history = session.history.clone();
     assert!(matches!(
-        session.ask("失败问题"),
+        session.ask_draft("失败问题"),
         Err(AgentError::OutputLimit)
     ));
     assert_eq!(session.history, history);
-    assert_eq!(session.ask("第二问").unwrap(), "**普通 Markdown 回答**");
-    session.ask("第三问").unwrap();
+    assert_eq!(
+        session.ask_draft("第二问").unwrap(),
+        "**普通 Markdown 回答**"
+    );
+    session.ask_draft("第三问").unwrap();
     let requests = handle.join().unwrap();
     let request = &requests[0];
     assert_eq!(request["messages"][0]["role"], "system");
@@ -82,7 +88,7 @@ fn chat_roundtrip_preserves_tool_groups_markdown_and_followups_without_repairs()
         assert!(request.get(field).is_none());
     }
     let messages = requests[1]["messages"].as_array().unwrap();
-    assert_eq!(messages.len(), 6);
+    assert_eq!(messages.len(), 7);
     assert_eq!(messages[3], calls);
     for (index, id) in [(4, "a"), (5, "b")] {
         assert_eq!(messages[index]["role"], "tool");
@@ -95,7 +101,17 @@ fn chat_roundtrip_preserves_tool_groups_markdown_and_followups_without_repairs()
         );
     }
     assert_eq!(requests[1]["tool_choice"], "auto");
-    assert_eq!(requests[3]["messages"][6], text_message(&first));
+    assert!(
+        requests[3]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["role"] == "assistant"
+                && item["content"]
+                    .as_str()
+                    .is_some_and(|text| text.contains(&first)))
+    );
+    assert!(!requests[3].to_string().contains("test-reasoning"));
     assert!(!requests[3].to_string().contains("失败问题"));
     assert_eq!(requests.len(), 5);
     assert!(requests[4].to_string().contains("普通 Markdown 回答"));
@@ -186,11 +202,11 @@ fn chat_includes_evidence_and_can_correct_invalid_tool_arguments() {
     )
     .unwrap();
     assert!(matches!(
-        session.ask("失败取证"),
+        session.ask_draft("失败取证"),
         Err(AgentError::OutputLimit)
     ));
     assert!(session.history.is_empty());
-    assert_eq!(session.ask("查看局面").unwrap(), "未运行切牌分析。");
+    assert_eq!(session.ask_draft("查看局面").unwrap(), "未运行切牌分析。");
     let requests = handle.join().unwrap();
     assert_eq!(requests[2]["tool_choice"], "auto");
     assert_eq!(
@@ -296,7 +312,7 @@ fn chat_rejects_incomplete_refused_and_malformed_messages() {
     )
     .unwrap();
     assert!(matches!(
-        session.ask("分析"),
+        session.ask_draft("分析"),
         Err(AgentError::InvalidResponse { .. })
     ));
     handle.join().unwrap();
@@ -327,15 +343,21 @@ fn chat_archive_restores_tool_messages_and_provider_reasoning() {
         options: Default::default(),
     };
     let mut session = AgentSession::new(&review(), &config).unwrap();
-    session.ask("先解释").unwrap();
+    session.ask_draft("先解释").unwrap();
     let json = serde_json::to_string(session.archive()).unwrap();
     let archive = SessionArchive::from_json(&json).unwrap();
     let mut resumed = AgentSession::from_archive(&archive, &config).unwrap();
-    resumed.ask("再解释").unwrap();
+    resumed.ask_draft("再解释").unwrap();
     let requests = server.join().unwrap();
-    assert_eq!(requests[2]["messages"][3], tool);
-    assert_eq!(requests[2]["messages"][4]["role"], "tool");
-    assert_eq!(requests[2]["messages"].as_array().unwrap().len(), 7);
+    assert_eq!(requests[1]["messages"][3], tool);
+    assert_eq!(requests[2]["messages"][3], text_message("第一轮"));
+    assert!(!requests[2].to_string().contains("provider-state"));
+    assert!(
+        serde_json::to_string(resumed.archive())
+            .unwrap()
+            .contains("provider-state")
+    );
+    assert_eq!(requests[2]["messages"].as_array().unwrap().len(), 6);
     let mut tampered: Value = serde_json::from_str(&json).unwrap();
     tampered["history"][2]["_chat_message"]["role"] = json!("system");
     assert!(SessionArchive::from_json(&tampered.to_string()).is_err());

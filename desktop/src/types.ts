@@ -80,7 +80,25 @@ export interface Decision {
   actual: { kind: string; action?: Action };
   evidence: Evidence;
 }
+export interface StorageLocation {
+  directory: string;
+  available: boolean;
+}
+export interface MigrationProgress {
+  copied_files: number;
+  total_files: number;
+  copied_bytes: number;
+  total_bytes: number;
+}
 export interface Bridge {
+  getStorage(): Promise<StorageLocation>;
+  chooseDataDirectory(): Promise<string | null>;
+  migrateData(
+    directory: string,
+    requestId: string,
+    onProgress: (progress: MigrationProgress) => void,
+  ): Promise<StorageLocation>;
+  cancelDataMigration(requestId: string): Promise<void>;
   getSettings(): Promise<Settings>;
   saveSettings(input: SettingsInput): Promise<Settings>;
   testConnection(
@@ -133,6 +151,7 @@ export type QuestionProgress =
   | { phase: 'usage'; requests: RequestUsage[]; budget: number | null }
   | { phase: 'preparing' }
   | { phase: 'model'; request: number }
+  | { phase: 'verifying'; request: number }
   | { phase: 'tool'; name: string };
 
 export interface QuestionRun {

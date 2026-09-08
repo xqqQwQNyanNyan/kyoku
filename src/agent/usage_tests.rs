@@ -24,13 +24,19 @@ fn configured(endpoint: &str, budget: u64) -> AgentConfig<'_> {
 fn budget_and_context_preflight_do_not_send_any_request() {
     let mut config = configured("http://127.0.0.1:1/responses", 1);
     let mut session = AgentSession::new(&review(), &config).unwrap();
-    assert!(matches!(session.ask("提问"), Err(AgentError::TokenBudget)));
+    assert!(matches!(
+        session.ask_draft("提问"),
+        Err(AgentError::TokenBudget)
+    ));
     let saved = serde_json::to_value(session.archive()).unwrap();
     assert!(saved["turns"][0]["usage"].is_null());
     config.options.token_budget = None;
     config.options.context_tokens = NonZeroU64::new(4097);
     let mut session = AgentSession::new(&review(), &config).unwrap();
-    assert!(matches!(session.ask("提问"), Err(AgentError::ContextLimit)));
+    assert!(matches!(
+        session.ask_draft("提问"),
+        Err(AgentError::ContextLimit)
+    ));
 }
 
 #[test]
@@ -40,7 +46,10 @@ fn budget_stops_tool_execution_and_preserves_the_billed_call() {
     let (endpoint, handle) = server(vec![(200, body.to_string())]);
     let config = configured(&endpoint, 1_000_000);
     let mut session = AgentSession::new(&review(), &config).unwrap();
-    assert!(matches!(session.ask("提问"), Err(AgentError::TokenBudget)));
+    assert!(matches!(
+        session.ask_draft("提问"),
+        Err(AgentError::TokenBudget)
+    ));
     assert_eq!(handle.join().unwrap().len(), 1);
     let saved = serde_json::to_value(session.archive()).unwrap();
     let turn = &saved["turns"][0];
@@ -65,8 +74,11 @@ fn cumulative_budget_blocks_followup_calls_and_resets_on_explicit_retry() {
     let (endpoint, handle) = server(vec![(200, tool.to_string()), (200, answer.to_string())]);
     let config = configured(&endpoint, 1_000_000);
     let mut session = AgentSession::new(&review(), &config).unwrap();
-    assert!(matches!(session.ask("提问"), Err(AgentError::TokenBudget)));
-    assert_eq!(session.ask("重试").unwrap(), "完成");
+    assert!(matches!(
+        session.ask_draft("提问"),
+        Err(AgentError::TokenBudget)
+    ));
+    assert_eq!(session.ask_draft("重试").unwrap(), "完成");
     assert_eq!(handle.join().unwrap().len(), 2);
     let saved = serde_json::to_value(session.archive()).unwrap();
     assert_eq!(saved["turns"][0]["usage"].as_array().unwrap().len(), 1);
@@ -81,7 +93,10 @@ fn missing_usage_stops_a_budgeted_task_without_inventing_zero_usage() {
     )]);
     let config = configured(&endpoint, 1_000_000);
     let mut session = AgentSession::new(&review(), &config).unwrap();
-    assert!(matches!(session.ask("提问"), Err(AgentError::UnknownUsage)));
+    assert!(matches!(
+        session.ask_draft("提问"),
+        Err(AgentError::UnknownUsage)
+    ));
     assert_eq!(handle.join().unwrap().len(), 1);
     let saved = serde_json::to_value(session.archive()).unwrap();
     assert!(saved["turns"][0]["usage"][0]["input_tokens"].is_null());
@@ -96,7 +111,7 @@ fn truncated_and_refused_chat_responses_still_record_exact_usage() {
         let (endpoint, handle) = server_at("/chat/completions", vec![(200, body.to_string())]);
         let config = configured(&endpoint, 1_000_000);
         let mut session = AgentSession::new(&review(), &config).unwrap();
-        assert!(session.ask("提问").is_err());
+        assert!(session.ask_draft("提问").is_err());
         handle.join().unwrap();
         let saved = serde_json::to_value(session.archive()).unwrap();
         assert_eq!(saved["turns"][0]["usage"][0]["output_tokens"], 200);
@@ -115,13 +130,16 @@ fn usage_is_reported_before_completion_and_historical_prices_survive_restore() {
     let observed = Arc::new(Mutex::new(Vec::new()));
     let events = observed.clone();
     let control = QuestionControl::new(move |progress| events.lock().unwrap().push(progress));
-    assert_eq!(session.ask_with_control("提问", &control).unwrap(), "完成");
+    assert_eq!(
+        session.ask_draft_with_control("提问", &control).unwrap(),
+        "完成"
+    );
     assert!(observed.lock().unwrap().iter().any(|p| matches!(p, QuestionProgress::Usage { requests, .. } if requests.len() == 1 && requests[0].input_tokens == Some(1000))));
     let archive =
         SessionArchive::from_json(&serde_json::to_string(session.archive()).unwrap()).unwrap();
     config.options.prices.as_mut().unwrap().input = 20.0;
     let mut restored = AgentSession::from_archive(&archive, &config).unwrap();
-    restored.ask("追问").unwrap();
+    restored.ask_draft("追问").unwrap();
     handle.join().unwrap();
     let saved = serde_json::to_value(restored.archive()).unwrap();
     assert_eq!(saved["turns"][0]["usage"][0]["cost"], 0.0036);

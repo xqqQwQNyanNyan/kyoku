@@ -3,6 +3,7 @@ import { flushSync } from 'react-dom';
 import { UsageSummary, UsageDetails } from './Usage';
 import { ModelSettings, UsageSettings, defaultModelOptions } from './ModelSettings';
 import { errorMessage } from './bridge';
+import { StorageSettings } from './StorageSettings';
 import type { Bridge, RuntimeStatus, Settings, SettingsInput, QuestionProgress } from './types';
 
 const tabs = [
@@ -10,6 +11,7 @@ const tabs = [
   { id: 'model', label: '模型参数' },
   { id: 'usage', label: '用量与费用' },
   { id: 'runtime', label: '本地分析' },
+  { id: 'storage', label: '数据保存' },
 ] as const;
 type SettingsTab = (typeof tabs)[number]['id'];
 
@@ -35,6 +37,7 @@ export function SettingsPanel({ api, onClose }: { api: Bridge; onClose: () => vo
   const [notice, setNotice] = useState('');
   const [runtimeError, setRuntimeError] = useState('');
   const [checking, setChecking] = useState(false);
+  const [storageBusy, setStorageBusy] = useState(false);
 
   useEffect(() => {
     dialog.current?.showModal();
@@ -75,7 +78,7 @@ export function SettingsPanel({ api, onClose }: { api: Bridge; onClose: () => vo
   }
 
   async function submit(action: 'save' | 'test') {
-    if (running.current || !saved || !form.current) return;
+    if (running.current || storageBusy || !saved || !form.current) return;
     const invalid = Array.from(form.current.elements).find(
       (element): element is HTMLInputElement =>
         element instanceof HTMLInputElement && !element.validity.valid,
@@ -142,7 +145,7 @@ export function SettingsPanel({ api, onClose }: { api: Bridge; onClose: () => vo
       aria-labelledby="settings-title"
       onCancel={(event) => {
         event.preventDefault();
-        if (!busy && !checking) onClose();
+        if (!busy && !checking && !storageBusy) onClose();
       }}
     >
       <div className="settings-heading">
@@ -154,7 +157,7 @@ export function SettingsPanel({ api, onClose }: { api: Bridge; onClose: () => vo
           type="button"
           autoFocus
           onClick={onClose}
-          disabled={!!busy || checking}
+          disabled={!!busy || checking || storageBusy}
           aria-label="关闭设置"
         >
           ×
@@ -203,7 +206,7 @@ export function SettingsPanel({ api, onClose }: { api: Bridge; onClose: () => vo
         noValidate
         onSubmit={(event) => {
           event.preventDefault();
-          void submit('save');
+          if (tab !== 'storage') void submit('save');
         }}
       >
         <div className="settings-content">
@@ -348,8 +351,17 @@ export function SettingsPanel({ api, onClose }: { api: Bridge; onClose: () => vo
               </p>
             )}
           </section>
+          <section
+            role="tabpanel"
+            id="settings-panel-storage"
+            aria-labelledby="settings-tab-storage"
+            data-settings-tab="storage"
+            hidden={tab !== 'storage'}
+          >
+            <StorageSettings api={api} onBusyChange={setStorageBusy} />
+          </section>
         </div>
-        <footer className="settings-footer">
+        <footer className="settings-footer" hidden={tab === 'storage'}>
           {error && (
             <p role="alert" className="settings-error">
               {error}
@@ -361,10 +373,12 @@ export function SettingsPanel({ api, onClose }: { api: Bridge; onClose: () => vo
             </p>
           )}
           <div className="settings-actions">
-            <small>保存所有标签页的设置</small>
+            <small>保存问答服务设置</small>
             <button
               type="button"
-              disabled={!saved || !!busy || !input.endpoint.trim() || !input.model.trim()}
+              disabled={
+                !saved || !!busy || storageBusy || !input.endpoint.trim() || !input.model.trim()
+              }
               onClick={() => void submit('test')}
             >
               {busy === 'test' ? '正在测试…' : '测试连接'}
@@ -372,7 +386,9 @@ export function SettingsPanel({ api, onClose }: { api: Bridge; onClose: () => vo
             <button
               className="primary"
               type="submit"
-              disabled={!saved || !!busy || !input.endpoint.trim() || !input.model.trim()}
+              disabled={
+                !saved || !!busy || storageBusy || !input.endpoint.trim() || !input.model.trim()
+              }
             >
               {busy === 'save' ? '正在保存…' : '保存设置'}
             </button>

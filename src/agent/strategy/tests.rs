@@ -93,7 +93,7 @@ fn conditional_scoring_compares_dama_riichi_and_red_bonus_without_ura() {
     let mut evidence = position("1m 2m 3m 4m 5m 6m 7p 8p 9p 2s 3s 5p 5pr E");
     // 此处不是首巡，避免把普通立直样例变成两立直。
     evidence["position"]["players"][0]["discards"] = json!([{"tile":"N","called":false}]);
-    let report = run("analyze_hand", &evidence, json!({"discard":"E"}));
+    let report = run("analyze_waits", &evidence, json!({"discard":"E"}));
     assert_eq!(report["shanten"], 0);
     assert_eq!(report["can_declare_riichi_under_current_conditions"], true);
     let wait = &report["waits"]["1s"]["scenarios"];
@@ -116,7 +116,7 @@ fn riichi_history_distinguishes_double_riichi_and_pending_acceptance() {
     let mut evidence = position("1m 2m 3m 4m 5m 6m 7p 8p 9p 2s 3s 5p 5p E");
     evidence["position"]["history"] =
         json!([{"event_index":2,"player":0,"kind":"draw","tile":null}]);
-    let report = run("analyze_hand", &evidence, json!({"discard":"E"}));
+    let report = run("analyze_waits", &evidence, json!({"discard":"E"}));
     let yaku = report["waits"]["1s"]["scenarios"]["declare_riichi"]["ron"]["best_interpretations"]
         [0]["yaku"]
         .as_array()
@@ -129,7 +129,7 @@ fn riichi_history_distinguishes_double_riichi_and_pending_acceptance() {
         .as_array_mut()
         .unwrap()
         .push(json!({"event_index":3,"player":0,"kind":"riichi_declared","tile":null}));
-    let report = run("analyze_hand", &evidence, json!({"discard":"E"}));
+    let report = run("analyze_waits", &evidence, json!({"discard":"E"}));
     assert_eq!(report["scope"]["assumes_pending_riichi_is_accepted"], true);
     assert!(
         report["waits"]["1s"]["scenarios"]
@@ -151,7 +151,7 @@ fn own_discard_furiten_blocks_the_whole_wait_including_called_discards() {
     evidence["position"]["players"][2]["discards"] = json!([
         {"tile":"4s","called":false},{"tile":"4s","called":false},{"tile":"4s","called":false},{"tile":"4s","called":false}
     ]);
-    let report = run("analyze_hand", &evidence, json!({"discard":null}));
+    let report = run("analyze_waits", &evidence, json!({"discard":null}));
     assert_eq!(report["discard_furiten"]["blocked"], true);
     assert_eq!(
         report["discard_furiten"]["intersecting_waits"],
@@ -172,10 +172,17 @@ fn open_no_yaku_shape_does_not_gain_a_win_from_dora() {
     evidence["position"]["players"][0]["melds"] =
         json!([{"kind":"chi","tiles":["1m","2m","3m"],"called":"1m","from":3}]);
     evidence["position"]["dora_indicators"] = json!(["4p"]);
-    let report = run("analyze_hand", &evidence, json!({"discard":null}));
+    let report = run("analyze_waits", &evidence, json!({"discard":null}));
     assert_eq!(report["shanten"], 0);
     assert_eq!(report["can_declare_riichi_under_current_conditions"], false);
-    assert_eq!(report["routes"]["chiitoitsu"]["reachable"], false);
+    assert_eq!(
+        run(
+            "analyze_yaku_route",
+            &evidence,
+            json!({"discard":null,"yaku":"chiitoitsu"})
+        )["reachable"],
+        false
+    );
     for method in ["ron", "tsumo"] {
         assert_eq!(
             report["waits"]["1s"]["scenarios"]["without_riichi"][method]["has_yaku"],
@@ -365,8 +372,23 @@ fn no_yaku_wait_is_not_mistaken_for_a_furiten_free_pass() {
     );
 }
 
+fn action_detail(
+    evidence: &Value,
+    action: &str,
+    variant: Option<&str>,
+    discard: Option<&str>,
+    draw: Option<&str>,
+) -> Value {
+    run(
+        "analyze_action_details",
+        evidence,
+        json!({"action":action,"variant":variant,"discard":discard,"draw":draw}),
+    )["result"]
+        .clone()
+}
+
 #[test]
-fn chi_comparison_excludes_both_same_tile_and_suji_kuikae() {
+fn chi_summary_and_selected_detail_preserve_kuikae_and_safe_inventory() {
     let mut evidence = position("2m 3m 4m 5m 6m 7m 1p 2p 3p 5p 5pr 7s 8s");
     evidence["position"]["phase"] = json!({"kind":"after_discard","player":3});
     evidence["position"]["players"][3]["discards"] = json!([{"tile":"2m","called":false}]);
@@ -379,27 +401,31 @@ fn chi_comparison_excludes_both_same_tile_and_suji_kuikae() {
     assert_eq!(branch["forbidden_kuikae_discards"], json!(["2m", "5m"]));
     assert!(branch["next_discards"].get("2m").is_none());
     assert!(branch["next_discards"].get("5m").is_none());
-    assert_eq!(branch["next_discards"]["7s"]["closed"], false);
-    assert_eq!(
-        branch["next_discards"]["7s"]["safe_inventory"]["by_player"]["1"]["copies"],
-        0
+    assert!(branch["next_discards"]["7s"].get("waits").is_none());
+    assert!(
+        branch["next_discards"]["7s"]
+            .get("safe_inventory")
+            .is_none()
     );
+    let cut = action_detail(&evidence, "chi_low", Some("3m_4m"), Some("7s"), None);
+    assert_eq!(cut["closed"], false);
+    assert_eq!(cut["safe_inventory"]["by_player"]["1"]["copies"], 0);
+    let kept = action_detail(&evidence, "chi_low", Some("3m_4m"), Some("8s"), None);
     assert_eq!(
-        branch["next_discards"]["8s"]["safe_inventory"]["by_player"]["1"]["tiles"],
+        kept["safe_inventory"]["by_player"]["1"]["tiles"],
         json!(["7s"])
     );
-    assert_eq!(
-        report["pass"]["concealed_after"].as_array().unwrap().len(),
-        13
+    let invalid = execute(
+        "analyze_action_details",
+        &evidence,
+        r#"{"action":"chi_low","variant":"3m_4m","discard":"5m","draw":null}"#,
     );
-    assert!(report.get("pon").is_none());
+    assert_eq!(invalid["ok"], false);
     assert_eq!(report["pass"]["passes_current_winning_tile"], false);
-    assert_eq!(report["pass"]["temporary_furiten_after_pass"], false);
-    assert_eq!(report["pass"]["riichi_furiten_after_pass"], false);
 }
 
 #[test]
-fn pon_comparison_keeps_real_structure_and_each_opponents_safe_inventory() {
+fn selected_pon_keeps_structure_and_each_opponents_safe_inventory() {
     let mut evidence = position("5mr 5m 7m 8p 1s 3s 4s 5s 7s W W P P");
     evidence["position"]["phase"] = json!({"kind":"after_discard","player":3});
     evidence["position"]["players"][1]["melds"] =
@@ -407,58 +433,29 @@ fn pon_comparison_keeps_real_structure_and_each_opponents_safe_inventory() {
     evidence["position"]["players"][1]["discards"] = json!([{"tile":"1s","called":false}]);
     evidence["position"]["players"][3]["discards"] = json!([{"tile":"P","called":false}]);
     offer(&mut evidence, &["pon", "pass"]);
-    let report = run("analyze_actions", &evidence, json!({}));
-    let comparison = &report["call_comparison"];
-    let pass = &comparison["pass"];
+    let pass = action_detail(&evidence, "pass", None, None, None);
     assert_eq!(pass["shanten"], 3);
-    assert_eq!(pass["concealed_count"], 13);
+    assert_eq!(pass["concealed_after"].as_array().unwrap().len(), 13);
     assert_eq!(pass["closed"], true);
-    assert!(
-        pass["structure"]["components"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|part| part["kind"] == "sequence" && part["tiles"] == json!(["3s", "4s", "5s"]))
-    );
     assert_eq!(pass["structure"]["isolated_kinds"], json!(["8p"]));
+    let cut = action_detail(&evidence, "pon", Some("P_P"), Some("1s"), None);
+    assert_eq!(cut["safe_inventory"]["by_player"]["1"]["copies"], 0);
+    let kept = action_detail(&evidence, "pon", Some("P_P"), Some("4s"), None);
+    assert_eq!(kept["shanten"], 2);
     assert_eq!(
-        pass["known_safe_tiles_by_player"]["1"]["tiles"],
+        kept["safe_inventory"]["by_player"]["1"]["tiles"],
         json!(["1s"])
     );
-    assert_eq!(
-        pass["known_safe_tiles_by_player"]["3"]["tiles"],
-        json!(["P", "P"])
-    );
-    assert_eq!(
-        comparison["opponents"]["1"]["riichi_blocked_by_open_melds"],
-        true
-    );
-    let choices = comparison["after_call_and_discard"].as_array().unwrap();
-    let cut = |tile: &str| {
-        choices
-            .iter()
-            .find(|choice| choice["discard"] == tile)
-            .unwrap()
-    };
-    assert_eq!(cut("1s")["known_safe_tiles_by_player"]["1"]["copies"], 0);
-    assert_eq!(
-        cut("4s")["known_safe_tiles_by_player"]["1"]["tiles"],
-        json!(["1s"])
-    );
-    assert_eq!(cut("4s")["shanten"], 2);
-    assert_eq!(cut("3s")["shanten"], 3);
-    for choice in choices {
-        assert_eq!(choice["consumed"], json!(["P", "P"]));
-        assert_eq!(choice["concealed_count_after_discard"], 10);
-        assert_eq!(choice["closed"], false);
-        assert_eq!(choice["known_safe_tiles_by_player"]["3"]["copies"], 0);
-    }
-    // 同样四张公开字牌，暗杠不应被误判为失去门前。
-    evidence["position"]["players"][1]["melds"] =
-        json!([{"kind":"ankan","tiles":["C","C","C","C"],"called":null,"from":null}]);
+    assert_eq!(kept["safe_inventory"]["by_player"]["3"]["copies"], 0);
     let defense = run("analyze_defense", &evidence, json!({}));
     assert_eq!(
         defense["opponents"]["1"]["riichi_blocked_by_open_melds"],
+        true
+    );
+    evidence["position"]["players"][1]["melds"] =
+        json!([{"kind":"ankan","tiles":["C","C","C","C"],"called":null,"from":null}]);
+    assert_eq!(
+        run("analyze_defense", &evidence, json!({}))["opponents"]["1"]["riichi_blocked_by_open_melds"],
         false
     );
 }
@@ -480,18 +477,24 @@ fn pon_preserves_red_consumption_variants_and_rejects_post_call_riichi() {
         variants["5pr_5p"]["forbidden_kuikae_discards"],
         json!(["5p"])
     );
-    for variant in variants.as_object().unwrap().values() {
-        for discard in variant["next_discards"].as_object().unwrap().values() {
-            assert_eq!(
-                discard["can_declare_riichi_under_current_conditions"],
-                false
-            );
-        }
+    for variant in ["5p_5p", "5pr_5p"] {
+        let hand = action_detail(&evidence, "pon", Some(variant), Some("E"), None);
+        assert_eq!(hand["can_declare_riichi_under_current_conditions"], false);
+        assert_eq!(hand["known_bonus"]["aka_dora"], 1);
     }
+    // 副露与暗牌一起保留赤牌，错误变体不会偷偷回退到其他合法组合。
+    assert_eq!(
+        execute(
+            "analyze_action_details",
+            &evidence,
+            r#"{"action":"pon","variant":"missing","discard":"E","draw":null}"#
+        )["ok"],
+        false
+    );
 }
 
 #[test]
-fn kan_draws_keep_visible_copies_and_riichi_discard_lock() {
+fn kan_summary_does_not_expand_draws_and_selected_draw_preserves_riichi_lock() {
     let mut evidence = position("1m 1m 1m 1m 2m 3m 4m 5p 5p 6p 7p 8p E E");
     evidence["position"]["players"][0]["riichi"] = json!("accepted");
     offer(&mut evidence, &["kan"]);
@@ -500,18 +503,41 @@ fn kan_draws_keep_visible_copies_and_riichi_discard_lock() {
     let kan = &report["kan"]["variants"]["ankan_1m"];
     assert_eq!(kan["consumed"], json!(["1m", "1m", "1m", "1m"]));
     assert_eq!(kan["closed_after"], true);
-    assert!(kan["replacement_draws"].get("1m").is_none());
-    for (tile, draw) in kan["replacement_draws"].as_object().unwrap() {
-        assert_eq!(
-            draw["best_discards"]
-                .as_object()
-                .unwrap()
-                .keys()
-                .cloned()
-                .collect::<Vec<_>>(),
-            vec![tile.clone()]
-        );
-    }
+    assert!(kan["replacement_draws"].as_object().unwrap().is_empty());
+    let detail = action_detail(&evidence, "kan", Some("ankan_1m"), None, Some("E"));
+    assert_eq!(detail["replacement_draws"].as_object().unwrap().len(), 1);
+    assert_eq!(
+        detail["replacement_draws"]["E"]["best_discards"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>(),
+        vec!["E"]
+    );
+    assert_eq!(
+        execute(
+            "analyze_action_details",
+            &evidence,
+            r#"{"action":"kan","variant":"ankan_1m","discard":null,"draw":"1m"}"#
+        )["error"]["code"],
+        "exhausted_draw"
+    );
+}
+
+#[test]
+fn yaku_distance_does_not_expand_progression_until_requested() {
+    let evidence = position("3m 7m 8m 1p 1p 2p 4p 5p 7s 8s 9s E C C");
+    let args = json!({"discard":"2p","yaku":"honitsu"});
+    let distance = run("analyze_yaku_route", &evidence, args.clone());
+    assert_eq!(distance["progression"], Value::Null);
+    assert_eq!(distance["scope"]["progression_available"], false);
+    let progression = run("analyze_yaku_progression", &evidence, args);
+    assert_eq!(
+        distance["available_shanten"],
+        progression["available_shanten"]
+    );
+    assert!(progression["progression"].is_array());
 }
 
 #[test]
@@ -566,4 +592,37 @@ fn hand_tool_works_without_mortal_and_invalid_arguments_are_rejected() {
     ] {
         assert_eq!(execute(name, &evidence, args)["ok"], false, "{name}");
     }
+}
+
+#[test]
+fn split_tools_can_be_called_in_steps_and_only_final_text_is_returned() {
+    let evidence = position("1m 2m 3m 4m 5m 6m 7p 8p 9p 2s 3s 5p 5pr E");
+    let definitions = super::super::tool_definitions();
+    assert!(
+        !definitions
+            .iter()
+            .any(|tool| tool["name"] == "compare_discard_facts")
+    );
+    let mut step = 0;
+    let (answer, _) = super::super::answer(&evidence, &[], false, "切东以后听什么、多少点？", |input, _| {
+        step += 1;
+        if step > 1 {
+            let output = input.iter().rev().find(|item| item["type"] == "function_call_output").unwrap();
+            let result: Value = serde_json::from_str(output["output"].as_str().unwrap()).unwrap();
+            assert_eq!(result["ok"],true);
+            if step == 2 { assert!(result["analysis"].get("waits").is_none()); }
+            if step == 3 { assert!(result["analysis"]["waits"].is_object()); }
+        }
+        let text = json!({"type":"message","role":"assistant","status":"completed",
+            "content":[{"type":"output_text","text":if step == 3 { "听1s、4s，分别比较荣和与自摸打点。" } else { "尚未核验的中间解释" }}]});
+        let mut output = vec![text];
+        if step < 3 {
+            output.push(json!({"type":"function_call","status":"completed","call_id":format!("step-{step}"),
+                "name":if step==1 {"analyze_hand"} else {"analyze_waits"},"arguments":"{\"discard\":\"E\"}"}));
+        }
+        Ok(json!({"status":"completed","output":output}))
+    }).unwrap();
+    assert_eq!(step, 3);
+    assert_eq!(answer, "听1s、4s，分别比较荣和与自摸打点。");
+    assert!(!answer.contains("中间解释"));
 }

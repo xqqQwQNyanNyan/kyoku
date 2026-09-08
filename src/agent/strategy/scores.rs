@@ -98,55 +98,6 @@ pub(super) fn outcome_value(outcome: &ScoreOutcome) -> Value {
 }
 
 /// 自家具体和牌形的条件结算；新增立直支出与回收在同一分支中只记一次。
-pub(super) fn winning_outcomes(
-    snapshot: &Snapshot,
-    payments: &Payments,
-    new_deposit: bool,
-) -> Result<Value, ToolError> {
-    let mut scores: [i32; 4] = std::array::from_fn(|i| snapshot.position.players[i].score);
-    let mut sticks = snapshot.position.riichi_sticks;
-    if new_deposit {
-        if scores[snapshot.player] < 1000 {
-            return Err(("invalid_score_scenario", "给定立直分支不足1000点。".into()));
-        }
-        scores[snapshot.player] -= 1000;
-        sticks = sticks
-            .checked_add(1)
-            .ok_or_else(|| ("invalid_score_scenario", "供托数量溢出。".into()))?;
-    }
-    let winner = PlayerIndex::new(snapshot.player as u8).unwrap();
-    let dealer = PlayerIndex::new(snapshot.position.dealer).unwrap();
-    let payers: Vec<_> = if matches!(payments, Payments::Ron { .. }) {
-        (0..4).filter(|&p| p != snapshot.player).map(Some).collect()
-    } else {
-        vec![None]
-    };
-    let mut outcomes = serde_json::Map::new();
-    for payer in payers {
-        let mut result = apply_win(
-            scores,
-            winner,
-            dealer,
-            payer.map(|p| PlayerIndex::new(p as u8).unwrap()),
-            payments,
-            snapshot.position.honba,
-            sticks,
-        )
-        .map_err(|e| ("invalid_score_scenario", format!("{e:?}")))?;
-        if new_deposit {
-            result.deltas[snapshot.player] -= 1000;
-        }
-        outcomes.insert(
-            payer.map_or_else(|| "tsumo".into(), |payer| format!("ron_from_{payer}")),
-            outcome_value(&result),
-        );
-    }
-    Ok(
-        json!({"new_riichi_deposit":if new_deposit {1000} else {0},"by_payer":outcomes,
-        "deltas_relative_to_original_scores":true,"does_not_establish_win_legality":true}),
-    )
-}
-
 pub(super) fn draws(snapshot: &Snapshot) -> Value {
     let scores = std::array::from_fn(|i| snapshot.position.players[i].score);
     let combinations: Vec<_> = (0..16u8).map(|mask| {

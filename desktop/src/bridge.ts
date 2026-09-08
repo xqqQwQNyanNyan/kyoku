@@ -1,5 +1,5 @@
 import { Channel, invoke } from '@tauri-apps/api/core';
-import type { Bridge, QuestionProgress, QuestionRun } from './types';
+import type { Bridge, MigrationProgress, QuestionProgress, QuestionRun } from './types';
 
 function questionChannel(run: QuestionRun) {
   const channel = new Channel<QuestionProgress>();
@@ -8,6 +8,14 @@ function questionChannel(run: QuestionRun) {
 }
 
 export const bridge: Bridge = {
+  getStorage: () => invoke('get_storage'),
+  chooseDataDirectory: () => invoke('choose_data_directory'),
+  migrateData: (directory, requestId, onProgress) => {
+    const channel = new Channel<MigrationProgress>();
+    channel.onmessage = onProgress;
+    return invoke('migrate_data', { directory, requestId, onProgress: channel });
+  },
+  cancelDataMigration: (requestId) => invoke('cancel_data_migration', { requestId }),
   getSettings: () => invoke('get_settings'),
   saveSettings: (input) => invoke('save_settings', { input }),
   testConnection: (input, onProgress) => {

@@ -1,6 +1,6 @@
 use serde_json::{Value, json};
 
-use super::super::{AgentError, INSTRUCTIONS, RequestMode, invalid, required_string};
+use super::super::{AgentError, RequestMode, invalid, required_string};
 use super::available_tools;
 
 pub(super) fn request(
@@ -8,7 +8,7 @@ pub(super) fn request(
     input: &[Value],
     mode: RequestMode,
 ) -> Result<Value, AgentError> {
-    let mut messages = vec![json!({"role": "system", "content": INSTRUCTIONS})];
+    let mut messages = vec![json!({"role": "system", "content": mode.instructions()})];
     let mut items = input.iter();
     while let Some(item) = items.next() {
         if let Some(message) = item.get("_chat_message") {
@@ -25,9 +25,12 @@ pub(super) fn request(
                 "role": "tool", "tool_call_id": required_string(item, "call_id")?,
                 "content": required_string(item, "output")?,
             }));
-        } else if matches!(item["role"].as_str(), Some("user" | "developer")) {
+        } else if matches!(
+            item["role"].as_str(),
+            Some("user" | "developer" | "assistant")
+        ) {
             messages.push(json!({
-                "role": if item["role"] == "developer" { "system" } else { "user" },
+                "role": if item["role"] == "developer" { "system" } else { required_string(item, "role")? },
                 "content": required_string(item, "content")?,
             }));
         } else {
