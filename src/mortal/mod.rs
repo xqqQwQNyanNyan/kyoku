@@ -108,6 +108,7 @@ impl Mortal {
     }
 
     fn spawn(mut command: Command, player: PlayerIndex) -> Result<Self, MortalError> {
+        hide_console_window(&mut command);
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -228,6 +229,17 @@ impl Mortal {
         }
     }
 }
+
+#[cfg(target_os = "windows")]
+fn hide_console_window(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(target_os = "windows"))]
+fn hide_console_window(_: &mut Command) {}
 
 impl Drop for Mortal {
     fn drop(&mut self) {

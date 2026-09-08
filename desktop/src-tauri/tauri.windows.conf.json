@@ -1,0 +1,13 @@
+{
+  "bundle": {
+    "targets": ["nsis"],
+    "resources": {
+      "target/bundled-runtime/windows-x64/inference/": "inference/",
+      "target/bundled-runtime/windows-x64/majsoul/": "majsoul/"
+    },
+    "windows": {
+      "webviewInstallMode": { "type": "offlineInstaller" },
+      "nsis": { "installMode": "currentUser" }
+    }
+  }
+}

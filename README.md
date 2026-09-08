@@ -2,19 +2,20 @@
 
 一个用 Rust 编写的日麻牌谱复盘助手。
 
-目前提供桌面 GUI 和命令行。macOS 桌面版可构建包含完整本地推理环境的安装包。
+目前提供桌面 GUI 和命令行。macOS 可构建正式桌面安装包，Windows 11 x64 可构建包含完整本地推理环境的内部测试包。
 
 ## 安装与启动
 
 桌面安装包适用于 **Apple Silicon（M 系列芯片）、macOS 14 及以上**。
-打开 `Kyoku_0.1.0_aarch64.dmg`，将 Kyoku 拖入“应用程序”，然后启动。
+打开 `Kyoku.dmg`，将 Kyoku 拖入“应用程序”，然后启动。
 
 安装包已包含本地分析引擎和模型，无需另外安装 Python、下载权重或配置 API Key。
 **回放和 Mortal 分析可以离线使用；导入天凤、雀魂链接和 Agent 问答需要联网。**
 
 当前安装包尚未经过 Apple 公证，首次打开可能被 macOS 拦截。请确认安装包来源可信；
 如果系统不允许打开，可以先使用下方的[源码运行方式](#从源码运行)。
-暂不提供 Intel Mac、Windows 和 Linux 安装包，后续会逐渐支持。
+暂不提供 Intel Mac 和 Linux 安装包。Windows 11 x64 内部测试包的构建与验收说明见
+[Windows 发行方案](docs/windows-release.md)；完成 Windows 实机验收前不作为正式发行包。
 
 ## 开始第一次复盘
 
@@ -289,7 +290,7 @@ Agent 先调用小工具按需取证：牌形、待牌打点、役种、防守�
 [Tauri 开发依赖](https://v2.tauri.app/start/prerequisites/)；使用 Mortal 分析需要 Python 3.11+
 （推荐 3.12）和 curl。
 
-桌面版已在 macOS 使用；Linux 桌面尚未完成验证，Windows 的 Mortal 环境尚未适配。
+桌面版已在 macOS 使用；Linux 桌面尚未完成验证。Windows 11 x64 已完成构建适配，仍需在 Windows 实机验证内置 Mortal、雀魂下载和安装／卸载流程。
 
 ```bash
 git clone https://github.com/xqqQwQNyanNyan/kyoku.git

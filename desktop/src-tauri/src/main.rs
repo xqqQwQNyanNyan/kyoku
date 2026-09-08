@@ -784,7 +784,14 @@ async fn runtime_status(check: bool, app: tauri::AppHandle) -> Result<RuntimeSta
             bundled: paths.bundled,
             available: paths.python.is_file()
                 && paths.checkpoint.is_file()
-                && paths.runtime.join("mortal/libriichi.so").is_file(),
+                && paths
+                    .runtime
+                    .join(if cfg!(target_os = "windows") {
+                        "mortal/libriichi.pyd"
+                    } else {
+                        "mortal/libriichi.so"
+                    })
+                    .is_file(),
             checked: false,
             model: "Mortal V4 · mortal-582500 · CPU".into(),
         };

@@ -50,10 +50,14 @@ impl Paths {
             .path()
             .resource_dir()
             .map_err(|_| UiError::new("majsoul_runtime", "无法定位雀魂下载组件"))?;
-        Ok(Self::from_roots(&resources, development_home().as_deref()))
+        Ok(Self::from_roots(
+            &resources,
+            development_home().as_deref(),
+            cfg!(target_os = "windows"),
+        ))
     }
 
-    fn from_roots(resources: &Path, development: Option<&Path>) -> Self {
+    fn from_roots(resources: &Path, development: Option<&Path>, windows: bool) -> Self {
         let root = resources.join("majsoul");
         if !root.exists()
             && let Some(home) = development
@@ -64,7 +68,11 @@ impl Paths {
             };
         }
         Self {
-            node: root.join("node/bin/node"),
+            node: root.join(if windows {
+                "node/node.exe"
+            } else {
+                "node/bin/node"
+            }),
             script: root.join("service/desktop.cjs"),
         }
     }
@@ -108,9 +116,13 @@ impl Account {
         let mut command = Command::new(&paths.node);
         command
             .arg(&paths.script)
-            // 不继承 NODE_OPTIONS、服务 .env 凭据等；开发时仅保留查找 Node 所需的 PATH。
-            .env_clear()
-            .env("PATH", std::env::var_os("PATH").unwrap_or_default());
+            // 不继承 NODE_OPTIONS、服务 .env 凭据等；仅保留启动运行库所需的系统路径。
+            .env_clear();
+        for name in runtime_environment_names() {
+            if let Some(value) = std::env::var_os(name) {
+                command.env(name, value);
+            }
+        }
         let mut session = Session::spawn(command)?;
         self.next_login = Some(Instant::now() + LOGIN_COOLDOWN);
         let response = session.request(&json!({
@@ -182,6 +194,7 @@ struct Session {
 
 impl Session {
     fn spawn(mut command: Command) -> Result<Self, UiError> {
+        hide_console_window(&mut command);
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -248,6 +261,25 @@ impl Session {
         serde_json::from_str(&line).map_err(|_| connection_error())
     }
 }
+
+fn runtime_environment_names() -> &'static [&'static str] {
+    if cfg!(target_os = "windows") {
+        &["PATH", "SystemRoot", "WINDIR", "TEMP", "TMP", "USERPROFILE"]
+    } else {
+        &["PATH"]
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn hide_console_window(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(target_os = "windows"))]
+fn hide_console_window(_: &mut Command) {}
 
 impl Drop for Session {
     fn drop(&mut self) {

@@ -14,3 +14,6 @@ MACOSX_DEPLOYMENT_TARGET=14.0 npm --prefix desktop run tauri -- build --config s
     "$project_dir/desktop/src-tauri/target/release/bundle/macos/Kyoku.app/Contents/Resources/inference"
 "$project_dir/mortal/.venv/bin/python" scripts/prepare-majsoul.py --verify \
     "$project_dir/desktop/src-tauri/target/release/bundle/macos/Kyoku.app/Contents/Resources/majsoul"
+version="$(node -p "require('./desktop/package.json').version")"
+dmg_dir="$project_dir/desktop/src-tauri/target/release/bundle/dmg"
+mv -f "$dmg_dir/Kyoku_${version}_aarch64.dmg" "$dmg_dir/Kyoku.dmg"

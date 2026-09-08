@@ -2,7 +2,7 @@ use serde_json::json;
 
 #[test]
 fn stopped_questions_survive_restart_and_late_cancellation_cannot_stop_the_retry() {
-    let (endpoint, server) = server(vec![(200, message("重试完成"))]);
+    let (endpoint, server) = server(vec![(200, message("重试草稿")), (200, message("重试完成"))]);
     let config = AgentConfig {
         endpoint: &endpoint,
         model: "test",
@@ -76,7 +76,7 @@ fn stopped_questions_survive_restart_and_late_cancellation_cannot_stop_the_retry
     );
     assert_eq!(archive["turns"][1]["evidence"]["player"], 0);
     assert_eq!(archive["turns"][1]["evidence"]["event_index"], 2);
-    assert_eq!(server.join().unwrap().len(), 1);
+    assert_eq!(server.join().unwrap().len(), 2);
     drop(retry);
     assert!(
         questions
@@ -708,8 +708,10 @@ fn answers_and_failed_traces_are_saved_before_reopening_and_continuing() {
     use serde_json::json;
     let responses = vec![
         (200, json!({"status":"completed","output":[{"type":"function_call","status":"completed","name":"get_review","arguments":"{}","call_id":"saved"}]}).to_string()),
+        (200, message("原会话草稿")),
         (200, message("原会话回答")),
         (503, "not-persisted-http-body".into()),
+        (200, message("恢复后的草稿")),
         (200, message("恢复后的回答")),
     ];
     let (endpoint, server) = server(responses);
@@ -744,11 +746,19 @@ fn answers_and_failed_traces_are_saved_before_reopening_and_continuing() {
     assert!(!failed.to_string().contains("not-persisted-http-body"));
     store.ask("saved", "继续原来的讨论", &config, None).unwrap();
     let requests = server.join().unwrap();
-    // 存档保留完整证据，线上请求会压缩；恢复应接续同样的线上消息。
-    let mut expected = requests[1]["input"].as_array().unwrap().clone();
-    expected.push(accepted.as_array().unwrap().last().unwrap().clone());
-    expected.push(json!({"role":"user","content":"继续原来的讨论"}));
-    assert_eq!(requests[3]["input"], json!(expected));
+    // 存档保留完整证据，线上请求只接续核查后的问答正文。
+    let continuation = requests[4]["input"].as_array().unwrap();
+    assert!(
+        continuation
+            .iter()
+            .any(|item| item["role"] == "assistant" && item["content"] == "原会话回答")
+    );
+    assert!(
+        continuation
+            .iter()
+            .any(|item| item["role"] == "user" && item["content"] == "继续原来的讨论")
+    );
+    assert!(!requests[4]["input"].to_string().contains("function_call"));
     assert_eq!(store.list().unwrap().sessions.len(), 1);
 }
 
@@ -788,8 +798,11 @@ fn fixture_game() -> SessionGame {
 #[test]
 fn game_sessions_preserve_turn_snapshots_browsing_position_and_portable_replay() {
     let (endpoint, server) = server(vec![
+        (200, message("第一处草稿")),
         (200, message("第一处")),
+        (200, message("第二处草稿")),
         (200, message("第二处")),
+        (200, message("独立会话草稿")),
         (200, message("独立会话")),
     ]);
     let config = AgentConfig {
@@ -889,7 +902,7 @@ fn game_sessions_preserve_turn_snapshots_browsing_position_and_portable_replay()
             .any(|frame| frame.event_index == position.event_index)
     );
     let requests = server.join().unwrap();
-    assert_eq!(requests.len(), 3);
+    assert_eq!(requests.len(), 6);
     // 保存完整牌谱不改变网络投影：每份快照仍只提供当前观察玩家的手牌。
     for request in requests {
         assert!(!request.to_string().contains("tehais"));
@@ -902,9 +915,13 @@ fn game_sessions_preserve_turn_snapshots_browsing_position_and_portable_replay()
 fn retries_use_original_question_snapshots_even_after_browsing_and_other_questions() {
     let (endpoint, server) = server(vec![
         (503, "failed".into()),
+        (200, message("新问题草稿")),
         (200, message("新问题成功")),
+        (200, message("旧问题重试草稿")),
         (200, message("旧问题重试成功")),
+        (200, message("继续浏览位置草稿")),
         (200, message("继续浏览位置")),
+        (200, message("未完成问题恢复草稿")),
         (200, message("未完成问题恢复")),
     ]);
     let config = AgentConfig {
@@ -973,12 +990,12 @@ fn retries_use_original_question_snapshots_even_after_browsing_and_other_questio
     assert_eq!(archive["turns"][3]["evidence"]["event_index"], 10);
     assert_eq!(archive["turns"][4]["evidence"]["event_index"], 10);
     assert_eq!(archive["turns"][4]["question"], "退出前的问题");
-    assert_eq!(server.join().unwrap().len(), 5);
+    assert_eq!(server.join().unwrap().len(), 9);
 }
 
 #[test]
 fn a_session_cannot_be_reused_for_another_game_and_invalid_import_keeps_original() {
-    let (endpoint, server) = server(vec![(200, message("已有回答"))]);
+    let (endpoint, server) = server(vec![(200, message("已有草稿")), (200, message("已有回答"))]);
     let config = AgentConfig {
         endpoint: &endpoint,
         model: "test",
@@ -1024,5 +1041,5 @@ fn a_session_cannot_be_reused_for_another_game_and_invalid_import_keeps_original
     json["game"]["key"] = json!("forged-key");
     assert!(store.import(&json.to_string()).is_err());
     assert_eq!(fs::read(directory.0.join("one.json")).unwrap(), original);
-    assert_eq!(server.join().unwrap().len(), 1);
+    assert_eq!(server.join().unwrap().len(), 2);
 }

@@ -71,14 +71,20 @@ fn credentials_require_consent_before_starting_any_process() {
 #[test]
 fn release_uses_bundled_node_and_development_uses_local_dependencies() {
     let resources = Path::new("/Applications/Kyoku.app/Contents/Resources");
-    let paths = Paths::from_roots(resources, None);
+    let paths = Paths::from_roots(resources, None, false);
     assert_eq!(paths.node, resources.join("majsoul/node/bin/node"));
     assert_eq!(paths.script, resources.join("majsoul/service/desktop.cjs"));
-    let paths = Paths::from_roots(Path::new("/missing"), Some(Path::new("/work")));
+    let paths = Paths::from_roots(Path::new("/missing"), Some(Path::new("/work")), false);
     assert_eq!(paths.node, Path::new("node"));
     assert_eq!(
         paths.script,
         Path::new("/work/services/majsoul/desktop.cjs")
+    );
+
+    let paths = Paths::from_roots(Path::new("C:/Kyoku/resources"), None, true);
+    assert_eq!(
+        paths.node,
+        Path::new("C:/Kyoku/resources/majsoul/node/node.exe")
     );
 }
 

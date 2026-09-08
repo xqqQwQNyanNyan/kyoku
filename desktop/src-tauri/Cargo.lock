@@ -1855,7 +1855,7 @@ dependencies = [
 
 [[package]]
 name = "kyoku"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "convlog",
  "dotenvy",
@@ -1868,7 +1868,7 @@ dependencies = [
 
 [[package]]
 name = "kyoku-desktop"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "convlog",
  "dotenvy",
