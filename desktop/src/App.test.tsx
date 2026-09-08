@@ -143,6 +143,7 @@ function api(): Bridge {
     loginMajsoul: vi.fn().mockResolvedValue(undefined),
     logoutMajsoul: vi.fn().mockResolvedValue(undefined),
     analyze: vi.fn().mockResolvedValue([decision]),
+    cancelQuestion: vi.fn().mockResolvedValue(undefined),
     ask: vi.fn().mockImplementation(async (_game, player, event, id, text) => {
       const original = stored.get(id);
       const evidence = { ...decision.evidence, player, event_index: event };
@@ -210,10 +211,12 @@ function api(): Bridge {
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((r) => {
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((r, e) => {
     resolve = r;
+    reject = e;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 async function load(bridge: Bridge) {
@@ -852,13 +855,29 @@ describe('完整回放与问答边界', () => {
     await userEvent.click(screen.getByRole('button', { name: '发送问题' }));
     await screen.findByText('【计算】测试回答');
     const id = vi.mocked(bridge.ask).mock.calls[0][3];
-    expect(bridge.ask).toHaveBeenCalledWith(1, 0, 1, id, '现在是什么情况？', 'test.json');
+    expect(bridge.ask).toHaveBeenCalledWith(
+      1,
+      0,
+      1,
+      id,
+      '现在是什么情况？',
+      'test.json',
+      expect.objectContaining({ requestId: expect.any(String), onProgress: expect.any(Function) }),
+    );
     expect(bridge.analyze).not.toHaveBeenCalled();
     fireEvent.change(screen.getByLabelText('牌谱进度'), { target: { value: '3' } });
     await userEvent.type(screen.getByLabelText('复盘问题'), '轮到别人时我该看什么？');
     await userEvent.click(screen.getByRole('button', { name: '发送问题' }));
     await screen.findByText('追问回答');
-    expect(bridge.ask).toHaveBeenLastCalledWith(1, 0, 4, id, '轮到别人时我该看什么？', 'test.json');
+    expect(bridge.ask).toHaveBeenLastCalledWith(
+      1,
+      0,
+      4,
+      id,
+      '轮到别人时我该看什么？',
+      'test.json',
+      expect.objectContaining({ requestId: expect.any(String), onProgress: expect.any(Function) }),
+    );
     expect(screen.getByText('现在是什么情况？', { selector: 'p' })).toBeTruthy();
     expect(bridge.analyze).not.toHaveBeenCalled();
     await userEvent.click(screen.getAllByRole('button', { name: '分析此玩家' })[0]);
@@ -903,7 +922,15 @@ describe('完整回放与问答边界', () => {
     await userEvent.type(screen.getByLabelText('复盘问题'), '继续解释');
     await userEvent.click(screen.getByRole('button', { name: '发送问题' }));
     await screen.findByText('追问回答');
-    expect(bridge.ask).toHaveBeenLastCalledWith(1, 0, 3, oldConversation, '继续解释', 'test.json');
+    expect(bridge.ask).toHaveBeenLastCalledWith(
+      1,
+      0,
+      3,
+      oldConversation,
+      '继续解释',
+      'test.json',
+      expect.objectContaining({ requestId: expect.any(String), onProgress: expect.any(Function) }),
+    );
     expect(bridge.ask).toHaveBeenCalledTimes(2);
   });
 
@@ -942,6 +969,104 @@ describe('完整回放与问答边界', () => {
     expect(screen.getByTestId('event-caption').textContent).toBe('自己 · 摸牌 一筒');
     await userEvent.click(screen.getAllByRole('button', { name: '分析此玩家' })[0]);
     await screen.findByRole('button', { name: '分析已完成' });
+  });
+});
+
+describe('长请求进度与停止', () => {
+  async function begin(bridge: Bridge, text = '请解释这里') {
+    await load(bridge);
+    await openChat();
+    await userEvent.type(screen.getByLabelText('复盘问题'), text);
+    await userEvent.click(screen.getByRole('button', { name: '发送问题' }));
+    await waitFor(() => expect(bridge.ask).toHaveBeenCalledOnce());
+    const call = vi.mocked(bridge.ask).mock.calls[0];
+    return { id: call[3], run: call[6] };
+  }
+
+  it('登记前点击停止仍会送达，停止后可按原问题重试且忽略旧进度', async () => {
+    const bridge = api();
+    const pending = deferred<SessionView>();
+    vi.mocked(bridge.ask).mockReturnValueOnce(pending.promise);
+    const { id, run } = await begin(bridge);
+    expect(screen.getByText('正在准备局面…')).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: '停止回答' }));
+    expect(bridge.cancelQuestion).not.toHaveBeenCalled();
+    expect(screen.getByText('正在停止…')).toBeTruthy();
+    act(() => run.onProgress({ phase: 'preparing' }));
+    await waitFor(() => expect(bridge.cancelQuestion).toHaveBeenCalledWith(id, run.requestId));
+    expect((screen.getByRole('button', { name: '停止回答' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    await userEvent.click(screen.getByLabelText('下一事件'));
+    const stopped = savedSession(id, '', '请解释这里');
+    stopped.archive.turns[0].answer = null;
+    stopped.archive.turns[0].error = '已停止本次回答';
+    vi.mocked(bridge.getSession).mockResolvedValueOnce(stopped);
+    await act(async () => pending.reject({ message: '已停止本次回答' }));
+    expect(screen.queryByRole('button', { name: '停止回答' })).toBeNull();
+    expect((screen.getByLabelText('复盘问题') as HTMLTextAreaElement).value).toBe('请解释这里');
+
+    const retry = deferred<SessionView>();
+    vi.mocked(bridge.retrySession).mockReturnValueOnce(retry.promise);
+    await userEvent.click(screen.getByRole('button', { name: '重试此问题' }));
+    await waitFor(() => expect(bridge.retrySession).toHaveBeenCalledOnce());
+    const [retryId, turn, next] = vi.mocked(bridge.retrySession).mock.calls[0];
+    expect([retryId, turn]).toEqual([id, 0]);
+    expect(next.requestId).not.toBe(run.requestId);
+    act(() => next.onProgress({ phase: 'model', request: 1 }));
+    act(() => run.onProgress({ phase: 'tool', name: 'analyze_defense' }));
+    expect(screen.getByText('正在等待模型 · 第 1 次请求')).toBeTruthy();
+    expect(screen.queryByText('检查防守依据…')).toBeNull();
+    await act(async () => retry.resolve(savedSession(id, '重试成功')));
+    expect(screen.getByText('重试成功')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '停止回答' })).toBeNull();
+  });
+
+  it('每个会话保留自己的进度，停止仅作用于当前会话', async () => {
+    const bridge = api();
+    const first = deferred<SessionView>();
+    const second = deferred<SessionView>();
+    vi.mocked(bridge.ask).mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    const original = await begin(bridge);
+    act(() => original.run.onProgress({ phase: 'model', request: 2 }));
+    await userEvent.click(screen.getByRole('button', { name: '新建会话' }));
+    await userEvent.type(screen.getByLabelText('复盘问题'), '另一段讨论');
+    await userEvent.click(screen.getByRole('button', { name: '发送问题' }));
+    await waitFor(() => expect(bridge.ask).toHaveBeenCalledTimes(2));
+    const call = vi.mocked(bridge.ask).mock.calls[1];
+    act(() => call[6].onProgress({ phase: 'tool', name: 'analyze_defense' }));
+    expect(screen.getByText('检查防守依据…')).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: '停止回答' }));
+    expect(bridge.cancelQuestion).toHaveBeenCalledExactlyOnceWith(call[3], call[6].requestId);
+    await userEvent.click(screen.getByRole('combobox', { name: '当前会话' }));
+    await userEvent.click(
+      within(screen.getByRole('listbox', { name: '当前会话' })).getAllByRole('option')[0],
+    );
+    expect(screen.getByText('正在等待模型 · 第 2 次请求')).toBeTruthy();
+    expect(screen.queryByText('正在停止…')).toBeNull();
+    await act(async () => {
+      first.resolve(savedSession(original.id, '第一段完成'));
+      second.resolve(savedSession(call[3], '第二段已结束'));
+    });
+    expect(screen.getByText('第一段完成')).toBeTruthy();
+  });
+
+  it('停止命令失败会恢复按钮，允许再次停止', async () => {
+    const bridge = api();
+    const pending = deferred<SessionView>();
+    vi.mocked(bridge.ask).mockReturnValueOnce(pending.promise);
+    vi.mocked(bridge.cancelQuestion).mockRejectedValueOnce({ message: '停止暂时失败' });
+    const { id, run } = await begin(bridge);
+    act(() => run.onProgress({ phase: 'model', request: 1 }));
+    await userEvent.click(screen.getByRole('button', { name: '停止回答' }));
+    await screen.findByText('停止暂时失败');
+    expect((screen.getByRole('button', { name: '停止回答' }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
+    await userEvent.click(screen.getByRole('button', { name: '停止回答' }));
+    expect(bridge.cancelQuestion).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText('停止暂时失败')).toBeNull();
+    await act(async () => pending.resolve(savedSession(id, '请求已结束')));
   });
 });
 
@@ -1030,7 +1155,11 @@ describe('独立会话与历史上下文', () => {
     await userEvent.type(screen.getByLabelText('复盘问题'), '接着说');
     await userEvent.click(screen.getByRole('button', { name: '发送问题' }));
     await screen.findByText('追问回答');
-    expect(bridge.continueSession).toHaveBeenCalledWith(id, '接着说');
+    expect(bridge.continueSession).toHaveBeenCalledWith(
+      id,
+      '接着说',
+      expect.objectContaining({ requestId: expect.any(String), onProgress: expect.any(Function) }),
+    );
     expect(bridge.analyze).toHaveBeenCalledOnce();
     await userEvent.click(screen.getByRole('button', { name: '导出 JSON' }));
     await screen.findByText('已导出到：/Downloads/Kyoku-session-test.json');
@@ -1099,7 +1228,11 @@ describe('独立会话与历史上下文', () => {
     await userEvent.type(screen.getByLabelText('复盘问题'), '这个会话的上下文是什么');
     await userEvent.click(screen.getByRole('button', { name: '发送问题' }));
     await screen.findByText('追问回答');
-    expect(bridge.continueSession).toHaveBeenCalledWith('imported', '这个会话的上下文是什么');
+    expect(bridge.continueSession).toHaveBeenCalledWith(
+      'imported',
+      '这个会话的上下文是什么',
+      expect.objectContaining({ requestId: expect.any(String), onProgress: expect.any(Function) }),
+    );
     Object.defineProperty(file, 'size', { value: 33 * 1024 * 1024 });
     await userEvent.upload(screen.getByLabelText('选择会话 JSON 文件'), file);
     await screen.findByText('会话文件不能超过 32 MiB');
@@ -1275,7 +1408,15 @@ describe('牌谱会话的恢复与定位', () => {
     await userEvent.type(screen.getByLabelText('复盘问题'), '接着看');
     await userEvent.click(screen.getByRole('button', { name: '发送问题' }));
     await screen.findByText('追问回答');
-    expect(bridge.ask).toHaveBeenLastCalledWith(99, 0, 2, id, '接着看', 'test.json');
+    expect(bridge.ask).toHaveBeenLastCalledWith(
+      99,
+      0,
+      2,
+      id,
+      '接着看',
+      'test.json',
+      expect.objectContaining({ requestId: expect.any(String), onProgress: expect.any(Function) }),
+    );
     expect(bridge.analyze).not.toHaveBeenCalled();
   });
 
@@ -1357,7 +1498,11 @@ describe('牌谱会话的恢复与定位', () => {
     await userEvent.click(screen.getByRole('option', { name: '下家' }));
     await userEvent.click(screen.getByRole('button', { name: '重试此问题' }));
     await screen.findByText('重试的回答');
-    expect(bridge.retrySession).toHaveBeenCalledWith(id, 0);
+    expect(bridge.retrySession).toHaveBeenCalledWith(
+      id,
+      0,
+      expect.objectContaining({ requestId: expect.any(String), onProgress: expect.any(Function) }),
+    );
     expect(bridge.ask).toHaveBeenCalledOnce();
     expect((screen.getByLabelText('牌谱进度') as HTMLInputElement).value).toBe('2');
     expect(screen.getByRole('combobox', { name: '复盘玩家' }).textContent).toBe('下家');

@@ -1112,6 +1112,25 @@ summary {
 .thinking .status-dot {
   animation: pulse 1.2s infinite;
 }
+.question-stage {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.question-elapsed,
+.thinking p {
+  color: var(--muted);
+  font-size: 10px;
+}
+.thinking p {
+  margin: 6px 0 0;
+}
+.composer .stop-question {
+  width: auto;
+  min-width: 52px;
+  padding: 0 9px;
+  font-size: 11px;
+}
 @keyframes pulse {
   50% {
     opacity: 0.3;

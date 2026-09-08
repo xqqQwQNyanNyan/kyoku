@@ -111,17 +111,27 @@ export interface Bridge {
     conversation: string,
     text: string,
     context_label: string,
+    run: QuestionRun,
   ): Promise<SessionView>;
+  cancelQuestion(id: string, requestId: string): Promise<void>;
   listSessions(): Promise<{ sessions: SessionSummary[]; warnings: string[] }>;
   getSession(id: string): Promise<SessionView>;
   deleteSession(id: string): Promise<void>;
   renameSession(id: string, title: string): Promise<SessionView>;
   openSessionGame(id: string): Promise<{ replay: Replay; name: string; position: SessionPosition }>;
   setSessionPosition(id: string, gameKey: string, position: SessionPosition): Promise<void>;
-  continueSession(id: string, text: string): Promise<SessionView>;
-  retrySession(id: string, turn?: number): Promise<SessionView>;
+  continueSession(id: string, text: string, run: QuestionRun): Promise<SessionView>;
+  retrySession(id: string, turn: number | undefined, run: QuestionRun): Promise<SessionView>;
   importSession(json: string): Promise<SessionView>;
   exportSession(id: string): Promise<string>;
+}
+
+export type QuestionProgress =
+  { phase: 'preparing' } | { phase: 'model'; request: number } | { phase: 'tool'; name: string };
+
+export interface QuestionRun {
+  requestId: string;
+  onProgress(progress: QuestionProgress): void;
 }
 
 export interface Settings {

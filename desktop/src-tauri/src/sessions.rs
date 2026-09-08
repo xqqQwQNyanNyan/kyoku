@@ -3,7 +3,7 @@ use crate::{
     library::{ReplayLibrary, ReplayOrigin},
     lock,
 };
-use kyoku::agent::{AgentContext, AgentSession, SessionArchive};
+use kyoku::agent::{AgentContext, AgentSession, QuestionControl, SessionArchive};
 use kyoku::mahjong::player_index::PlayerIndex;
 
 mod game;
@@ -120,7 +120,7 @@ fn now() -> u64 {
         .unwrap_or_default()
         .as_millis() as u64
 }
-fn valid_id(id: &str) -> bool {
+pub(crate) fn valid_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 128
         && id
@@ -576,27 +576,29 @@ impl SessionStore {
         Ok(path.to_string_lossy().into_owned())
     }
 
-    pub fn ask(
+    pub fn ask_with_control(
         &self,
         id: &str,
         question: &str,
         config: &kyoku::agent::AgentConfig<'_>,
         source: Option<SessionSource<'_>>,
+        control: &QuestionControl,
     ) -> Result<SessionView, UiError> {
-        self.ask_question(id, SessionQuestion::New(question), config, source)
+        self.ask_question(id, SessionQuestion::New(question), config, source, control)
     }
 
-    pub fn retry(
+    pub fn retry_with_control(
         &self,
         id: &str,
         turn: Option<usize>,
         config: &kyoku::agent::AgentConfig<'_>,
+        control: &QuestionControl,
     ) -> Result<SessionView, UiError> {
         let question = match turn {
             Some(index) => SessionQuestion::Retry(index),
             None => SessionQuestion::Pending,
         };
-        self.ask_question(id, question, config, None)
+        self.ask_question(id, question, config, None, control)
     }
 
     fn ask_question(
@@ -605,6 +607,7 @@ impl SessionStore {
         request: SessionQuestion<'_>,
         config: &kyoku::agent::AgentConfig<'_>,
         source: Option<SessionSource<'_>>,
+        control: &QuestionControl,
     ) -> Result<SessionView, UiError> {
         let _operation = self.begin(id)?;
         let path = self.path(id)?;
@@ -685,7 +688,7 @@ impl SessionStore {
         document.pending_question = Some(question.clone());
         document.updated_at = now().max(document.updated_at.saturating_add(1));
         self.save(&document)?;
-        let result = session.ask(&question);
+        let result = session.ask_with_control(&question, control);
         document.archive = session.archive().clone();
         document.pending_question = None;
         document.updated_at = now().max(document.updated_at.saturating_add(1));

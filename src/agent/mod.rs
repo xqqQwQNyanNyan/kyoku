@@ -15,9 +15,13 @@ mod comparison;
 mod evidence;
 mod output;
 mod position;
+mod progress;
+#[cfg(test)]
+mod progress_tests;
 mod session;
 mod strategy;
 
+pub use progress::{QuestionControl, QuestionProgress};
 pub use session::{SessionArchive, SessionFormatError};
 
 pub use evidence::review_evidence;
@@ -217,11 +221,14 @@ pub enum AgentError {
     MissingEvidence,
     RequestLimit,
     HistoryLimit,
+    /// 用户停止本轮问答；已有有效历史保持不变。
+    Cancelled,
 }
 
 impl fmt::Display for AgentError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Cancelled => write!(f, "已停止本次回答"),
             Self::InvalidConfig { field, reason } => write!(f, "invalid {field}: {reason}"),
             Self::InvalidQuestion => write!(
                 f,
@@ -324,6 +331,15 @@ impl AgentSession {
 
     /// 提问或追问。首次或局面改变后直接附带证据，最多请求模型十次。
     pub fn ask(&mut self, question: &str) -> Result<String, AgentError> {
+        self.ask_with_control(question, &QuestionControl::default())
+    }
+
+    /// 在保留失败快照和轨迹的同时，报告阶段并响应本轮停止信号。
+    pub fn ask_with_control(
+        &mut self,
+        question: &str,
+        control: &QuestionControl,
+    ) -> Result<String, AgentError> {
         if serde_json::to_vec(&self.archive)
             .map_err(|_| AgentError::HistoryLimit)?
             .len()
@@ -332,13 +348,14 @@ impl AgentSession {
             return Err(AgentError::HistoryLimit);
         }
         let mut trace = Vec::new();
-        let result = answer_traced(
+        let result = answer_controlled(
             &self.evidence,
             &self.history,
             self.has_evidence,
             question,
-            |input, mode| self.client.respond(input, mode),
+            |input, mode| self.client.respond_with_control(input, mode, control),
             &mut trace,
+            control,
         );
         match result {
             Ok((answer, history)) => {
@@ -430,14 +447,36 @@ fn answer(
     )
 }
 
+#[cfg(test)]
 fn answer_traced(
+    evidence: &Value,
+    history: &[Value],
+    has_evidence: bool,
+    question: &str,
+    respond: impl FnMut(&[Value], RequestMode) -> Result<Value, AgentError>,
+    trace: &mut Vec<Value>,
+) -> Result<(String, Vec<Value>), AgentError> {
+    answer_controlled(
+        evidence,
+        history,
+        has_evidence,
+        question,
+        respond,
+        trace,
+        &QuestionControl::default(),
+    )
+}
+
+fn answer_controlled(
     evidence: &Value,
     history: &[Value],
     mut has_evidence: bool,
     question: &str,
     mut respond: impl FnMut(&[Value], RequestMode) -> Result<Value, AgentError>,
     trace: &mut Vec<Value>,
+    control: &QuestionControl,
 ) -> Result<(String, Vec<Value>), AgentError> {
+    control.check()?;
     let question = question.trim();
     if question.is_empty() || question.len() > MAX_QUESTION_BYTES {
         return Err(AgentError::InvalidQuestion);
@@ -459,7 +498,8 @@ fn answer_traced(
     staged.push(json!({"role": "user", "content": question}));
     // 纠错时临时给模型看被拒绝的输出，但不让错误回答进入后续追问的历史。
     let mut accepted = staged.clone();
-    for _ in 0..MAX_REQUESTS {
+    for request in 1..=MAX_REQUESTS {
+        control.report(QuestionProgress::Model { request })?;
         check_history(&staged)?;
         if json!(trace).to_string().len() > 8 * 1024 * 1024 {
             return Err(AgentError::HistoryLimit);
@@ -475,6 +515,7 @@ fn answer_traced(
         );
         let response = respond(&staged, mode)?;
         trace.push(json!({"kind": "response", "output": response}));
+        control.check()?;
         if response["status"] != "completed" {
             return Err(AgentError::IncompleteResponse);
         }
@@ -505,11 +546,13 @@ fn answer_traced(
                     let arguments = item["arguments"]
                         .as_str()
                         .ok_or(invalid("missing function arguments"))?;
+                    control.report(QuestionProgress::Tool { name: name.into() })?;
                     let (result, success) = execute_tool(evidence, name, arguments);
                     comparison::remember(&mut verified, &result);
                     strategy::remember(&mut verified, &result);
                     has_evidence |= success;
                     trace.push(json!({"kind": "tool", "call_id": id, "name": name, "arguments": arguments, "result": result}));
+                    control.check()?;
                     tool_results.push(json!({"type": "function_call_output", "call_id": id, "output": result.to_string()}));
                 }
                 Some("message") => {
@@ -550,6 +593,7 @@ fn answer_traced(
                 Ok(rendered) => {
                     accepted.extend(output.iter().cloned());
                     check_history(&accepted)?;
+                    control.check()?;
                     return Ok((rendered, accepted));
                 }
                 Err(reason) => {

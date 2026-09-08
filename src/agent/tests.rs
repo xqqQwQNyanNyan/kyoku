@@ -1703,3 +1703,34 @@ fn live_scoring_and_action_followup() {
 
 #[path = "session_tests.rs"]
 mod multi_context;
+
+#[test]
+fn cancelled_followup_preserves_accepted_history_and_can_continue_after_restore() {
+    let (endpoint, server) = server(vec![
+        (200, response(vec![message("之前的回答")]).to_string()),
+        (200, response(vec![message("继续完成")]).to_string()),
+    ]);
+    let config = AgentConfig {
+        endpoint: &endpoint,
+        model: "test",
+        api_key: None,
+    };
+    let mut session = AgentSession::new(&review(), &config).unwrap();
+    session.ask("之前的问题").unwrap();
+    let history = session.history.clone();
+    let control = QuestionControl::default();
+    control.cancel();
+    assert!(matches!(
+        session.ask_with_control("停止的追问", &control),
+        Err(AgentError::Cancelled)
+    ));
+    assert_eq!(session.history, history);
+    let saved = serde_json::to_string(session.archive()).unwrap();
+    let archive = SessionArchive::from_json(&saved).unwrap();
+    let mut restored = AgentSession::from_archive(&archive, &config).unwrap();
+    assert!(restored.ask("新的追问").unwrap().ends_with("继续完成"));
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(!requests[1].to_string().contains("停止的追问"));
+    assert!(requests[1].to_string().contains("之前的回答"));
+}

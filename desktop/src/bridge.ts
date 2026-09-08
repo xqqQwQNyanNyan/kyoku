@@ -1,5 +1,11 @@
-import { invoke } from '@tauri-apps/api/core';
-import type { Bridge } from './types';
+import { Channel, invoke } from '@tauri-apps/api/core';
+import type { Bridge, QuestionProgress, QuestionRun } from './types';
+
+function questionChannel(run: QuestionRun) {
+  const channel = new Channel<QuestionProgress>();
+  channel.onmessage = run.onProgress;
+  return { requestId: run.requestId, onProgress: channel };
+}
 
 export const bridge: Bridge = {
   getSettings: () => invoke('get_settings'),
@@ -18,8 +24,12 @@ export const bridge: Bridge = {
   loginMajsoul: (input) => invoke('login_majsoul', { input }),
   logoutMajsoul: () => invoke('logout_majsoul'),
   analyze: (id, player) => invoke('analyze_game', { id, player }),
-  ask: (id, player, event_index, conversation_id, text, context_label) =>
-    invoke('ask', { question: { id, player, event_index, conversation_id, text, context_label } }),
+  ask: (id, player, event_index, conversation_id, text, context_label, run) =>
+    invoke('ask', {
+      question: { id, player, event_index, conversation_id, text, context_label },
+      ...questionChannel(run),
+    }),
+  cancelQuestion: (id, requestId) => invoke('cancel_question', { id, requestId }),
   listSessions: () => invoke('list_sessions'),
   getSession: (id) => invoke('get_session', { id }),
   deleteSession: (id) => invoke('delete_session', { id }),
@@ -27,8 +37,10 @@ export const bridge: Bridge = {
   openSessionGame: (id) => invoke('open_session_game', { id }),
   setSessionPosition: (id, game_key, position) =>
     invoke('set_session_position', { id, gameKey: game_key, position }),
-  continueSession: (id, text) => invoke('continue_session', { id, text }),
-  retrySession: (id, turn) => invoke('retry_session', { id, turn: turn ?? null }),
+  continueSession: (id, text, run) =>
+    invoke('continue_session', { id, text, ...questionChannel(run) }),
+  retrySession: (id, turn, run) =>
+    invoke('retry_session', { id, turn: turn ?? null, ...questionChannel(run) }),
   importSession: (json) => invoke('import_session', { json }),
   exportSession: (id) => invoke('export_session', { id }),
 };

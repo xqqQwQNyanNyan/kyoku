@@ -4,13 +4,14 @@ mod config;
 mod library;
 mod log_link;
 mod majsoul;
+mod questions;
 mod replay;
 mod sessions;
 mod settings;
 
 use convlog::Event;
 use kyoku::{
-    agent::{AgentContext, review_evidence},
+    agent::{AgentContext, QuestionControl, QuestionProgress, review_evidence},
     mahjong::player_index::PlayerIndex,
     mortal::Mortal,
     review::{GameReview, RecordedAction, review_game},
@@ -22,6 +23,7 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 use tauri::Manager;
+use tauri::ipc::Channel;
 
 #[derive(Debug, Serialize)]
 struct UiError {
@@ -396,6 +398,8 @@ struct Question {
 #[tauri::command]
 async fn ask(
     question: Question,
+    request_id: String,
+    on_progress: Channel<QuestionProgress>,
     state: tauri::State<'_, Desktop>,
     app: tauri::AppHandle,
 ) -> Result<sessions::SessionView, UiError> {
@@ -405,14 +409,15 @@ async fn ask(
         return Err(UiError::new("conversation", "问答会话编号无效"));
     }
     let game = state.game(question.id)?;
-    tauri::async_runtime::spawn_blocking(move || {
+    let id = question.conversation_id.clone();
+    run_question(app, id, request_id, on_progress, move |app, control| {
         let context = game.context(question.player, question.event_index)?;
         let config = app.state::<settings::SettingsStore>().load()?;
         let saved_game = sessions::SessionGame {
             key: game.key.clone(),
             events: game.events.clone(),
         };
-        app.state::<sessions::SessionStore>().ask(
+        app.state::<sessions::SessionStore>().ask_with_control(
             &question.conversation_id,
             &question.text,
             &config.borrowed(),
@@ -421,10 +426,39 @@ async fn ask(
                 label: &question.context_label,
                 context: &context,
             }),
+            control,
         )
     })
     .await
-    .map_err(|_| UiError::new("task", "问答任务异常结束"))?
+}
+
+async fn run_question(
+    app: tauri::AppHandle,
+    id: String,
+    request_id: String,
+    on_progress: Channel<QuestionProgress>,
+    work: impl FnOnce(&tauri::AppHandle, &QuestionControl) -> Result<sessions::SessionView, UiError>
+    + Send
+    + 'static,
+) -> Result<sessions::SessionView, UiError> {
+    let channel = on_progress.clone();
+    let control = QuestionControl::new(move |progress| {
+        let _ = channel.send(progress);
+    });
+    let running = app
+        .state::<Arc<questions::Questions>>()
+        .begin(&id, &request_id, control)?;
+    // 先登记再通知界面；收到此消息后，停止操作一定能找到对应的这一轮。
+    let _ = on_progress.send(QuestionProgress::Preparing);
+    tauri::async_runtime::spawn_blocking(move || work(&app, &running.control))
+        .await
+        .map_err(|_| UiError::new("task", "问答任务异常结束；可在历史会话中检查并重试"))?
+}
+
+#[tauri::command]
+fn cancel_question(id: String, request_id: String, app: tauri::AppHandle) -> Result<(), UiError> {
+    app.state::<Arc<questions::Questions>>()
+        .cancel(&id, &request_id)
 }
 
 #[tauri::command]
@@ -458,30 +492,53 @@ async fn rename_session(
 async fn continue_session(
     id: String,
     text: String,
+    request_id: String,
+    on_progress: Channel<QuestionProgress>,
     app: tauri::AppHandle,
 ) -> Result<sessions::SessionView, UiError> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let config = app.state::<settings::SettingsStore>().load()?;
-        app.state::<sessions::SessionStore>()
-            .ask(&id, &text, &config.borrowed(), None)
-    })
+    run_question(
+        app,
+        id.clone(),
+        request_id,
+        on_progress,
+        move |app, control| {
+            let config = app.state::<settings::SettingsStore>().load()?;
+            app.state::<sessions::SessionStore>().ask_with_control(
+                &id,
+                &text,
+                &config.borrowed(),
+                None,
+                control,
+            )
+        },
+    )
     .await
-    .map_err(|_| UiError::new("task", "问答任务异常结束；问题已保存在历史会话中"))?
 }
 
 #[tauri::command]
 async fn retry_session(
     id: String,
     turn: Option<usize>,
+    request_id: String,
+    on_progress: Channel<QuestionProgress>,
     app: tauri::AppHandle,
 ) -> Result<sessions::SessionView, UiError> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let config = app.state::<settings::SettingsStore>().load()?;
-        app.state::<sessions::SessionStore>()
-            .retry(&id, turn, &config.borrowed())
-    })
+    run_question(
+        app,
+        id.clone(),
+        request_id,
+        on_progress,
+        move |app, control| {
+            let config = app.state::<settings::SettingsStore>().load()?;
+            app.state::<sessions::SessionStore>().retry_with_control(
+                &id,
+                turn,
+                &config.borrowed(),
+                control,
+            )
+        },
+    )
     .await
-    .map_err(|_| UiError::new("task", "重试任务异常结束；问题已保存在历史会话中"))?
 }
 
 #[derive(Serialize)]
@@ -675,6 +732,7 @@ fn main() {
                 library.clone(),
             ));
             app.manage(library);
+            app.manage(Arc::new(questions::Questions::default()));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -691,6 +749,7 @@ fn main() {
             logout_majsoul,
             analyze_game,
             ask,
+            cancel_question,
             list_sessions,
             delete_session,
             get_session,

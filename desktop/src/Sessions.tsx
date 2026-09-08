@@ -2,6 +2,8 @@ import { useEffect, useRef, useState, Fragment } from 'react';
 import ReactMarkdown from 'react-markdown';
 import type {
   Bridge,
+  QuestionProgress,
+  QuestionRun,
   SessionEvidence,
   SessionPosition,
   SessionSummary,
@@ -11,6 +13,7 @@ import type {
 import { errorMessage } from './bridge';
 import { Select } from './Select';
 import { DeleteDialog } from './DeleteDialog';
+import { QuestionStatus } from './QuestionStatus';
 import { replayName, sessionTitle, SESSION_TITLE_LIMIT } from './display';
 
 export interface SessionSource {
@@ -22,10 +25,24 @@ export interface SessionSource {
   label: string;
 }
 
+interface PendingProgress {
+  stage: QuestionProgress;
+  startedAt: number;
+  stopping: boolean;
+}
+
+interface ActiveQuestion extends PendingProgress {
+  requestId: string;
+  acknowledged: boolean;
+  cancelSent: boolean;
+}
+
 export function useSessions(api: Bridge) {
   const [documents, setDocuments] = useState<Record<string, SessionView>>({});
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [pending, setPending] = useState<Record<string, string>>({});
+  const [progress, setProgress] = useState<Record<string, PendingProgress>>({});
+  const running = useRef(new Map<string, ActiveQuestion>());
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [revision, setRevision] = useState(0);
   const scopes = useRef(new Map<string, string>());
@@ -164,6 +181,7 @@ export function useSessions(api: Bridge) {
     setDrafts(keep);
     setErrors(keep);
     setPendingPositions(keep);
+    setProgress(keep);
     setSummaries((items) => items.filter((s) => !removed.has(s.id)));
     setRevision((r) => r + 1);
   }
@@ -201,6 +219,30 @@ export function useSessions(api: Bridge) {
     const text = turn === undefined ? doc?.pending_question : doc?.archive.turns[turn]?.question;
     if (text) return send(id, undefined, text, { turn });
   }
+  function showProgress(id: string, run: ActiveQuestion) {
+    setProgress((current) => ({ ...current, [id]: { ...run } }));
+  }
+  async function cancelRun(id: string, run: ActiveQuestion) {
+    if (!run.acknowledged || run.cancelSent || running.current.get(id) !== run) return;
+    run.cancelSent = true;
+    try {
+      await api.cancelQuestion(id, run.requestId);
+    } catch (error) {
+      if (running.current.get(id) !== run) return;
+      run.cancelSent = false;
+      run.stopping = false;
+      showProgress(id, run);
+      setErrors((current) => ({ ...current, [id]: errorMessage(error) }));
+    }
+  }
+  function stop(id: string) {
+    const run = running.current.get(id);
+    if (!run || run.stopping) return;
+    run.stopping = true;
+    setErrors((current) => ({ ...current, [id]: '' }));
+    showProgress(id, run);
+    void cancelRun(id, run);
+  }
   async function send(
     id: string,
     source: SessionSource | undefined,
@@ -211,6 +253,27 @@ export function useSessions(api: Bridge) {
     if (!text || busy.current.has(id) || deleted.current.has(id) || (!documents[id] && !source))
       return;
     busy.current.add(id);
+    const run: ActiveQuestion = {
+      requestId: crypto.randomUUID(),
+      stage: { phase: 'preparing' },
+      startedAt: Date.now(),
+      stopping: false,
+      acknowledged: false,
+      cancelSent: false,
+    };
+    running.current.set(id, run);
+    showProgress(id, run);
+    const callbacks: QuestionRun = {
+      requestId: run.requestId,
+      onProgress(stage) {
+        if (running.current.get(id) !== run) return;
+        run.acknowledged = true;
+        run.stage = stage;
+        showProgress(id, run);
+        // 若用户在后端登记前点击停止，收到登记确认后再发出，避免丢失停止信号。
+        if (run.stopping) void cancelRun(id, run);
+      },
+    };
     const position = retryTarget
       ? retryTarget.turn === undefined
         ? documents[id]?.archive.evidence
@@ -226,22 +289,41 @@ export function useSessions(api: Bridge) {
     try {
       await positionWrites.current.get(id)?.catch(() => undefined);
       const result = retryTarget
-        ? await api.retrySession(id, retryTarget.turn)
+        ? await api.retrySession(id, retryTarget.turn, callbacks)
         : source
-          ? await api.ask(source.game, source.player, source.event, id, text, source.gameLabel)
-          : await api.continueSession(id, text);
+          ? await api.ask(
+              source.game,
+              source.player,
+              source.event,
+              id,
+              text,
+              source.gameLabel,
+              callbacks,
+            )
+          : await api.continueSession(id, text, callbacks);
       put(result);
+      setErrors((current) => ({ ...current, [id]: '' }));
       if (result.archive.turns.at(-1)?.error) draft(id, text);
     } catch (error) {
       setErrors((e) => ({ ...e, [id]: errorMessage(error) }));
       draft(id, text);
       // 创建或保存已成功但后续步骤失败时，恢复磁盘上已有的会话，避免重复创建。
       try {
-        put(await api.getSession(id));
+        const saved = await api.getSession(id);
+        put(saved);
+        if (saved.archive.turns.at(-1)?.error === errorMessage(error)) {
+          setErrors((current) => ({ ...current, [id]: '' }));
+        }
       } catch {
         /* 可能尚未创建会话。 */
       }
     } finally {
+      running.current.delete(id);
+      setProgress((current) => {
+        const next = { ...current };
+        delete next[id];
+        return next;
+      });
       busy.current.delete(id);
       setPending((p) => {
         const next = { ...p };
@@ -254,6 +336,8 @@ export function useSessions(api: Bridge) {
     documents,
     drafts,
     pending,
+    progress,
+    stop,
     pendingPositions,
     errors,
     revision,
@@ -620,10 +704,7 @@ export function ChatPanel({
               )}
               <Markdown text={pending} />
             </div>
-            <div className="thinking">
-              <span className="status-dot" />
-              正在生成回答…可以切换局面，结果会保留在此会话。
-            </div>
+            <QuestionStatus key={w.progress[id]?.startedAt ?? id} progress={w.progress[id]} />
           </>
         )}
         {doc?.pending_question && !pending && (
@@ -663,13 +744,25 @@ export function ChatPanel({
         />
         <div>
           <small>Enter 发送 · Shift Enter 换行</small>
-          <button
-            aria-label="发送问题"
-            type="submit"
-            disabled={!canAsk || !!pending || !question.trim()}
-          >
-            ↑
-          </button>
+          {pending ? (
+            <button
+              type="button"
+              className="stop-question"
+              aria-label="停止回答"
+              disabled={!w.progress[id] || w.progress[id].stopping}
+              onClick={() => w.stop(id)}
+            >
+              {w.progress[id]?.stopping ? '停止中' : '停止'}
+            </button>
+          ) : (
+            <button
+              aria-label="发送问题"
+              type="submit"
+              disabled={!canAsk || !!pending || !question.trim()}
+            >
+              ↑
+            </button>
+          )}
         </div>
       </form>
       <p className="chat-footnote">切换局面保留会话，可从「历史会话」找回或导出。</p>

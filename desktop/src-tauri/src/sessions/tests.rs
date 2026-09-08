@@ -1,5 +1,89 @@
 use serde_json::json;
 
+#[test]
+fn stopped_questions_survive_restart_and_late_cancellation_cannot_stop_the_retry() {
+    let (endpoint, server) = server(vec![(200, message("重试完成"))]);
+    let config = AgentConfig {
+        endpoint: &endpoint,
+        model: "test",
+        api_key: None,
+    };
+    let directory = Directory::new();
+    let store = new_store(directory.0.join("sessions"));
+    let game = fixture_game();
+    let context = AgentContext::from_events(&game.events, PlayerIndex::new(0).unwrap(), 2).unwrap();
+    let questions = Arc::new(crate::questions::Questions::default());
+    let running = questions
+        .begin("one", "first", QuestionControl::default())
+        .unwrap();
+    assert!(
+        questions
+            .begin("one", "duplicate", QuestionControl::default())
+            .is_err()
+    );
+    questions.cancel("one", "first").unwrap();
+    let error = store
+        .ask_with_control(
+            "one",
+            "保留停止时的局面",
+            &config,
+            Some(SessionSource {
+                game: &game,
+                context: &context,
+                label: "test.json",
+            }),
+            &running.control,
+        )
+        .err()
+        .unwrap();
+    assert_eq!(error.message, "已停止本次回答");
+    drop(running);
+    drop(store);
+
+    let store = new_store(directory.0.join("sessions"));
+    let stopped = store.get("one").unwrap();
+    assert!(!stopped.busy);
+    assert!(stopped.document.pending_question.is_none());
+    let archive = serde_json::to_value(&stopped.document.archive).unwrap();
+    assert_eq!(archive["history"], json!([]));
+    assert_eq!(archive["turns"][0]["error"], "已停止本次回答");
+    store
+        .set_position(
+            "one",
+            &game.key,
+            SessionPosition {
+                player: 1,
+                event_index: 4,
+            },
+        )
+        .unwrap();
+
+    let retry = questions
+        .begin("one", "second", QuestionControl::default())
+        .unwrap();
+    questions.cancel("one", "first").unwrap();
+    questions.cancel("another-session", "second").unwrap();
+    let completed = store
+        .retry_with_control("one", Some(0), &config, &retry.control)
+        .unwrap();
+    let archive = serde_json::to_value(completed.document.archive).unwrap();
+    assert!(
+        archive["turns"][1]["answer"]
+            .as_str()
+            .unwrap()
+            .contains("重试完成")
+    );
+    assert_eq!(archive["turns"][1]["evidence"]["player"], 0);
+    assert_eq!(archive["turns"][1]["evidence"]["event_index"], 2);
+    assert_eq!(server.join().unwrap().len(), 1);
+    drop(retry);
+    assert!(
+        questions
+            .begin("one", "third", QuestionControl::default())
+            .is_ok()
+    );
+}
+
 fn saved_game_session(store: &SessionStore, id: &str, game: &SessionGame) {
     store
         .create(
@@ -370,6 +454,27 @@ fn message(text: &str) -> String {
 }
 
 use super::*;
+
+impl SessionStore {
+    fn ask(
+        &self,
+        id: &str,
+        question: &str,
+        config: &kyoku::agent::AgentConfig<'_>,
+        source: Option<SessionSource<'_>>,
+    ) -> Result<SessionView, UiError> {
+        self.ask_with_control(id, question, config, source, &QuestionControl::default())
+    }
+
+    fn retry(
+        &self,
+        id: &str,
+        turn: Option<usize>,
+        config: &kyoku::agent::AgentConfig<'_>,
+    ) -> Result<SessionView, UiError> {
+        self.retry_with_control(id, turn, config, &QuestionControl::default())
+    }
+}
 use kyoku::{
     agent::{AgentConfig, AgentContext},
     mahjong::player_index::PlayerIndex,

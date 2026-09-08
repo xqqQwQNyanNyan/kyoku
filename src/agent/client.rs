@@ -3,7 +3,9 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use ureq::http::{HeaderValue, Uri};
 
-use super::{AgentConfig, AgentError, INSTRUCTIONS, RequestMode, invalid, tool_definitions};
+use super::{
+    AgentConfig, AgentError, INSTRUCTIONS, QuestionControl, RequestMode, invalid, tool_definitions,
+};
 
 mod chat;
 mod provider_error;
@@ -15,7 +17,8 @@ enum Protocol {
 }
 
 pub(super) struct Client {
-    agent: ureq::Agent,
+    agent: reqwest::Client,
+    runtime: tokio::runtime::Runtime,
     endpoint: String,
     model: String,
     authorization: Option<HeaderValue>,
@@ -61,15 +64,21 @@ impl Client {
                 ));
             }
         };
-        let mut builder = ureq::Agent::config_builder()
+        let mut builder = reqwest::Client::builder()
             // 多工具结果的归纳在实测中会超过一分钟，仍保留单次请求的明确上限。
-            .timeout_global(Some(Duration::from_secs(120)))
-            .max_redirects(0)
-            .http_status_as_error(false);
+            .timeout(Duration::from_secs(120))
+            .retry(reqwest::retry::never())
+            .redirect(reqwest::redirect::Policy::none());
         if local {
-            builder = builder.proxy(None);
+            builder = builder.no_proxy();
         }
-        let agent = builder.build().into();
+        let agent = builder.build().map_err(transport)?;
+        // 返回到同步调用方后仍需驱动连接清理，避免取消或拒绝超大响应时留下阻塞连接。
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .map_err(|_| AgentError::Transport { kind: "runtime" })?;
         let protocol = match uri.path().trim_end_matches('/') {
             path if path.ends_with("/chat/completions") || path.ends_with("/chat/completion") => {
                 Protocol::ChatCompletions
@@ -78,6 +87,7 @@ impl Client {
         };
         Ok(Self {
             agent,
+            runtime,
             endpoint: config.endpoint.to_owned(),
             model: config.model.to_owned(),
             authorization,
@@ -100,6 +110,27 @@ impl Client {
     }
 
     pub(super) fn respond(&self, input: &[Value], mode: RequestMode) -> Result<Value, AgentError> {
+        self.respond_with_control(input, mode, &QuestionControl::default())
+    }
+
+    pub(super) fn respond_with_control(
+        &self,
+        input: &[Value],
+        mode: RequestMode,
+        control: &QuestionControl,
+    ) -> Result<Value, AgentError> {
+        control.check()?;
+        // 丢弃请求 future 会关闭本机等待；同步领域 API 仍可在 CLI 和桌面阻塞任务中使用。
+        self.runtime.block_on(async {
+            tokio::select! {
+                biased;
+                _ = control.cancelled() => Err(AgentError::Cancelled),
+                result = self.respond_async(input, mode) => result,
+            }
+        })
+    }
+
+    async fn respond_async(&self, input: &[Value], mode: RequestMode) -> Result<Value, AgentError> {
         let request = self.request(input, mode)?;
         let mut call = self
             .agent
@@ -111,7 +142,7 @@ impl Client {
         let request = request.to_string();
         let request_bytes = request.len();
         let started = Instant::now();
-        let mut response = call.send(request).map_err(transport)?;
+        let mut response = call.body(request).send().await.map_err(transport)?;
         if !response.status().is_success() {
             let status = response.status().as_u16();
             let secret = self
@@ -120,21 +151,13 @@ impl Client {
                 .and_then(|value| value.to_str().ok())
                 .and_then(|value| value.strip_prefix("Bearer "));
             // 只提取有界、脱敏后的结构化错误；读取失败仍保留原始 HTTP 状态。
-            let error = response
-                .body_mut()
-                .with_config()
-                .limit(64 * 1024)
-                .read_to_string()
+            let error = read_limited(&mut response, 64 * 1024)
+                .await
                 .ok()
                 .and_then(|body| provider_error::parse(&body, secret));
             return Err(AgentError::Http { status, error });
         }
-        let body = response
-            .body_mut()
-            .with_config()
-            .limit(2 * 1024 * 1024)
-            .read_to_string()
-            .map_err(transport)?;
+        let body = read_limited(&mut response, 2 * 1024 * 1024).await?;
         let response =
             serde_json::from_str(&body).map_err(|_| invalid("body is not valid JSON"))?;
         let mut response = match self.protocol {
@@ -163,12 +186,35 @@ fn available_tools(mode: RequestMode) -> Vec<Value> {
         .collect()
 }
 
-fn transport(error: ureq::Error) -> AgentError {
+async fn read_limited(
+    response: &mut reqwest::Response,
+    limit: usize,
+) -> Result<String, AgentError> {
+    let too_large = || AgentError::Transport {
+        kind: "response_too_large",
+    };
+    if response
+        .content_length()
+        .is_some_and(|size| size > limit as u64)
+    {
+        return Err(too_large());
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(transport)? {
+        if chunk.len() > limit.saturating_sub(body.len()) {
+            return Err(too_large());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    String::from_utf8(body).map_err(|_| invalid("body is not valid UTF-8"))
+}
+
+fn transport(error: reqwest::Error) -> AgentError {
     AgentError::Transport {
-        kind: match error {
-            ureq::Error::Timeout(_) => "timeout",
-            ureq::Error::BodyExceedsLimit(_) => "response_too_large",
-            _ => "connection_or_body",
+        kind: if error.is_timeout() {
+            "timeout"
+        } else {
+            "connection_or_body"
         },
     }
 }
