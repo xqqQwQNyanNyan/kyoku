@@ -5,6 +5,7 @@ use crate::analysis::shanten::{
     concealed_counts, solve_hand_form, tile_kind, unrestricted_chiitoitsu_constraint,
 };
 use crate::mahjong::hand::Hand;
+use std::sync::OnceLock;
 
 const HONOR_TILE_MASK: u64 = ((1u64 << 7) - 1) << 27;
 const TERMINAL_TILE_MASK: u64 = (1 << 0) | (1 << 8) | (1 << 9) | (1 << 17) | (1 << 18) | (1 << 26);
@@ -33,9 +34,12 @@ impl YakuEligibility {
 /// 返回 `Ok(Some(向听数))`；固定副露已使役种不可能成立时返回 `Ok(None)`。
 /// 尚未支持该役种的距离计算时返回 `Err(YakuDistanceError::UnsupportedYaku(yaku))`。
 pub fn yaku_shanten(hand: &Hand, yaku: Yaku) -> Result<Option<i8>, YakuDistanceError> {
-    let compiled = compile_yaku(yaku)?;
     let counts = concealed_counts(hand);
     debug_assert!(counts.iter().all(|&count| count <= MAX_COPIES as u8));
+    if yaku == Yaku::Ryanpeikou {
+        return Ok(ryanpeikou_distance(hand, &counts, None));
+    }
+    let compiled = compiled_yaku(yaku)?;
 
     if !compiled.eligibility.is_satisfied_by(hand) {
         return Ok(None);
@@ -46,6 +50,109 @@ pub fn yaku_shanten(hand: &Hand, yaku: Yaku) -> Result<Option<i8>, YakuDistanceE
         .iter()
         .filter_map(|spec| solve_hand_form(hand, &counts, spec))
         .min())
+}
+
+pub(crate) fn available_yaku_shanten(
+    hand: &Hand,
+    yaku: Yaku,
+    limits: &[u8; 34],
+) -> Result<Option<i8>, YakuDistanceError> {
+    let counts = concealed_counts(hand);
+    if yaku == Yaku::Ryanpeikou {
+        return Ok(ryanpeikou_distance(hand, &counts, Some(limits)));
+    }
+    let compiled = compiled_yaku(yaku)?;
+    if !compiled.eligibility.is_satisfied_by(hand) {
+        return Ok(None);
+    }
+    Ok(compiled
+        .forms
+        .iter()
+        .filter_map(|spec| {
+            crate::analysis::shanten::solve_hand_form_with_limits(hand, &counts, spec, limits)
+        })
+        .min())
+}
+
+fn ryanpeikou_distance(hand: &Hand, counts: &[u8; 34], limits: Option<&[u8; 34]>) -> Option<i8> {
+    if !hand.melds().is_empty() {
+        return None;
+    }
+    let limits = limits.unwrap_or(&[4; 34]);
+    let mut best = u8::MAX;
+    let lower_bound = 14 - counts.iter().sum::<u8>();
+    // 二杯口的四组顺子已经固定为“两对顺子”。直接枚举这231种组合和雀头，
+    // 不必为每种组合再运行一次通用面子DP；相同目标仍只按实际缺牌数计算。
+    for first in 0..SEQUENCE_COMPONENT_COUNT {
+        for second in first..SEQUENCE_COMPONENT_COUNT {
+            let mut target = [0u8; 34];
+            for sequence in [first, second] {
+                let start = sequence / 7 * 9 + sequence % 7;
+                for count in &mut target[start..start + 3] {
+                    *count += 2;
+                }
+            }
+            if target
+                .iter()
+                .zip(limits)
+                .any(|(&needed, &limit)| needed > limit)
+            {
+                continue;
+            }
+            let missing: u8 = target
+                .iter()
+                .zip(counts)
+                .map(|(&needed, &held)| needed.saturating_sub(held))
+                .sum();
+            for pair in 0..34 {
+                if target[pair] + 2 > limits[pair] {
+                    continue;
+                }
+                let extra = (target[pair] + 2).saturating_sub(counts[pair])
+                    - target[pair].saturating_sub(counts[pair]);
+                best = best.min(missing + extra);
+            }
+            if best == lower_bound {
+                return Some(best as i8 - 1);
+            }
+        }
+    }
+    (best != u8::MAX).then_some(best as i8 - 1)
+}
+
+fn compiled_yaku(yaku: Yaku) -> Result<&'static CompiledYaku, YakuDistanceError> {
+    const YAKU: [Yaku; 21] = [
+        Yaku::Chiitoitsu,
+        Yaku::Kokushi,
+        Yaku::Toitoi,
+        Yaku::Chinitsu,
+        Yaku::Ittsu,
+        Yaku::Iipeikou,
+        Yaku::Tanyao,
+        Yaku::Honitsu,
+        Yaku::Honroutou,
+        Yaku::Chanta,
+        Yaku::Junchan,
+        Yaku::SanshokuDoujun,
+        Yaku::SanshokuDoukou,
+        Yaku::Ryanpeikou,
+        Yaku::Shousangen,
+        Yaku::Daisangen,
+        Yaku::Shousuushi,
+        Yaku::Daisuushi,
+        Yaku::Tsuuiisou,
+        Yaku::Chinroutou,
+        Yaku::Ryuuiisou,
+    ];
+    static COMPILED: [OnceLock<CompiledYaku>; 21] = [const { OnceLock::new() }; 21];
+    let index = YAKU
+        .iter()
+        .position(|&known| known == yaku)
+        .ok_or(YakuDistanceError::UnsupportedYaku(yaku))?;
+    // 约束只依赖役种；按需初始化，后续候选和摸牌分支共用同一张转移表。
+    Ok(COMPILED[index].get_or_init(|| {
+        compile_yaku(yaku).unwrap_or_else(|_| unreachable!("缓存只包含已实现距离的役种"))
+    }))
 }
 
 fn compile_yaku(yaku: Yaku) -> Result<CompiledYaku, YakuDistanceError> {
@@ -1065,6 +1172,52 @@ mod tests {
             yaku_shanten(&hand, Yaku::Toitoi).expect("existing yaku distance must be supported"),
             None
         );
+    }
+
+    #[test]
+    fn direct_ryanpeikou_matches_general_constraints_with_and_without_tile_limits() {
+        let compiled = compile_yaku(Yaku::Ryanpeikou).unwrap();
+        for seed in 1..=6u64 {
+            let mut state = seed;
+            let mut counts = [0u8; 34];
+            for _ in 0..13 + seed as usize % 2 {
+                loop {
+                    state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    let kind = (state >> 32) as usize % 34;
+                    if counts[kind] < 4 {
+                        counts[kind] += 1;
+                        break;
+                    }
+                }
+            }
+            let hand = hand_from_counts(&counts);
+            let expected = compiled
+                .forms
+                .iter()
+                .filter_map(|spec| solve_hand_form(&hand, &counts, spec))
+                .min();
+            assert_eq!(yaku_shanten(&hand, Yaku::Ryanpeikou).unwrap(), expected);
+            let limits = std::array::from_fn(|kind| {
+                if kind % 3 == seed as usize % 3 {
+                    counts[kind]
+                } else {
+                    4
+                }
+            });
+            let expected = compiled
+                .forms
+                .iter()
+                .filter_map(|spec| {
+                    crate::analysis::shanten::solve_hand_form_with_limits(
+                        &hand, &counts, spec, &limits,
+                    )
+                })
+                .min();
+            assert_eq!(
+                available_yaku_shanten(&hand, Yaku::Ryanpeikou, &limits).unwrap(),
+                expected
+            );
+        }
     }
 
     #[test]

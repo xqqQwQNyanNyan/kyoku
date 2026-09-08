@@ -1,5 +1,5 @@
 use crate::{UiError, lock};
-use kyoku::agent::AgentConfig;
+use kyoku::agent::{AgentConfig, ModelOptions, QuestionControl};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -18,6 +18,8 @@ pub(crate) struct SettingsInput {
     /// 留空保留相同地址的现有密钥；换地址必须重新填写。
     api_key: String,
     clear_key: bool,
+    #[serde(default)]
+    options: ModelOptions,
 }
 
 #[derive(Serialize)]
@@ -26,6 +28,7 @@ pub(crate) struct SettingsView {
     model: String,
     has_api_key: bool,
     saved: bool,
+    options: ModelOptions,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -34,6 +37,8 @@ struct SavedSettings {
     endpoint: String,
     model: String,
     api_key: Option<String>,
+    #[serde(default)]
+    options: ModelOptions,
     // 兼容旧设置，但不再访问钥匙串；用户重新填写密钥后保存为新格式。
     #[serde(rename = "credential", skip_serializing)]
     _legacy_credential: Option<String>,
@@ -43,6 +48,7 @@ pub(crate) struct LlmConfig {
     endpoint: String,
     model: String,
     key: Option<String>,
+    options: ModelOptions,
 }
 
 impl LlmConfig {
@@ -51,6 +57,7 @@ impl LlmConfig {
             endpoint: &self.endpoint,
             model: &self.model,
             api_key: self.key.as_deref(),
+            options: self.options.clone(),
         }
     }
 
@@ -63,6 +70,7 @@ impl LlmConfig {
             endpoint,
             key,
             model: get("OPENAI_MODEL").unwrap_or_default(),
+            options: ModelOptions::default(),
         }
     }
 }
@@ -127,6 +135,7 @@ impl SettingsStore {
                 model: saved.model,
                 has_api_key: saved.api_key.is_some(),
                 saved: true,
+                options: saved.options,
             })
         } else {
             let config = self.legacy()?;
@@ -135,6 +144,7 @@ impl SettingsStore {
                 model: config.model,
                 has_api_key: config.key.is_some(),
                 saved: false,
+                options: config.options,
             })
         }
     }
@@ -144,6 +154,7 @@ impl SettingsStore {
         if let Some(saved) = self.read()? {
             Ok(LlmConfig {
                 key: saved.api_key,
+                options: saved.options,
                 endpoint: saved.endpoint,
                 model: saved.model,
             })
@@ -177,6 +188,7 @@ impl SettingsStore {
             endpoint,
             model,
             key,
+            options: input.options,
         };
         let mut validation = config.borrowed();
         // 允许用户主动删除远程密钥；实际发请求时仍要求有效认证。
@@ -189,14 +201,14 @@ impl SettingsStore {
         Ok(config)
     }
 
-    pub fn test(&self, input: SettingsInput) -> Result<(), UiError> {
+    pub fn test(&self, input: SettingsInput, control: &QuestionControl) -> Result<(), UiError> {
         let config = {
             let _guard = lock(&self.gate)?;
             self.draft(input)?
         };
         config
             .borrowed()
-            .test_connection()
+            .test_connection_with_control(control)
             .map_err(|error| UiError::new("connection", error.to_string()))
     }
 
@@ -209,6 +221,7 @@ impl SettingsStore {
             endpoint: config.endpoint,
             model: config.model,
             api_key: config.key,
+            options: config.options,
             _legacy_credential: None,
         };
         let bytes = serde_json::to_vec_pretty(&saved)

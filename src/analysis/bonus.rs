@@ -2,7 +2,10 @@ use std::error::Error;
 use std::fmt;
 
 use crate::analysis::RiichiStatus;
-use crate::mahjong::{hand::Hand, tile::Tile};
+use crate::mahjong::{
+    hand::Hand,
+    tile::{Tile, TileKind},
+};
 
 /// 完整和牌中的宝牌番，独立于役的番数。
 ///
@@ -88,14 +91,35 @@ pub fn calculate_bonus_han(
 fn count_dora(counts: &[u32; 34], indicators: &[Tile]) -> u32 {
     indicators
         .iter()
-        .map(|indicator| {
-            let kind = indicator.kind().as_u8();
-            let dora = match kind {
-                0..=26 => kind / 9 * 9 + (kind % 9 + 1) % 9,
-                27..=30 => 27 + (kind - 27 + 1) % 4,
-                _ => 31 + (kind - 31 + 1) % 3,
-            };
-            counts[usize::from(dora)]
-        })
+        .map(|&indicator| counts[usize::from(dora_from_indicator(indicator).as_u8())])
         .sum()
+}
+
+/// 指示牌按各自循环取下一种牌；名称展示与计分共用同一规则。
+pub(crate) fn dora_from_indicator(indicator: Tile) -> TileKind {
+    let kind = indicator.kind().as_u8();
+    let dora = match kind {
+        0..=26 => kind / 9 * 9 + (kind % 9 + 1) % 9,
+        27..=30 => 27 + (kind - 27 + 1) % 4,
+        _ => 31 + (kind - 31 + 1) % 3,
+    };
+    TileKind::new(dora).unwrap_or_else(|| unreachable!("合法牌种循环仍为合法牌种"))
+}
+
+/// 只统计已知牌中的宝牌；可用于未完成自手及他家公开副露，不推断暗牌。
+pub(crate) fn known_bonus<'a>(
+    tiles: impl Iterator<Item = &'a Tile>,
+    indicators: &[Tile],
+) -> BonusHan {
+    let mut counts = [0; 34];
+    let mut aka_dora = 0;
+    for tile in tiles {
+        counts[tile.kind().as_u8() as usize] += 1;
+        aka_dora += u32::from(tile.is_aka());
+    }
+    BonusHan {
+        dora: count_dora(&counts, indicators),
+        aka_dora,
+        ura_dora: 0,
+    }
 }

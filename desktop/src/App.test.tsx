@@ -821,6 +821,25 @@ describe('完整回放与问答边界', () => {
     expect(scrollIntoView).not.toHaveBeenCalled();
   });
 
+  it('直接展示 Markdown 回答中的标题、加粗和比较表格', async () => {
+    const bridge = api();
+    vi.mocked(bridge.ask).mockImplementationOnce(async (_game, _player, _event, id) =>
+      savedSession(
+        id,
+        '## 两种切法\n\n**进张不同**\n\n| 切牌 | 进张 |\n| --- | --- |\n| 7p | 11 |\n| 中 | 22 |',
+      ),
+    );
+    await load(bridge);
+    await openChat();
+    await userEvent.type(screen.getByLabelText('复盘问题'), '比较一下');
+    await userEvent.click(screen.getByRole('button', { name: '发送问题' }));
+    await screen.findByRole('heading', { name: '两种切法' });
+    expect(screen.getByText('进张不同').tagName).toBe('STRONG');
+    expect(screen.getByRole('columnheader', { name: '切牌' })).toBeTruthy();
+    expect(screen.getByRole('cell', { name: '7p' })).toBeTruthy();
+    expect(bridge.ask).toHaveBeenCalledOnce();
+  });
+
   it('切换局面不会重置当前会话的滚动位置', async () => {
     await load(api());
     await openChat();

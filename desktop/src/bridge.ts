@@ -10,7 +10,11 @@ function questionChannel(run: QuestionRun) {
 export const bridge: Bridge = {
   getSettings: () => invoke('get_settings'),
   saveSettings: (input) => invoke('save_settings', { input }),
-  testConnection: (input) => invoke('test_connection', { input }),
+  testConnection: (input, onProgress) => {
+    const channel = new Channel<QuestionProgress>();
+    channel.onmessage = onProgress;
+    return invoke('test_connection', { input, onProgress: channel });
+  },
   runtimeStatus: (check) => invoke('runtime_status', { check }),
   importLog: (json, name) => invoke('import_log', { json, name }),
   importLink: (link) => invoke('import_link', { link }),

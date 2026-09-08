@@ -32,9 +32,10 @@ fn cli_requires_valid_position_and_resolves_stdin_ownership() {
 
 #[test]
 fn cli_keeps_mortal_and_llm_configuration_separate() {
-    let args = parse("--player 2 --event 12 --model weights.pth --llm-model model-name --endpoint https://example.com/v1/responses --question why --interactive log").unwrap().unwrap();
+    let args = parse("--player 2 --event 12 --model weights.pth --llm-model model-name --llm-config options.json --endpoint https://example.com/v1/responses --question why --interactive log").unwrap().unwrap();
     assert_eq!(args.model, PathBuf::from("weights.pth"));
     assert_eq!(args.llm_model.as_deref(), Some("model-name"));
+    assert_eq!(args.llm_config, Some(PathBuf::from("options.json")));
     assert_eq!(args.question.as_deref(), Some("why"));
     assert!(args.interactive);
     assert_eq!(args.player.get_id(), 2);
@@ -114,6 +115,7 @@ fn switching_rebuilds_tool_evidence_without_llm_configuration() {
         endpoint: "invalid",
         model: "",
         api_key: None,
+        options: Default::default(),
     };
     for config in [None, Some(&invalid)] {
         let mut output = Vec::new();
@@ -191,6 +193,7 @@ fn browse_questions_reset_history_on_switch_but_keep_it_on_invalid_selection() {
         endpoint: &endpoint,
         model: "test",
         api_key: None,
+        options: Default::default(),
     };
     browse::conversation(&points(), Some(&config),
         &b"first-position-question\n/select 999\n/select 2\nfollow-up\n/next\nsecond-position-question\n/prev\nreturn-question\n/quit\n"[..],
@@ -266,6 +269,7 @@ fn interactive_evidence_quit_and_eof_need_no_llm_configuration() {
         endpoint: "invalid",
         model: "",
         api_key: None,
+        options: Default::default(),
     };
     for config in [None, Some(&invalid)] {
         let mut session = None;
@@ -429,6 +433,7 @@ fn custom_http_requests_send_only_explicit_custom_credentials() {
                     endpoint: &endpoint,
                     model: "test",
                     api_key: key.as_deref(),
+                    options: Default::default(),
                 },
             )
             .unwrap();

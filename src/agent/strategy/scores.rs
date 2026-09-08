@@ -96,3 +96,136 @@ pub(super) fn outcome(
 pub(super) fn outcome_value(outcome: &ScoreOutcome) -> Value {
     json!({"scores":outcome.scores,"deltas":outcome.deltas,"ranks":outcome.ranks})
 }
+
+/// 自家具体和牌形的条件结算；新增立直支出与回收在同一分支中只记一次。
+pub(super) fn winning_outcomes(
+    snapshot: &Snapshot,
+    payments: &Payments,
+    new_deposit: bool,
+) -> Result<Value, ToolError> {
+    let mut scores: [i32; 4] = std::array::from_fn(|i| snapshot.position.players[i].score);
+    let mut sticks = snapshot.position.riichi_sticks;
+    if new_deposit {
+        if scores[snapshot.player] < 1000 {
+            return Err(("invalid_score_scenario", "给定立直分支不足1000点。".into()));
+        }
+        scores[snapshot.player] -= 1000;
+        sticks = sticks
+            .checked_add(1)
+            .ok_or_else(|| ("invalid_score_scenario", "供托数量溢出。".into()))?;
+    }
+    let winner = PlayerIndex::new(snapshot.player as u8).unwrap();
+    let dealer = PlayerIndex::new(snapshot.position.dealer).unwrap();
+    let payers: Vec<_> = if matches!(payments, Payments::Ron { .. }) {
+        (0..4).filter(|&p| p != snapshot.player).map(Some).collect()
+    } else {
+        vec![None]
+    };
+    let mut outcomes = serde_json::Map::new();
+    for payer in payers {
+        let mut result = apply_win(
+            scores,
+            winner,
+            dealer,
+            payer.map(|p| PlayerIndex::new(p as u8).unwrap()),
+            payments,
+            snapshot.position.honba,
+            sticks,
+        )
+        .map_err(|e| ("invalid_score_scenario", format!("{e:?}")))?;
+        if new_deposit {
+            result.deltas[snapshot.player] -= 1000;
+        }
+        outcomes.insert(
+            payer.map_or_else(|| "tsumo".into(), |payer| format!("ron_from_{payer}")),
+            outcome_value(&result),
+        );
+    }
+    Ok(
+        json!({"new_riichi_deposit":if new_deposit {1000} else {0},"by_payer":outcomes,
+        "deltas_relative_to_original_scores":true,"does_not_establish_win_legality":true}),
+    )
+}
+
+pub(super) fn draws(snapshot: &Snapshot) -> Value {
+    let scores = std::array::from_fn(|i| snapshot.position.players[i].score);
+    let combinations: Vec<_> = (0..16u8).map(|mask| {
+        let tenpai = std::array::from_fn(|i| mask & (1<<i) != 0);
+        let result = crate::analysis::score_scenario::apply_exhaustive_draw(scores,tenpai);
+        let continues = tenpai[snapshot.position.dealer as usize];
+        json!({"tenpai":tenpai,"outcome":outcome_value(&result),
+            "dealer_continues_if_match_continues":continues,
+            "next_dealer_if_match_continues":if continues {snapshot.position.dealer} else {(snapshot.position.dealer+1)%4},
+            "next_honba_if_match_continues":u16::from(snapshot.position.honba)+1,
+            "carried_riichi_sticks":snapshot.position.riichi_sticks})
+    }).collect();
+    json!({"combinations":combinations,"scope":{"given_exhaustive_draw":true,
+        "tenpai_combinations_are_conditions_not_predictions":true,"noten_pool":3000,
+        "dealer_repeats_on_tenpai":true,"excludes_abortive_draws_and_nagashi_mangan":true,
+        "does_not_decide_match_end":true,"no_additional_riichi_deposits":true}})
+}
+
+pub(super) fn win(snapshot: &Snapshot, args: &Value) -> Result<(String, Value), ToolError> {
+    let winner = args["winner"]
+        .as_u64()
+        .and_then(|p| u8::try_from(p).ok())
+        .and_then(PlayerIndex::new)
+        .ok_or_else(super::invalid_arguments)?;
+    let payer = if args["payer"].is_null() {
+        None
+    } else {
+        Some(
+            args["payer"]
+                .as_u64()
+                .and_then(|p| u8::try_from(p).ok())
+                .and_then(PlayerIndex::new)
+                .ok_or_else(super::invalid_arguments)?,
+        )
+    };
+    let fu = args["fu"]
+        .as_u64()
+        .filter(|&fu| fu <= 110)
+        .and_then(|fu| u32::try_from(fu).ok())
+        .ok_or_else(super::invalid_arguments)?;
+    let han = args["han"]
+        .as_u64()
+        .filter(|&han| (1..=13).contains(&han))
+        .and_then(|han| u32::try_from(han).ok())
+        .ok_or_else(super::invalid_arguments)?;
+    let method = if payer.is_some() {
+        WinMethod::Ron(crate::analysis::RonSource::Discard)
+    } else {
+        WinMethod::Tsumo(TsumoSource::Wall)
+    };
+    let payments = calculate_payments(
+        &HandValue {
+            fu: Some(fu),
+            han,
+            yakuman: 0,
+        },
+        &BonusHan::default(),
+        winner.get_id() == snapshot.position.dealer,
+        method,
+    )
+    .map_err(|e| ("invalid_score_scenario", e.to_string()))?;
+    let result = apply_win(
+        std::array::from_fn(|i| snapshot.position.players[i].score),
+        winner,
+        PlayerIndex::new(snapshot.position.dealer).unwrap(),
+        payer,
+        &payments,
+        snapshot.position.honba,
+        snapshot.position.riichi_sticks,
+    )
+    .map_err(|e| ("invalid_score_scenario", format!("{e:?}")))?;
+    let payer_name = payer.map_or_else(|| "tsumo".into(), |p| format!("ron_from_{}", p.get_id()));
+    Ok((
+        format!("win_{}_{}_{}_{}", winner.get_id(), payer_name, fu, han),
+        json!({
+        "winner":winner.get_id(),"payer":payer.map(|p|p.get_id()),"fu":fu,"given_total_han":han,
+        "payments":super::hand::payments(&payments),"outcome":outcome_value(&result),
+        "scope":{"fu_han_are_given_not_inferred":true,"assumes_at_least_one_yaku":true,
+            "not_an_opponent_value_estimate":true,"includes_honba_and_existing_sticks":true,
+            "single_winner":true,"does_not_decide_match_end":true,"no_additional_riichi_deposits":true}}),
+    ))
+}

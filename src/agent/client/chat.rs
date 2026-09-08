@@ -45,7 +45,7 @@ pub(super) fn request(
     Ok(json!({
         "model": model, "messages": messages,
         "tools": tools,
-        "tool_choice": if mode == RequestMode::Repair { "none" } else { "auto" },
+        "tool_choice": "auto",
         "parallel_tool_calls": mode == RequestMode::Analysis, "store": false, "max_completion_tokens": 4096,
     }))
 }
@@ -61,7 +61,7 @@ pub(super) fn response(response: Value) -> Result<Value, AgentError> {
     let has_calls = match choice["finish_reason"].as_str() {
         Some("stop") => false,
         Some("tool_calls") => true,
-        Some("length") => return Err(AgentError::IncompleteResponse),
+        Some("length") => return Err(AgentError::OutputLimit),
         Some("content_filter") => return Err(AgentError::Refused),
         _ => return Err(invalid("unsupported chat finish reason")),
     };

@@ -17,11 +17,11 @@ fn text_message(text: &str) -> Value {
 }
 
 fn valid_answer(text: &str) -> String {
-    json!({"sections": [{"source": "limitation", "text": text, "facts": []}]}).to_string()
+    text.to_owned()
 }
 
 #[test]
-fn chat_roundtrip_preserves_tool_groups_and_followups_and_reuses_answer_validation() {
+fn chat_roundtrip_preserves_tool_groups_markdown_and_followups_without_repairs() {
     let mut calls = tool_message(vec![tool("a", "{}"), tool("b", "{}")]);
     calls["content"] = json!("读取局面证据。");
     calls["reasoning_content"] = json!("test-reasoning");
@@ -38,9 +38,8 @@ fn chat_roundtrip_preserves_tool_groups_and_followups_and_reuses_answer_validati
             ),
             (
                 200,
-                completion(text_message("**坏格式**"), "stop").to_string(),
+                completion(text_message("**普通 Markdown 回答**"), "stop").to_string(),
             ),
-            (200, completion(text_message(&second), "stop").to_string()),
             (200, completion(text_message(&second), "stop").to_string()),
         ],
     );
@@ -50,23 +49,18 @@ fn chat_roundtrip_preserves_tool_groups_and_followups_and_reuses_answer_validati
             endpoint: &endpoint,
             model: "test",
             api_key: None,
+            options: Default::default(),
         },
     )
     .unwrap();
-    assert_eq!(
-        session.ask("第一问").unwrap(),
-        "【说明】现有证据不能解释推荐原因。"
-    );
+    assert_eq!(session.ask("第一问").unwrap(), "现有证据不能解释推荐原因。");
     let history = session.history.clone();
     assert!(matches!(
         session.ask("失败问题"),
-        Err(AgentError::IncompleteResponse)
+        Err(AgentError::OutputLimit)
     ));
     assert_eq!(session.history, history);
-    assert_eq!(
-        session.ask("第二问").unwrap(),
-        "【说明】只能比较已提供的指标。"
-    );
+    assert_eq!(session.ask("第二问").unwrap(), "**普通 Markdown 回答**");
     session.ask("第三问").unwrap();
     let requests = handle.join().unwrap();
     let request = &requests[0];
@@ -95,21 +89,20 @@ fn chat_roundtrip_preserves_tool_groups_and_followups_and_reuses_answer_validati
         assert_eq!(messages[index]["tool_call_id"], id);
         let output: Value =
             serde_json::from_str(messages[index]["content"].as_str().unwrap()).unwrap();
-        assert_eq!(output["review"], review_evidence(&review()));
+        assert_eq!(
+            client::expand_test(output)["review"],
+            review_evidence(&review())
+        );
     }
     assert_eq!(requests[1]["tool_choice"], "auto");
     assert_eq!(requests[3]["messages"][6], text_message(&first));
     assert!(!requests[3].to_string().contains("失败问题"));
-    assert_eq!(
-        requests[4]["messages"].as_array().unwrap().last().unwrap()["role"],
-        "system"
-    );
-    assert!(requests[4].to_string().contains("回答校验失败"));
-    assert_eq!(requests[4]["tool_choice"], "none");
-    assert_eq!(requests[4]["parallel_tool_calls"], false);
-    assert!(!requests[5].to_string().contains("坏格式"));
-    assert!(!requests[5].to_string().contains("回答校验失败"));
-    assert!(!requests[5].to_string().contains("_chat_message"));
+    assert_eq!(requests.len(), 5);
+    assert!(requests[4].to_string().contains("普通 Markdown 回答"));
+    assert_eq!(requests[4]["tool_choice"], "auto");
+    assert_eq!(requests[4]["parallel_tool_calls"], true);
+    assert!(!requests[4].to_string().contains("回答校验失败"));
+    assert!(!requests[4].to_string().contains("_chat_message"));
 }
 
 #[test]
@@ -130,6 +123,7 @@ fn chat_endpoint_variants_and_connection_probe_use_chat_protocol() {
             endpoint: &endpoint,
             model: "test",
             api_key: None,
+            options: Default::default(),
         }
         .test_connection()
         .unwrap();
@@ -187,18 +181,16 @@ fn chat_includes_evidence_and_can_correct_invalid_tool_arguments() {
             endpoint: &endpoint,
             model: "test",
             api_key: None,
+            options: Default::default(),
         },
     )
     .unwrap();
     assert!(matches!(
         session.ask("失败取证"),
-        Err(AgentError::IncompleteResponse)
+        Err(AgentError::OutputLimit)
     ));
     assert!(session.history.is_empty());
-    assert_eq!(
-        session.ask("查看局面").unwrap(),
-        "【说明】未运行切牌分析。\n\n【Mortal】未分析。"
-    );
+    assert_eq!(session.ask("查看局面").unwrap(), "未运行切牌分析。");
     let requests = handle.join().unwrap();
     assert_eq!(requests[2]["tool_choice"], "auto");
     assert_eq!(
@@ -242,6 +234,7 @@ fn chat_rejects_incomplete_refused_and_malformed_messages() {
             endpoint: &endpoint,
             model: "test",
             api_key: None,
+            options: Default::default(),
         })
         .unwrap()
         .respond(&[], RequestMode::ReviewProbe)
@@ -268,6 +261,7 @@ fn chat_rejects_incomplete_refused_and_malformed_messages() {
             endpoint: &endpoint,
             model: "test",
             api_key: None,
+            options: Default::default(),
         })
         .unwrap()
         .respond(&[], RequestMode::ReviewProbe)
@@ -275,7 +269,7 @@ fn chat_rejects_incomplete_refused_and_malformed_messages() {
         assert!(if refused {
             matches!(error, AgentError::Refused)
         } else {
-            matches!(error, AgentError::IncompleteResponse)
+            matches!(error, AgentError::OutputLimit)
         });
         assert!(!error.to_string().contains("secret"));
         handle.join().unwrap();
@@ -297,6 +291,7 @@ fn chat_rejects_incomplete_refused_and_malformed_messages() {
             endpoint: &endpoint,
             model: "test",
             api_key: None,
+            options: Default::default(),
         },
     )
     .unwrap();
@@ -311,7 +306,8 @@ fn chat_rejects_incomplete_refused_and_malformed_messages() {
 fn chat_archive_restores_tool_messages_and_provider_reasoning() {
     let tool = json!({"role":"assistant", "content":null, "reasoning_content":"provider-state", "tool_calls":[{"id":"saved-call","type":"function","function":{"name":"get_review","arguments":"{}"}}]});
     let reply = |text: &str| {
-        json!({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":json!({"sections":[{"source":"limitation","text":text,"facts":[]}]}).to_string()}}]}).to_string()
+        json!({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":text}}]})
+            .to_string()
     };
     let (endpoint, server) = server_at(
         "/v1/chat/completions",
@@ -328,6 +324,7 @@ fn chat_archive_restores_tool_messages_and_provider_reasoning() {
         endpoint: &endpoint,
         model: "test",
         api_key: None,
+        options: Default::default(),
     };
     let mut session = AgentSession::new(&review(), &config).unwrap();
     session.ask("先解释").unwrap();

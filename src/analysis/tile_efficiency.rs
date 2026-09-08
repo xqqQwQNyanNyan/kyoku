@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 
@@ -137,6 +138,43 @@ pub(crate) fn analyze_discard(
     discard: Tile,
     unseen: impl Fn(TileKind) -> u8,
 ) -> Result<DiscardEfficiency, AnalysisError> {
+    analyze_discard_using(hand, discard, unseen, hand_shanten)
+}
+
+/// 缓存仅活在一次比较内；牌形不含可见枚数，分支的枚数始终另外计算。
+#[derive(Default)]
+pub(crate) struct EfficiencyCache {
+    distances: HashMap<([u8; 34], Vec<crate::mahjong::meld::Meld>), i8>,
+}
+
+impl EfficiencyCache {
+    pub(crate) fn shanten(&mut self, hand: &Hand) -> i8 {
+        let key = (
+            super::shanten::concealed_counts(hand),
+            hand.melds().to_vec(),
+        );
+        *self
+            .distances
+            .entry(key)
+            .or_insert_with(|| hand_shanten(hand))
+    }
+
+    pub(crate) fn discard(
+        &mut self,
+        hand: &Hand,
+        discard: Tile,
+        unseen: impl Fn(TileKind) -> u8,
+    ) -> Result<DiscardEfficiency, AnalysisError> {
+        analyze_discard_using(hand, discard, unseen, |hand| self.shanten(hand))
+    }
+}
+
+fn analyze_discard_using(
+    hand: &Hand,
+    discard: Tile,
+    unseen: impl Fn(TileKind) -> u8,
+    mut distance: impl FnMut(&Hand) -> i8,
+) -> Result<DiscardEfficiency, AnalysisError> {
     validate_hand_size(hand, Hand::MAX_TILE_COUNT)?;
     if !hand.concealed().contains(&discard) {
         return Err(AnalysisError::DiscardNotFound { discard });
@@ -146,17 +184,16 @@ pub(crate) fn analyze_discard(
     after_discard
         .discard(discard)
         .map_err(AnalysisError::HandMutation)?;
-    let shanten = hand_shanten(&after_discard);
+    let shanten = distance(&after_discard);
+
+    if shanten < 0 {
+        return Err(AnalysisError::InvalidShantenAfterDiscard { actual: shanten });
+    }
+    let kinds = candidate_tile_kinds_using(&after_discard, |s| s < shanten, &mut distance)?;
 
     let candidates = match shanten {
-        1.. => DrawCandidates::Effective(with_availability(
-            effective_tile_kinds(&after_discard)?,
-            &unseen,
-        )),
-        0 => DrawCandidates::Winning(with_availability(
-            winning_tile_kinds(&after_discard)?,
-            &unseen,
-        )),
+        1.. => DrawCandidates::Effective(with_availability(kinds, &unseen)),
+        0 => DrawCandidates::Winning(with_availability(kinds, &unseen)),
         actual => return Err(AnalysisError::InvalidShantenAfterDiscard { actual }),
     };
     let total_unseen = match &candidates {
@@ -202,6 +239,14 @@ fn candidate_tile_kinds(
     hand: &Hand,
     accepts: impl Fn(i8) -> bool,
 ) -> Result<Vec<TileKind>, AnalysisError> {
+    candidate_tile_kinds_using(hand, accepts, hand_shanten)
+}
+
+fn candidate_tile_kinds_using(
+    hand: &Hand,
+    accepts: impl Fn(i8) -> bool,
+    mut distance: impl FnMut(&Hand) -> i8,
+) -> Result<Vec<TileKind>, AnalysisError> {
     let counts = all_hand_counts(hand);
     let mut candidates = Vec::new();
 
@@ -214,7 +259,7 @@ fn candidate_tile_kinds(
         let tile = Tile::new(value).unwrap_or_else(|| unreachable!("tile kinds are valid tiles"));
         let mut after_draw = hand.clone();
         after_draw.draw(tile).map_err(AnalysisError::HandMutation)?;
-        if accepts(hand_shanten(&after_draw)) {
+        if accepts(distance(&after_draw)) {
             candidates.push(kind);
         }
     }

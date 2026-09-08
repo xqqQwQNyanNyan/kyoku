@@ -83,7 +83,10 @@ export interface Decision {
 export interface Bridge {
   getSettings(): Promise<Settings>;
   saveSettings(input: SettingsInput): Promise<Settings>;
-  testConnection(input: SettingsInput): Promise<void>;
+  testConnection(
+    input: SettingsInput,
+    onProgress: (progress: QuestionProgress) => void,
+  ): Promise<void>;
   runtimeStatus(check: boolean): Promise<RuntimeStatus>;
   importLog(json: string, name: string): Promise<Replay>;
   importLink(link: string): Promise<Replay>;
@@ -127,18 +130,44 @@ export interface Bridge {
 }
 
 export type QuestionProgress =
-  { phase: 'preparing' } | { phase: 'model'; request: number } | { phase: 'tool'; name: string };
+  | { phase: 'usage'; requests: RequestUsage[]; budget: number | null }
+  | { phase: 'preparing' }
+  | { phase: 'model'; request: number }
+  | { phase: 'tool'; name: string };
 
 export interface QuestionRun {
   requestId: string;
   onProgress(progress: QuestionProgress): void;
 }
 
+export interface TokenPrices {
+  currency: string;
+  input: number;
+  output: number;
+  cached_input: number | null;
+}
+export interface ModelOptions {
+  max_output_tokens: number;
+  context_tokens: number | null;
+  thinking: 'default' | 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  chat_token_limit: 'max_completion_tokens' | 'max_tokens';
+  token_budget: number | null;
+  prices: TokenPrices | null;
+}
+export interface RequestUsage {
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cached_input_tokens: number | null;
+  reasoning_tokens: number | null;
+  cost: number | null;
+  prices: TokenPrices | null;
+}
 export interface Settings {
   endpoint: string;
   model: string;
   has_api_key: boolean;
   saved: boolean;
+  options?: ModelOptions;
 }
 
 export interface SavedReplay {
@@ -159,6 +188,7 @@ export interface SettingsInput {
   model: string;
   api_key: string;
   clear_key: boolean;
+  options?: ModelOptions;
 }
 
 export interface RuntimeStatus {
@@ -176,6 +206,8 @@ export interface SessionEvidence extends SessionPosition {
   position?: { round: { wind: string; number: number }; honba: number };
 }
 export interface SessionTurn {
+  usage?: RequestUsage[];
+  options?: ModelOptions | null;
   question: string;
   answer: string | null;
   error: string | null;

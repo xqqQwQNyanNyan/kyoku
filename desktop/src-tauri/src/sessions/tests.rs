@@ -7,6 +7,7 @@ fn stopped_questions_survive_restart_and_late_cancellation_cannot_stop_the_retry
         endpoint: &endpoint,
         model: "test",
         api_key: None,
+        options: Default::default(),
     };
     let directory = Directory::new();
     let store = new_store(directory.0.join("sessions"));
@@ -448,9 +449,10 @@ fn server(
 fn message(text: &str) -> String {
     json!({"status":"completed","output":[{
         "type":"message","role":"assistant","status":"completed","content":[{
-            "type":"output_text","text":json!({"sections":[{"source":"limitation","text":text,"facts":[]}]}).to_string()
+            "type":"output_text","text":text
         }]
-    }]}).to_string()
+    }]})
+    .to_string()
 }
 
 use super::*;
@@ -517,6 +519,7 @@ fn archive(endpoint: &str) -> SessionArchive {
             endpoint,
             model: "test",
             api_key: None,
+            options: Default::default(),
         },
     )
     .unwrap()
@@ -631,6 +634,7 @@ fn history_browsing_keeps_saved_answers_even_when_tool_results_no_longer_match()
                     endpoint: "http://localhost/responses",
                     model: "test",
                     api_key: None,
+                    options: Default::default(),
                 },
                 None
             )
@@ -663,6 +667,7 @@ fn session_operations_exclude_only_the_same_session_and_release_on_failure() {
         endpoint: "http://localhost/responses",
         model: "test",
         api_key: None,
+        options: Default::default(),
     };
     assert!(store.ask("missing", "无法读取", &config, None).is_err());
     store
@@ -717,6 +722,7 @@ fn answers_and_failed_traces_are_saved_before_reopening_and_continuing() {
         endpoint: &endpoint,
         model: "test",
         api_key: None,
+        options: Default::default(),
     };
     store.ask("saved", "最初的问题", &config, None).unwrap();
     let accepted =
@@ -738,7 +744,9 @@ fn answers_and_failed_traces_are_saved_before_reopening_and_continuing() {
     assert!(!failed.to_string().contains("not-persisted-http-body"));
     store.ask("saved", "继续原来的讨论", &config, None).unwrap();
     let requests = server.join().unwrap();
-    let mut expected = accepted.as_array().unwrap().clone();
+    // 存档保留完整证据，线上请求会压缩；恢复应接续同样的线上消息。
+    let mut expected = requests[1]["input"].as_array().unwrap().clone();
+    expected.push(accepted.as_array().unwrap().last().unwrap().clone());
     expected.push(json!({"role":"user","content":"继续原来的讨论"}));
     assert_eq!(requests[3]["input"], json!(expected));
     assert_eq!(store.list().unwrap().sessions.len(), 1);
@@ -788,6 +796,7 @@ fn game_sessions_preserve_turn_snapshots_browsing_position_and_portable_replay()
         endpoint: &endpoint,
         model: "test",
         api_key: None,
+        options: Default::default(),
     };
     let game = fixture_game();
     let first = AgentContext::from_events(&game.events, PlayerIndex::new(0).unwrap(), 1).unwrap();
@@ -902,6 +911,7 @@ fn retries_use_original_question_snapshots_even_after_browsing_and_other_questio
         endpoint: &endpoint,
         model: "test",
         api_key: None,
+        options: Default::default(),
     };
     let game = fixture_game();
     let first = AgentContext::from_events(&game.events, PlayerIndex::new(0).unwrap(), 2).unwrap();
@@ -973,6 +983,7 @@ fn a_session_cannot_be_reused_for_another_game_and_invalid_import_keeps_original
         endpoint: &endpoint,
         model: "test",
         api_key: None,
+        options: Default::default(),
     };
     let game = fixture_game();
     let context = AgentContext::from_events(&game.events, PlayerIndex::new(0).unwrap(), 2).unwrap();

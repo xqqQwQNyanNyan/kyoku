@@ -12,7 +12,6 @@ use crate::{
         DrawCandidates,
         discard_comparison::{ComparisonContext, ComparisonError, DiscardBranch, DrawBranch},
     },
-    mahjong::tile::Tile,
     replay::inspector::format_tile,
 };
 
@@ -25,21 +24,15 @@ struct Arguments {
 }
 
 pub(super) fn definition() -> Value {
-    let tiles: Vec<_> = (0..=Tile::MAX_VALUE)
-        .filter_map(Tile::new)
-        .map(format_tile)
-        .collect();
-    let mut draws: Vec<Value> = tiles.iter().take(34).map(|s| json!(s)).collect();
-    draws.push(Value::Null);
     json!({
         "type": "function", "name": "compare_discards", "strict": true,
         "description": "比较 get_review 已提供的两个不同切牌。返回切后暗牌、局部连接、向听和直接进张差异。draw=null 只比较当前切牌；指定普通牌记法则假设双方随后摸到同种牌，枚举下一次切牌的牌形效率，用于核验具体改良假设。连接可能重叠，不是唯一拆分。假设其他玩家无动作、公开牌不变；不模拟鸣牌、立直、打点或防守，不读取实际未来，不证明 Mortal 的内在原因。",
         "parameters": {
             "type": "object", "additionalProperties": false,
             "properties": {
-                "first": {"type": "string", "enum": tiles, "description": "第一个切牌，须在当前 discards 中。"},
-                "second": {"type": "string", "enum": tiles, "description": "作为对照的另一个切牌，须在当前 discards 中。"},
-                "draw": {"type": ["string", "null"], "enum": draws, "description": "假设摸入的牌种，不区分赤牌；不研究后续时传 null。"}
+                "first": {"type": "string", "description": "第一个切牌，须在当前 discards 中；如1m、5mr、P。"},
+                "second": {"type": "string", "description": "另一个当前候选切牌。"},
+                "draw": {"type": ["string", "null"], "description": "假设摸入的普通非赤牌；不研究后续时传 null。"}
             },
             "required": ["first", "second", "draw"]
         }
@@ -339,16 +332,6 @@ fn analysis_error(error: ComparisonError) -> ToolError {
         ),
         ComparisonError::InvalidMeld => bad_position(),
         ComparisonError::Analysis(error) => ("analysis_failed", error.to_string()),
-    }
-}
-
-/// 引用只接受实际成功的工具结果；不把模型自己生成的文字加入证据。
-pub(super) fn remember(evidence: &mut Value, result: &Value) {
-    if result["ok"] == true
-        && result["comparison"].is_object()
-        && let Some(key) = result["key"].as_str()
-    {
-        evidence["comparisons"][key] = result["comparison"].clone();
     }
 }
 

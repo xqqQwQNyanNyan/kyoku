@@ -665,11 +665,17 @@ async fn save_settings(
 #[tauri::command]
 async fn test_connection(
     input: settings::SettingsInput,
+    on_progress: Channel<QuestionProgress>,
     app: tauri::AppHandle,
 ) -> Result<(), UiError> {
-    tauri::async_runtime::spawn_blocking(move || app.state::<settings::SettingsStore>().test(input))
-        .await
-        .map_err(|_| UiError::new("task", "连接测试任务异常结束"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        let control = QuestionControl::new(move |progress| {
+            let _ = on_progress.send(progress);
+        });
+        app.state::<settings::SettingsStore>().test(input, &control)
+    })
+    .await
+    .map_err(|_| UiError::new("task", "连接测试任务异常结束"))?
 }
 
 #[derive(Serialize)]

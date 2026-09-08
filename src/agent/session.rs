@@ -40,6 +40,10 @@ pub struct SessionArchive {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Turn {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    usage: Vec<RequestUsage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    options: Option<ModelOptions>,
     question: String,
     answer: Option<String>,
     error: Option<String>,
@@ -66,15 +70,22 @@ impl SessionArchive {
     pub(super) fn record(
         &mut self,
         question: &str,
-        answer: Option<&str>,
-        error: Option<String>,
+        result: Result<&str, &AgentError>,
         trace: Vec<Value>,
         history: &[Value],
+        usage: Vec<RequestUsage>,
+        options: ModelOptions,
     ) {
         self.history = history.to_vec();
+        let (answer, error) = match result {
+            Ok(answer) => (Some(answer.to_owned()), None),
+            Err(error) => (None, Some(error.to_string())),
+        };
         self.turns.push(Turn {
+            usage,
+            options: Some(options),
             question: question.trim().into(),
-            answer: answer.map(str::to_owned),
+            answer,
             error,
             trace,
             evidence: Some(self.evidence.clone()),
@@ -228,6 +239,17 @@ impl SessionArchive {
             return Err(E::InvalidContext("工具调用缺少结果"));
         }
         for turn in &self.turns {
+            if let Some(options) = &turn.options {
+                options
+                    .validate()
+                    .map_err(|_| E::InvalidContext("模型配置无效"))?;
+            }
+            if turn.usage.len() > MAX_REQUESTS {
+                return Err(E::InvalidContext("请求用量记录过多"));
+            }
+            for usage in &turn.usage {
+                usage.validate().map_err(E::InvalidContext)?;
+            }
             if let Some(evidence) = &turn.evidence {
                 validate_evidence(evidence)?;
             }

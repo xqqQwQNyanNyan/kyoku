@@ -92,7 +92,7 @@ impl CompiledConstraint {
 pub fn standard_shanten(counts: &[u8; TILE_KIND_COUNT]) -> i8 {
     debug_assert!(counts.iter().all(|&count| count <= MAX_COPIES as u8));
 
-    ordinary_shanten_with_constraint(counts, &[], &standard_constraint())
+    ordinary_shanten_with_constraint(counts, &[], standard_constraint())
         .unwrap_or_else(|| unreachable!("standard constraint always accepts ordinary hands"))
 }
 
@@ -101,6 +101,15 @@ fn ordinary_shanten_with_constraint(
     counts: &[u8; TILE_KIND_COUNT],
     existing_melds: &[Meld],
     constraint: &CompiledConstraint,
+) -> Option<i8> {
+    ordinary_shanten_with_limits(counts, existing_melds, constraint, None)
+}
+
+fn ordinary_shanten_with_limits(
+    counts: &[u8; TILE_KIND_COUNT],
+    existing_melds: &[Meld],
+    constraint: &CompiledConstraint,
+    limits: Option<&[u8; TILE_KIND_COUNT]>,
 ) -> Option<i8> {
     let constraint_state_count = constraint.state_count();
     if constraint_state_count == 0 || existing_melds.len() > MAX_MELDS {
@@ -115,17 +124,12 @@ fn ordinary_shanten_with_constraint(
             constraint.transition(initial_constraint_state, component_from_meld(meld))?;
     }
 
-    // dp[i][a][b][p][m][c]：处理完前 i 种牌后，在此前顺子仍需要当前牌 a 张、
-    // 下一种牌 b 张，且已选择 p 个雀头、m 个面子、约束状态为 c 时的最小缺牌数。
-    let mut dp = vec![
-        UNREACHABLE;
-        (TILE_KIND_COUNT + 1)
-            * (MAX_COPIES + 1)
-            * (MAX_COPIES + 1)
-            * 2
-            * (MAX_MELDS + 1)
-            * constraint_state_count
-    ];
+    // 每次只从当前牌种转移到下一种；保留两层，避免为每个摸切分支分配整张表。
+    let mut dp =
+        vec![
+            UNREACHABLE;
+            2 * (MAX_COPIES + 1) * (MAX_COPIES + 1) * 2 * (MAX_MELDS + 1) * constraint_state_count
+        ];
     let initial_index = ordinary_dp_index(
         0,
         0,
@@ -138,13 +142,16 @@ fn ordinary_shanten_with_constraint(
     dp[initial_index] = 0;
 
     for (tile, &tile_count) in counts.iter().enumerate() {
+        let next_layer = (tile + 1) % 2;
+        let layer_size = dp.len() / 2;
+        dp[next_layer * layer_size..(next_layer + 1) * layer_size].fill(UNREACHABLE);
         for a in 0..=MAX_COPIES {
             for b in 0..=MAX_COPIES {
                 for pairs in 0..=1 {
                     for melds in 0..=MAX_MELDS {
                         for constraint_state in 0..constraint_state_count {
                             let current_index = ordinary_dp_index(
-                                tile,
+                                tile % 2,
                                 a,
                                 b,
                                 pairs,
@@ -169,6 +176,9 @@ fn ordinary_shanten_with_constraint(
 
                                         if next_melds > MAX_MELDS
                                             || required > MAX_COPIES
+                                            || limits.is_some_and(|limits| {
+                                                required > limits[tile] as usize
+                                            })
                                             || b + sequence > MAX_COPIES
                                         {
                                             continue;
@@ -189,7 +199,7 @@ fn ordinary_shanten_with_constraint(
                                             required.saturating_sub(tile_count as usize) as u8;
                                         let candidate = missing_so_far + missing_here;
                                         let next_index = ordinary_dp_index(
-                                            tile + 1,
+                                            next_layer,
                                             b + sequence,
                                             sequence,
                                             pairs + pair,
@@ -212,7 +222,7 @@ fn ordinary_shanten_with_constraint(
         .filter(|&state| constraint.is_accepting(state))
         .map(|state| {
             dp[ordinary_dp_index(
-                TILE_KIND_COUNT,
+                TILE_KIND_COUNT % 2,
                 0,
                 0,
                 1,
@@ -258,7 +268,7 @@ pub fn shanten(counts: &[u8; TILE_KIND_COUNT]) -> i8 {
 /// 返回完整领域手牌的最小向听数，并把已有副露计作固定面子。
 pub(crate) fn hand_shanten(hand: &Hand) -> i8 {
     let counts = concealed_counts(hand);
-    let ordinary = ordinary_shanten_with_constraint(&counts, hand.melds(), &standard_constraint())
+    let ordinary = ordinary_shanten_with_constraint(&counts, hand.melds(), standard_constraint())
         .unwrap_or_else(|| unreachable!("a valid hand can always use the standard constraint"));
 
     if hand.melds().is_empty() {
@@ -295,12 +305,45 @@ pub(super) fn solve_hand_form(
     }
 }
 
-fn standard_constraint() -> CompiledConstraint {
-    CompiledConstraint {
+/// limits 是暗牌部分可使用的总张数，已经扣除固定副露和其他已知不可用牌。
+pub(super) fn solve_hand_form_with_limits(
+    hand: &Hand,
+    counts: &[u8; TILE_KIND_COUNT],
+    spec: &HandFormSpec,
+    limits: &[u8; TILE_KIND_COUNT],
+) -> Option<i8> {
+    match spec {
+        HandFormSpec::Ordinary(constraint) => {
+            ordinary_shanten_with_limits(counts, hand.melds(), constraint, Some(limits))
+        }
+        HandFormSpec::Chiitoitsu(constraint) if hand.melds().is_empty() => {
+            chiitoitsu_shanten_with_limits(counts, constraint, Some(limits))
+        }
+        HandFormSpec::Kokushi(_) if hand.melds().is_empty() => {
+            if KOKUSHI_TILES.iter().any(|&tile| limits[tile] == 0) {
+                return None;
+            }
+            let missing: u8 = KOKUSHI_TILES
+                .iter()
+                .map(|&tile| u8::from(counts[tile] == 0))
+                .sum();
+            KOKUSHI_TILES
+                .iter()
+                .filter(|&&tile| limits[tile] >= 2)
+                .map(|&tile| (missing + u8::from(counts[tile] < 2)) as i8 - 1)
+                .min()
+        }
+        _ => None,
+    }
+}
+
+fn standard_constraint() -> &'static CompiledConstraint {
+    static STANDARD: std::sync::OnceLock<CompiledConstraint> = std::sync::OnceLock::new();
+    STANDARD.get_or_init(|| CompiledConstraint {
         start_state: 0,
         transitions: vec![[Some(0); COMPONENT_COUNT]],
         accepting: vec![true],
-    }
+    })
 }
 
 pub(super) fn unrestricted_chiitoitsu_constraint() -> ChiitoitsuConstraint {
@@ -314,13 +357,24 @@ fn chiitoitsu_shanten_with_constraint(
     counts: &[u8; TILE_KIND_COUNT],
     constraint: &ChiitoitsuConstraint,
 ) -> i8 {
+    chiitoitsu_shanten_with_limits(counts, constraint, None)
+        .unwrap_or_else(|| unreachable!("编译后的七对子约束必定存在完成形"))
+}
+
+fn chiitoitsu_shanten_with_limits(
+    counts: &[u8; TILE_KIND_COUNT],
+    constraint: &ChiitoitsuConstraint,
+    limits: Option<&[u8; TILE_KIND_COUNT]>,
+) -> Option<i8> {
     let required_state_count = 1usize << constraint.required_groups.len();
     let accepting_state = required_state_count - 1;
     let mut dp = vec![vec![UNREACHABLE; required_state_count]; 8];
     dp[0][0] = 0;
 
     for (tile, &count) in counts.iter().enumerate() {
-        if (constraint.allowed_tiles >> tile) & 1 == 0 {
+        if (constraint.allowed_tiles >> tile) & 1 == 0
+            || limits.is_some_and(|limits| limits[tile] < 2)
+        {
             continue;
         }
 
@@ -347,10 +401,7 @@ fn chiitoitsu_shanten_with_constraint(
     }
 
     let missing = dp[7][accepting_state];
-    if missing == UNREACHABLE {
-        unreachable!("compiled chiitoitsu constraint must be satisfiable");
-    }
-    missing as i8 - 1
+    (missing != UNREACHABLE).then_some(missing as i8 - 1)
 }
 
 fn ordinary_dp_index(
@@ -524,7 +575,7 @@ mod tests {
         };
 
         assert_eq!(
-            ordinary_shanten_with_constraint(&hand, &[chi], &standard_constraint()),
+            ordinary_shanten_with_constraint(&hand, &[chi], standard_constraint()),
             Some(-1)
         );
     }

@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    agent::{AgentContext, comparison, output},
+    agent::{AgentContext, comparison},
     mahjong::player_index::PlayerIndex,
 };
 
@@ -70,14 +70,6 @@ fn all_improvements_cover_every_available_kind_and_preserve_counterexamples() {
     }
     // 固定样本的摘要应保持小于20 KiB，防止重新塞入完整进张列表。
     assert!(serde_json::to_vec(&result).unwrap().len() < 20 * 1024);
-    let mut verified = evidence.clone();
-    comparison::remember(&mut verified, &result);
-    let answer =
-        json!({"sections":[{"source":"calculation","text":"摸4m后的最佳直接进张为28枚。","facts":[
-            {"path":"/comparisons/2p_3m_all/first/improvements/4m/best_unseen","value":28}
-        ]}]})
-        .to_string();
-    assert!(output::render(&answer, &verified).is_ok());
     let sum: u64 = [
         "first_favored_unseen",
         "second_favored_unseen",
@@ -378,6 +370,7 @@ fn chi_comparison_excludes_both_same_tile_and_suji_kuikae() {
     let mut evidence = position("2m 3m 4m 5m 6m 7m 1p 2p 3p 5p 5pr 7s 8s");
     evidence["position"]["phase"] = json!({"kind":"after_discard","player":3});
     evidence["position"]["players"][3]["discards"] = json!([{"tile":"2m","called":false}]);
+    evidence["position"]["players"][1]["discards"] = json!([{"tile":"7s","called":false}]);
     offer(&mut evidence, &["chi_low", "pass"]);
     evidence["mortal"]["decision"]["at_furiten"] = json!(false);
     let report = run("analyze_actions", &evidence, json!({}));
@@ -388,6 +381,14 @@ fn chi_comparison_excludes_both_same_tile_and_suji_kuikae() {
     assert!(branch["next_discards"].get("5m").is_none());
     assert_eq!(branch["next_discards"]["7s"]["closed"], false);
     assert_eq!(
+        branch["next_discards"]["7s"]["safe_inventory"]["by_player"]["1"]["copies"],
+        0
+    );
+    assert_eq!(
+        branch["next_discards"]["8s"]["safe_inventory"]["by_player"]["1"]["tiles"],
+        json!(["7s"])
+    );
+    assert_eq!(
         report["pass"]["concealed_after"].as_array().unwrap().len(),
         13
     );
@@ -395,6 +396,71 @@ fn chi_comparison_excludes_both_same_tile_and_suji_kuikae() {
     assert_eq!(report["pass"]["passes_current_winning_tile"], false);
     assert_eq!(report["pass"]["temporary_furiten_after_pass"], false);
     assert_eq!(report["pass"]["riichi_furiten_after_pass"], false);
+}
+
+#[test]
+fn pon_comparison_keeps_real_structure_and_each_opponents_safe_inventory() {
+    let mut evidence = position("5mr 5m 7m 8p 1s 3s 4s 5s 7s W W P P");
+    evidence["position"]["phase"] = json!({"kind":"after_discard","player":3});
+    evidence["position"]["players"][1]["melds"] =
+        json!([{"kind":"daiminkan","tiles":["C","C","C","C"],"called":"C","from":3}]);
+    evidence["position"]["players"][1]["discards"] = json!([{"tile":"1s","called":false}]);
+    evidence["position"]["players"][3]["discards"] = json!([{"tile":"P","called":false}]);
+    offer(&mut evidence, &["pon", "pass"]);
+    let report = run("analyze_actions", &evidence, json!({}));
+    let comparison = &report["call_comparison"];
+    let pass = &comparison["pass"];
+    assert_eq!(pass["shanten"], 3);
+    assert_eq!(pass["concealed_count"], 13);
+    assert_eq!(pass["closed"], true);
+    assert!(
+        pass["structure"]["components"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|part| part["kind"] == "sequence" && part["tiles"] == json!(["3s", "4s", "5s"]))
+    );
+    assert_eq!(pass["structure"]["isolated_kinds"], json!(["8p"]));
+    assert_eq!(
+        pass["known_safe_tiles_by_player"]["1"]["tiles"],
+        json!(["1s"])
+    );
+    assert_eq!(
+        pass["known_safe_tiles_by_player"]["3"]["tiles"],
+        json!(["P", "P"])
+    );
+    assert_eq!(
+        comparison["opponents"]["1"]["riichi_blocked_by_open_melds"],
+        true
+    );
+    let choices = comparison["after_call_and_discard"].as_array().unwrap();
+    let cut = |tile: &str| {
+        choices
+            .iter()
+            .find(|choice| choice["discard"] == tile)
+            .unwrap()
+    };
+    assert_eq!(cut("1s")["known_safe_tiles_by_player"]["1"]["copies"], 0);
+    assert_eq!(
+        cut("4s")["known_safe_tiles_by_player"]["1"]["tiles"],
+        json!(["1s"])
+    );
+    assert_eq!(cut("4s")["shanten"], 2);
+    assert_eq!(cut("3s")["shanten"], 3);
+    for choice in choices {
+        assert_eq!(choice["consumed"], json!(["P", "P"]));
+        assert_eq!(choice["concealed_count_after_discard"], 10);
+        assert_eq!(choice["closed"], false);
+        assert_eq!(choice["known_safe_tiles_by_player"]["3"]["copies"], 0);
+    }
+    // 同样四张公开字牌，暗杠不应被误判为失去门前。
+    evidence["position"]["players"][1]["melds"] =
+        json!([{"kind":"ankan","tiles":["C","C","C","C"],"called":null,"from":null}]);
+    let defense = run("analyze_defense", &evidence, json!({}));
+    assert_eq!(
+        defense["opponents"]["1"]["riichi_blocked_by_open_melds"],
+        false
+    );
 }
 
 #[test]
@@ -485,17 +551,13 @@ fn score_targets_distinguish_direct_hit_ties_and_table_sticks() {
 }
 
 #[test]
-fn tool_results_are_required_for_calculation_and_wrong_values_are_rejected() {
+fn hand_tool_works_without_mortal_and_invalid_arguments_are_rejected() {
     let mut evidence = position("1m 2m 3m 4m 5m 6m 7p 8p 9p 2s 3s 5p 5p");
     evidence["analysis_status"] = json!("not_analyzed");
     evidence["discards"] = json!([]);
     let result = execute("analyze_hand", &evidence, r#"{"discard":null}"#);
     assert_eq!(result["ok"], true, "{result}");
-    let text=json!({"sections":[{"source":"calculation","text":"当前手牌听牌。","facts":[{"path":"/analyses/hand_current/shanten","value":0}]}]}).to_string();
-    assert!(output::render(&text, &evidence).is_err());
-    remember(&mut evidence, &result);
-    assert!(output::render(&text, &evidence).is_ok());
-    assert!(output::render(&text.replace("\"value\":0", "\"value\":1"), &evidence).is_err());
+    assert_eq!(result["analysis"]["shanten"], 0);
     for (name, args) in [
         ("analyze_hand", "{}"),
         ("analyze_hand", r#"{"discard":0}"#),

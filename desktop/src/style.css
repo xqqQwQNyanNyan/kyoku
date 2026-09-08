@@ -2030,3 +2030,117 @@ button.session-location:hover {
   overflow: auto;
   font-size: 12px;
 }
+
+/* 仅内容区滚动，标签页和保存操作保持可见。 */
+.settings-dialog {
+  height: min(680px, calc((100vh - 48px) / var(--app-scale, 1)));
+  overflow: hidden;
+}
+.settings-dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+.settings-dialog form {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.settings-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 8px 0 16px;
+  border-bottom: 1px solid var(--line);
+}
+.settings-tabs button {
+  flex: 1;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  padding: 10px 8px;
+}
+.settings-tabs button[aria-selected='true'] {
+  color: var(--gold);
+  background: #d9c78614;
+  border-color: #d9c78640;
+}
+.settings-content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px 2px 16px;
+}
+.settings-content [role='tabpanel'][hidden] {
+  display: none;
+}
+.settings-content [role='tabpanel'] > fieldset > label:first-child {
+  margin-top: 8px;
+}
+.settings-dialog .select-trigger {
+  width: 100%;
+  padding: 11px 12px;
+  min-height: 40px;
+  background: #101817;
+  border-color: #ffffff26;
+}
+.settings-dialog .select-menu {
+  min-width: 100%;
+}
+.settings-footer {
+  flex-shrink: 0;
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+.settings-footer .settings-actions {
+  margin-top: 0;
+  gap: 10px;
+}
+.settings-footer .settings-actions > small {
+  margin-right: auto;
+  margin-top: 0;
+}
+.settings-footer .settings-footnote {
+  margin-top: 10px;
+}
+.settings-footer .settings-error,
+.settings-footer .settings-notice {
+  margin: 0 0 10px;
+  max-height: 64px;
+  overflow-y: auto;
+  font-size: 12px;
+}
+.settings-test-usage {
+  margin-top: 16px;
+}
+.settings-test-usage summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--muted);
+}
+.usage-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  padding: 8px 16px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.usage-details {
+  overflow-x: auto;
+  margin: 8px 0;
+}
+.usage-details table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  text-align: left;
+}
+.usage-details th,
+.usage-details td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+}
+.usage-details small {
+  display: block;
+  margin-top: 4px;
+}

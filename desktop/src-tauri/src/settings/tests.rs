@@ -29,6 +29,7 @@ fn input(endpoint: &str, key: &str) -> SettingsInput {
         model: "test-model".into(),
         api_key: key.into(),
         clear_key: false,
+        options: Default::default(),
     }
 }
 
@@ -228,4 +229,28 @@ fn settings_file_is_private_even_when_replacing_an_old_public_file() {
         0o600
     );
     assert_eq!(store.0.load().unwrap().key.as_deref(), Some("next-key"));
+}
+
+#[test]
+fn model_options_roundtrip_and_invalid_drafts_preserve_saved_configuration() {
+    let store = TestStore::new();
+    let mut draft = input(DEFAULT_ENDPOINT, "test-secret");
+    draft.options = serde_json::from_value(serde_json::json!({
+        "max_output_tokens": 16384, "context_tokens": 128000, "thinking": "high",
+        "token_budget": 200000, "prices": {"currency":"CNY", "input":2.0, "output":8.0, "cached_input":0.5}
+    })).unwrap();
+    let expected = serde_json::to_value(&draft.options).unwrap();
+    let view = store.0.save(draft).unwrap();
+    assert_eq!(serde_json::to_value(view.options).unwrap(), expected);
+    assert_eq!(
+        serde_json::to_value(store.0.load().unwrap().borrowed().options).unwrap(),
+        expected
+    );
+    let mut invalid = input(DEFAULT_ENDPOINT, "");
+    invalid.options.context_tokens = std::num::NonZeroU64::new(100);
+    assert!(store.0.save(invalid).is_err());
+    assert_eq!(
+        serde_json::to_value(store.0.view().unwrap().options).unwrap(),
+        expected
+    );
 }

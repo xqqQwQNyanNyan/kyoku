@@ -8,7 +8,10 @@ use std::{
 
 use convlog::{tenhou::Log, tenhou_to_mjai};
 use kyoku::{
-    agent::{AgentConfig, AgentContext, AgentError, AgentSession, review_evidence},
+    agent::{
+        AgentConfig, AgentContext, AgentError, AgentSession, ModelOptions, QuestionControl,
+        QuestionProgress, review_evidence,
+    },
     mahjong::player_index::PlayerIndex,
     mortal::MortalConfig,
     review::{review_at, review_game},
@@ -43,6 +46,7 @@ Options:
   --llm-model NAME   LLM model (otherwise OPENAI_MODEL; required for questions)
   --endpoint URL     full Responses or Chat Completions URL (otherwise KYOKU_OPENAI_ENDPOINT,
                      default: https://api.openai.com/v1/responses)
+  --llm-config PATH model options JSON (otherwise KYOKU_LLM_CONFIG; includes limits, thinking, prices and budget)
   --python PATH      Mortal Python (default: mortal/.venv/bin/python)
   --runtime PATH     Mortal checkout (default: mortal/runtime)
   --model PATH       Mortal weights (default: mortal/models/mortal_582500.pth)
@@ -88,10 +92,20 @@ fn run() -> Result<(), Box<dyn Error>> {
         runtime: &args.runtime,
         checkpoint: &args.model,
     };
+    let options = match args
+        .llm_config
+        .clone()
+        .or_else(|| read_config("KYOKU_LLM_CONFIG").map(PathBuf::from))
+    {
+        Some(path) => serde_json::from_str::<ModelOptions>(&fs::read_to_string(path)?)?,
+        None => ModelOptions::default(),
+    };
+    options.validate()?;
     let agent_config = model.as_deref().map(|model| AgentConfig {
         endpoint: &endpoint,
         model,
         api_key: key.as_deref(),
+        options,
     });
     if args.browse {
         eprintln!(
@@ -216,7 +230,42 @@ fn ask_question(
         })?;
         *session = Some(AgentSession::with_context(context, config)?);
     }
-    session.as_mut().expect("会话已成功创建").ask(question)
+    let control = QuestionControl::new(|progress| {
+        if let QuestionProgress::Usage { requests, budget } = progress {
+            if let Some(usage) = requests.last() {
+                let count =
+                    |n: Option<u64>| n.map(|v| v.to_string()).unwrap_or_else(|| "未知".into());
+                let cost = usage
+                    .cost
+                    .zip(usage.prices.as_ref())
+                    .map(|(v, p)| format!("{v:.6} {}", p.currency))
+                    .unwrap_or_else(|| "未知 / 未配置".into());
+                eprintln!(
+                    "请求 {}：输入 {}，输出 {} Token；估算费用 {}",
+                    requests.len(),
+                    count(usage.input_tokens),
+                    count(usage.output_tokens),
+                    cost
+                );
+            }
+            if let Some(budget) = budget {
+                let total: Option<u64> = requests
+                    .iter()
+                    .map(|u| u.input_tokens?.checked_add(u.output_tokens?))
+                    .sum();
+                eprintln!(
+                    "本轮预算：{} / {budget} Token",
+                    total
+                        .map(|n| n.to_string())
+                        .unwrap_or_else(|| "用量不完整".into())
+                );
+            }
+        }
+    });
+    session
+        .as_mut()
+        .expect("会话已成功创建")
+        .ask_with_control(question, &control)
 }
 
 struct Args {
@@ -229,6 +278,7 @@ struct Args {
     model: PathBuf,
     llm_model: Option<String>,
     endpoint: Option<String>,
+    llm_config: Option<PathBuf>,
     question: Option<String>,
     interactive: bool,
     input: String,
@@ -245,6 +295,7 @@ impl Args {
         let mut model = PathBuf::from("mortal/models/mortal_582500.pth");
         let mut llm_model = None;
         let mut endpoint = None;
+        let mut llm_config = None;
         let mut question = None;
         let mut interactive = false;
         let mut input = None;
@@ -256,7 +307,7 @@ impl Args {
                 "--browse" => browse = true,
                 "--without-mortal" => without_mortal = true,
                 "--player" | "--event" | "--python" | "--runtime" | "--model" | "--llm-model"
-                | "--endpoint" | "--question" => {
+                | "--endpoint" | "--question" | "--llm-config" => {
                     let value = arguments
                         .next()
                         .ok_or_else(|| format!("missing value for {argument}"))?;
@@ -271,6 +322,7 @@ impl Args {
                         "--model" => model = value.into(),
                         "--llm-model" => llm_model = Some(value),
                         "--endpoint" => endpoint = Some(value),
+                        "--llm-config" => llm_config = Some(value.into()),
                         "--question" => question = Some(value),
                         _ => unreachable!(),
                     }
@@ -306,6 +358,7 @@ impl Args {
             model,
             llm_model,
             endpoint,
+            llm_config,
             question,
             interactive,
             input,

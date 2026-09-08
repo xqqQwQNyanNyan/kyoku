@@ -1,8 +1,6 @@
 //! 在同一份可见信息下比较切牌，以及指定摸牌后的牌形变化。
 
-use super::{
-    AnalysisError, DiscardEfficiency, shanten::hand_shanten, tile_efficiency::analyze_discard,
-};
+use super::{AnalysisError, DiscardEfficiency, tile_efficiency::EfficiencyCache};
 use crate::mahjong::{
     hand::Hand,
     tile::{Tile, TileKind},
@@ -84,6 +82,16 @@ impl ComparisonContext {
         second: Tile,
         draw: Option<TileKind>,
     ) -> Result<DiscardComparison, ComparisonError> {
+        self.compare_cached(first, second, draw, &mut EfficiencyCache::default())
+    }
+
+    fn compare_cached(
+        &self,
+        first: Tile,
+        second: Tile,
+        draw: Option<TileKind>,
+        cache: &mut EfficiencyCache,
+    ) -> Result<DiscardComparison, ComparisonError> {
         if first == second {
             return Err(ComparisonError::SameDiscard);
         }
@@ -93,8 +101,8 @@ impl ComparisonContext {
             return Err(ComparisonError::ExhaustedDraw { kind });
         }
         Ok(DiscardComparison {
-            first: self.branch(first, draw)?,
-            second: self.branch(second, draw)?,
+            first: self.branch(first, draw, cache)?,
+            second: self.branch(second, draw, cache)?,
             connections_before: connections(&self.hand),
         })
     }
@@ -105,11 +113,12 @@ impl ComparisonContext {
         first: Tile,
         second: Tile,
     ) -> Result<Vec<(u8, DiscardComparison)>, ComparisonError> {
+        let mut cache = EfficiencyCache::default();
         (0..34u8)
             .filter(|&kind| self.unseen[kind as usize] > 0)
             .map(|kind| {
                 let draw = TileKind::new(kind).unwrap_or_else(|| unreachable!("0..34 是合法牌种"));
-                self.compare(first, second, Some(draw))
+                self.compare_cached(first, second, Some(draw), &mut cache)
                     .map(|comparison| (self.unseen[kind as usize], comparison))
             })
             .collect()
@@ -119,8 +128,9 @@ impl ComparisonContext {
         &self,
         discard: Tile,
         draw: Option<TileKind>,
+        cache: &mut EfficiencyCache,
     ) -> Result<DiscardBranch, ComparisonError> {
-        let efficiency = analyze_discard(&self.hand, discard, |kind| {
+        let efficiency = cache.discard(&self.hand, discard, |kind| {
             self.unseen[kind.as_u8() as usize]
         })?;
         let mut hand = self.hand.clone();
@@ -135,12 +145,12 @@ impl ComparisonContext {
                 let tile = Tile::try_from(draw.as_u8())
                     .unwrap_or_else(|_| unreachable!("牌种必然是合法普通牌"));
                 hand.draw(tile).map_err(AnalysisError::HandMutation)?;
-                let completed_shape = hand_shanten(&hand) == -1;
+                let completed_shape = cache.shanten(&hand) == -1;
                 let mut discards = hand.concealed().to_vec();
                 discards.dedup();
                 let next_discards = discards
                     .into_iter()
-                    .map(|tile| analyze_discard(&hand, tile, |kind| unseen[kind.as_u8() as usize]))
+                    .map(|tile| cache.discard(&hand, tile, |kind| unseen[kind.as_u8() as usize]))
                     .collect::<Result<_, _>>()?;
                 Some(DrawBranch {
                     draw,

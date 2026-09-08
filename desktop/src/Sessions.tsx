@@ -1,5 +1,7 @@
+import { UsageSummary, UsageDetails, turnUsage } from './Usage';
 import { useEffect, useRef, useState, Fragment } from 'react';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import type {
   Bridge,
   QuestionProgress,
@@ -27,6 +29,7 @@ export interface SessionSource {
 
 interface PendingProgress {
   stage: QuestionProgress;
+  usage?: Extract<QuestionProgress, { phase: 'usage' }>;
   startedAt: number;
   stopping: boolean;
 }
@@ -268,7 +271,8 @@ export function useSessions(api: Bridge) {
       onProgress(stage) {
         if (running.current.get(id) !== run) return;
         run.acknowledged = true;
-        run.stage = stage;
+        if (stage.phase === 'usage') run.usage = stage;
+        else run.stage = stage;
         showProgress(id, run);
         // 若用户在后端登记前点击停止，收到登记确认后再发出，避免丢失停止信号。
         if (run.stopping) void cancelRun(id, run);
@@ -363,6 +367,7 @@ type Workspace = ReturnType<typeof useSessions>;
 function Markdown({ text }: { text: string }) {
   return (
     <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
       components={{
         a: ({ children }) => <span>{children}</span>,
         img: ({ alt }) => <span>{alt}</span>,
@@ -387,6 +392,7 @@ function Trace({ turn }: { turn: SessionTurn }) {
         工作流程 · {turn.trace.filter((t) => t.kind === 'request').length} 次请求
         {turn.error ? ' · 失败' : ' · 完成'}
       </summary>
+      <UsageDetails requests={turnUsage(turn)} />
       <ol>
         {turn.trace.map((step, i) => (
           <li key={i}>
@@ -621,6 +627,7 @@ export function ChatPanel({
         <span className="status-dot" />
         {doc ? '会话已自动保存 · 每次提问使用发送时的局面' : '仅使用所选玩家当时可见的信息'}
       </div>
+      {doc && <UsageSummary label="会话累计" requests={doc.archive.turns.flatMap(turnUsage)} />}
       {doc && (
         <details className="session-context">
           <summary>会话上下文 · {doc.archive.model}</summary>
@@ -678,6 +685,7 @@ export function ChatPanel({
               <Location evidence={turn.evidence ?? doc!.archive.evidence} onLocate={onLocate} />
               <Markdown text={turn.question} />
             </div>
+            <UsageSummary requests={turnUsage(turn)} budget={turn.options?.token_budget} />
             <Trace turn={turn} />
             {turn.answer && (
               <div className="message assistant">

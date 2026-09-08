@@ -70,6 +70,7 @@ fn cancellation_before_network_keeps_the_question_without_changing_accepted_hist
         endpoint: "http://127.0.0.1:1/responses",
         model: "test",
         api_key: None,
+        options: Default::default(),
     };
     let mut session = AgentSession::with_context(&context(), &config).unwrap();
     let control = QuestionControl::default();
@@ -136,12 +137,16 @@ fn stopping_interrupts_waiting_for_headers_and_body_in_both_protocols() {
                     endpoint: &endpoint,
                     model: "test",
                     api_key: None,
+                    options: Default::default(),
                 };
                 let mut session = AgentSession::with_context(&context(), &config).unwrap();
                 let result = session.ask_with_control("等待中的问题", &worker_control);
                 assert!(matches!(result, Err(AgentError::Cancelled)));
                 let archive = serde_json::to_value(session.archive()).unwrap();
                 assert_eq!(archive["history"], json!([]));
+                assert_eq!(archive["turns"][0]["usage"].as_array().unwrap().len(), 1);
+                assert!(archive["turns"][0]["usage"][0]["input_tokens"].is_null());
+                assert!(archive["turns"][0]["usage"][0]["cost"].is_null());
                 assert_eq!(archive["turns"][0]["trace"][0]["kind"], "request");
                 SessionArchive::from_json(&archive.to_string()).unwrap();
                 done_tx.send(()).unwrap();

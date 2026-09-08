@@ -93,34 +93,75 @@ pub(super) fn route(
         .find(|(n, _)| *n == name)
         .map(|(_, y)| *y)
         .ok_or_else(|| ("unsupported_yaku", "该役种尚未提供距离计算。".into()))?;
-    let shanten =
-        analysis::yaku_shanten(&hand, yaku).map_err(|e| ("analysis_failed", e.to_string()))?;
+    let expand = snapshot.position.players[snapshot.player].riichi == "not_declared"
+        && snapshot.position.remaining_draws > 0;
+    let facts = analysis::route_facts::analyze(&hand, &snapshot.unseen, yaku, expand)
+        .map_err(route_error)?;
+    let mut result = route_distance(facts.distance);
+    result["discard"] = json!(discard.map(format_tile));
+    result["yaku"] = json!(name);
+    result["progression"] = facts
+        .progression
+        .map(|draws| {
+            json!(
+                draws
+                    .into_iter()
+                    .map(|draw| {
+                        let discards = draw
+                            .discards
+                            .into_iter()
+                            .map(|discard| {
+                                (
+                                    format_tile(discard.tile),
+                                    json!({"available_shanten":discard.distance,
+                "ordinary_shanten":discard.ordinary.shanten,
+                "ordinary_total_unseen":discard.ordinary.total_unseen}),
+                                )
+                            })
+                            .collect::<serde_json::Map<_, _>>();
+                        json!({"draw":kind_name(draw.tile),"unseen":draw.unseen,
+            "completes_route_shape":draw.completes_route_shape,"next_discards":discards})
+                    })
+                    .collect::<Vec<_>>()
+            )
+        })
+        .unwrap_or(Value::Null);
+    result["scope"] = json!({"progression_available":expand,"one_draw_then_discard":true,
+        "draw_is_non_red":true,"other_players_unchanged":true,
+        "unseen_is_not_wall_count":true,"does_not_check_future_ron_legality":true,
+        "is_completion_probability":false,"not_a_recommendation":true});
     Ok((
         format!(
             "route_{}_{}",
             discard.map(format_tile).unwrap_or_else(|| "current".into()),
             name
         ),
-        json!({
-            "discard":discard.map(format_tile),"yaku":name,"reachable":shanten.is_some(),"shanten":shanten,
-            "counts_unseen_tiles":false,"is_completion_probability":false,
-        }),
+        result,
     ))
 }
 
-pub(super) fn routes(hand: &Hand) -> Result<Value, ToolError> {
+pub(super) fn routes(hand: &Hand, unseen: &[u8; 34]) -> Result<Value, ToolError> {
     ROUTES[..8]
         .iter()
         .map(|(name, yaku)| {
-            let shanten = analysis::yaku_shanten(hand, *yaku)
-                .map_err(|e| ("analysis_failed", e.to_string()))?;
-            Ok((
-                (*name).to_owned(),
-                json!({"reachable":shanten.is_some(),"shanten":shanten}),
-            ))
+            let facts =
+                analysis::route_facts::analyze(hand, unseen, *yaku, false).map_err(route_error)?;
+            Ok(((*name).to_owned(), route_distance(facts.distance)))
         })
         .collect::<Result<serde_json::Map<_, _>, _>>()
         .map(Value::Object)
+}
+
+fn route_distance(distance: analysis::route_facts::RouteDistance) -> Value {
+    json!({"reachable":distance.shape.is_some(),"shanten":distance.shape,
+        "available_shanten":distance.available,"reachable_with_known_counts":distance.available.is_some(),
+        "shape_distance_ignores_visible_exhaustion":true,
+        "available_distance_includes_opponent_hidden_tiles":true,
+        "is_completion_probability":false})
+}
+
+fn route_error(error: analysis::route_facts::RouteError) -> ToolError {
+    ("analysis_failed", format!("路线计算失败：{error:?}"))
 }
 
 pub(super) fn efficiency(hand: &Hand, unseen: &[u8; 34]) -> Result<Value, ToolError> {
@@ -147,7 +188,38 @@ pub(super) fn report(
     discard: Option<Tile>,
     can_declare: bool,
 ) -> Result<Value, ToolError> {
-    let mut result = efficiency(hand, &snapshot.unseen)?;
+    report_internal(snapshot, hand, discard, can_declare, None)
+}
+
+/// 只分析明确摸切后的手牌；先前切出的牌加入振听检查，不推演他家行动。
+pub(super) fn continuation(
+    snapshot: &Snapshot,
+    hand: &Hand,
+    discards: &[Tile],
+    unseen: &[u8; 34],
+) -> Result<Value, ToolError> {
+    report_internal(snapshot, hand, None, false, Some((discards, unseen)))
+}
+
+fn report_internal(
+    snapshot: &Snapshot,
+    hand: &Hand,
+    discard: Option<Tile>,
+    can_declare: bool,
+    continuation: Option<(&[Tile], &[u8; 34])>,
+) -> Result<Value, ToolError> {
+    let unseen = continuation.map_or(&snapshot.unseen, |(_, unseen)| unseen);
+    let mut result = efficiency(hand, unseen)?;
+    let dora = parse_tiles(&snapshot.position.dora_indicators)?;
+    let bonus = analysis::known_bonus(
+        hand.concealed()
+            .iter()
+            .chain(hand.melds().iter().flat_map(|m| m.tiles())),
+        &dora,
+    );
+    result["known_bonus"] = json!({"dora":bonus.dora,"aka_dora":bonus.aka_dora,"not_a_hand_value":true,
+            "dora_tiles":dora.iter().copied().map(analysis::dora_from_indicator).map(kind_name).collect::<Vec<_>>()});
+    result["yakuhai_tiles"] = yakuhai_tiles(snapshot, hand, unseen)?;
     result["discard"] = json!(discard.map(format_tile));
     result["concealed_after"] = json!(
         hand.concealed()
@@ -156,7 +228,9 @@ pub(super) fn report(
             .map(format_tile)
             .collect::<Vec<_>>()
     );
-    result["routes"] = routes(hand)?;
+    if continuation.is_none() {
+        result["routes"] = routes(hand, unseen)?;
+    }
     let closed = hand.melds().iter().all(|m| !m.is_open());
     result["closed"] = json!(closed);
     let own = &snapshot.position.players[snapshot.player];
@@ -166,15 +240,18 @@ pub(super) fn report(
         && closed
         && !established
         && can_declare
+        && !result["draws"].as_array().is_none_or(Vec::is_empty)
         && own.score >= 1000
         && snapshot.position.remaining_draws >= 4;
     result["can_declare_riichi_under_current_conditions"] = json!(can_riichi);
     result["riichi_deposit_if_declared"] = json!(if can_riichi { 1000 } else { 0 });
     result["scope"] = json!({"conditional_ordinary_win":true,"unseen_is_not_wall_count":true,
         "winning_draw_is_non_red":true,"unknown_ura_and_new_dora_excluded":true,"ippatsu_last_tile_and_rinshan_excluded":true,
-        "other_ron_restrictions":"not_checked","route_distance_ignores_visible_exhaustion":true,
+        "other_ron_restrictions":"not_checked","shape_route_distance_ignores_visible_exhaustion":true,
+        "available_route_distance_checks_known_counts":true,
         "payments_exclude_honba_and_sticks":true,"not_expected_value":true,
         "assumes_pending_riichi_is_accepted":own.riichi=="declared"});
+    result["scope"]["continuation_without_new_riichi"] = json!(continuation.is_some());
     if result["shanten"] != 0 {
         result["waits"] = json!({});
         return Ok(result);
@@ -193,6 +270,9 @@ pub(super) fn report(
     if let Some(tile) = discard {
         river.push(tile.kind());
     }
+    if let Some((discards, _)) = continuation {
+        river.extend(discards.iter().map(|tile| tile.kind()));
+    }
     let furiten_tiles: Vec<_> = kinds
         .iter()
         .filter(|k| river.contains(k))
@@ -200,18 +280,9 @@ pub(super) fn report(
         .collect();
     result["discard_furiten"] =
         json!({"blocked":!furiten_tiles.is_empty(),"intersecting_waits":furiten_tiles});
-    let winds = [Wind::East, Wind::South, Wind::West, Wind::North];
-    let round_wind = match snapshot.position.round.wind.as_str() {
-        "E" => Wind::East,
-        "S" => Wind::South,
-        "W" => Wind::West,
-        "N" => Wind::North,
-        _ => return Err(bad_position()),
-    };
-    let seat_wind = winds[(snapshot.player + 4 - snapshot.position.dealer as usize) % 4];
+    let (round_wind, seat_wind) = winds(snapshot)?;
     let riichi = riichi_status(snapshot);
     result["riichi_history_known"] = json!(snapshot.position.history.is_some());
-    let dora = parse_tiles(&snapshot.position.dora_indicators)?;
     let mut waits = serde_json::Map::new();
     for kind in kinds {
         let mut complete = hand.clone();
@@ -249,22 +320,116 @@ pub(super) fn report(
                     .map_err(|e| ("scoring_failed", e.to_string()))?;
                 methods.insert(method.into(),json!({"has_yaku":!values.is_empty(),
                     "blocked_by_discard_furiten":method=="ron" && result["discard_furiten"]["blocked"]==true,
-                    "best_interpretations":values.into_iter().map(|v| json!({
+                    "best_interpretations":values.into_iter().map(|v| {
+                        let settlements = super::scores::winning_outcomes(snapshot, &v.payments,
+                            label=="declare_riichi" || own.riichi=="declared")?;
+                        Ok(json!({
                         "yaku":v.yaku.iter().map(|y| format!("{y:?}")).collect::<Vec<_>>(),"fu":v.value.fu,"yaku_han":v.value.han,
                         "total_han":v.value.total_han(&v.bonus),"yakuman":v.value.yakuman,"wait_type":v.wait,
                         "bonus":{"dora":v.bonus.dora,"aka_dora":v.bonus.aka_dora,"ura_dora":v.bonus.ura_dora},
                         "payments":payments(&v.payments),"base_receipts":total_payment(&v.payments),
-                    })).collect::<Vec<_>>()}));
+                        "conditional_settlements":settlements,
+                    }))}).collect::<Result<Vec<_>,ToolError>>()?}));
             }
             scenarios.insert(label.into(), Value::Object(methods));
         }
         waits.insert(
             kind_name(kind),
-            json!({"unseen":snapshot.unseen[kind.as_u8() as usize],"scenarios":scenarios}),
+            json!({"unseen":unseen[kind.as_u8() as usize],"scenarios":scenarios}),
         );
     }
     result["waits"] = Value::Object(waits);
     Ok(result)
+}
+
+fn winds(snapshot: &Snapshot) -> Result<(Wind, Wind), ToolError> {
+    let winds = [Wind::East, Wind::South, Wind::West, Wind::North];
+    let round = match snapshot.position.round.wind.as_str() {
+        "E" => Wind::East,
+        "S" => Wind::South,
+        "W" => Wind::West,
+        "N" => Wind::North,
+        _ => return Err(bad_position()),
+    };
+    Ok((
+        round,
+        winds[(snapshot.player + 4 - snapshot.position.dealer as usize) % 4],
+    ))
+}
+
+fn yakuhai_tiles(snapshot: &Snapshot, hand: &Hand, unseen: &[u8; 34]) -> Result<Value, ToolError> {
+    let (round, seat) = winds(snapshot)?;
+    let mut counts = [0u8; 34];
+    for tile in hand.concealed() {
+        counts[tile.kind().as_u8() as usize] += 1;
+    }
+    let mut result = serde_json::Map::new();
+    for kind in 27..34usize {
+        let mut roles = Vec::new();
+        if kind >= 31 {
+            roles.push("dragon");
+        }
+        if kind == 27 + round as usize {
+            roles.push("round_wind");
+        }
+        if kind == 27 + seat as usize {
+            roles.push("seat_wind");
+        }
+        if roles.is_empty() {
+            continue;
+        }
+        let fixed = hand
+            .melds()
+            .iter()
+            .any(|meld| meld.tiles()[0].kind().as_u8() as usize == kind);
+        let needed = if fixed {
+            0
+        } else {
+            3u8.saturating_sub(counts[kind])
+        };
+        result.insert(
+            kind_name(crate::mahjong::tile::TileKind::new(kind as u8).unwrap()),
+            json!({
+            "roles":roles,"fixed_triplet_or_kan":fixed,"concealed_copies":counts[kind],
+            "missing_copies_to_triplet":needed,"unseen_copies":unseen[kind],
+            "triplet_not_ruled_out_by_known_counts":needed<=unseen[kind],
+            "not_distance_to_a_complete_hand":true}),
+        );
+    }
+    Ok(Value::Object(result))
+}
+
+pub(super) fn completed_draw(
+    snapshot: &Snapshot,
+    hand: &Hand,
+    draw: Tile,
+) -> Result<Value, ToolError> {
+    let (round_wind, seat_wind) = winds(snapshot)?;
+    let riichi = if snapshot.position.players[snapshot.player].riichi == "not_declared" {
+        RiichiStatus::None
+    } else {
+        riichi_status(snapshot)
+    };
+    let dora = parse_tiles(&snapshot.position.dora_indicators)?;
+    let values = best_win_values(
+        hand,
+        &AgariContext {
+            winning_tile: draw.kind(),
+            win_method: WinMethod::Tsumo(TsumoSource::Wall),
+            round_wind,
+            seat_wind,
+            riichi,
+        },
+        &dora,
+    )
+    .map_err(|e| ("scoring_failed", e.to_string()))?;
+    Ok(
+        json!({"has_yaku":!values.is_empty(),"best_interpretations":values.iter().map(|value|json!({
+        "yaku":value.yaku.iter().map(|yaku|format!("{yaku:?}")).collect::<Vec<_>>(),
+        "fu":value.value.fu,"total_han":value.value.total_han(&value.bonus),
+        "payments":payments(&value.payments),"base_receipts":total_payment(&value.payments)})).collect::<Vec<_>>(),
+        "scope":{"given_ordinary_tsumo":true,"does_not_infer_ippatsu_last_tile_or_new_dora":true}}),
+    )
 }
 
 fn riichi_status(snapshot: &Snapshot) -> RiichiStatus {

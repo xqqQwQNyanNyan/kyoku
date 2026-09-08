@@ -85,6 +85,34 @@ pub(super) fn analyze(snapshot: &Snapshot) -> Result<Value, ToolError> {
                 .filter(|t| safe[t.kind().as_u8() as usize])
                 .count()
                 - usize::from(safe[kind as usize]);
+            let mut sequence_waits = Vec::new();
+            if kind < 27 {
+                for start in kind.saturating_sub(2)..=kind {
+                    if start / 9 != kind / 9 || start % 9 > 6 {
+                        continue;
+                    }
+                    let partners: Vec<_> =
+                        (start..start + 3).filter(|&tile| tile != kind).collect();
+                    let exhausted: Vec<_> = partners
+                        .iter()
+                        .filter(|&&tile| snapshot.unseen[tile as usize] == 0)
+                        .map(|&tile| kind_name(Tile::new(tile).unwrap().kind()))
+                        .collect();
+                    let wait_type = if kind == start + 1 {
+                        "kanchan"
+                    } else if (kind % 9 == 2 && kind == start + 2)
+                        || (kind % 9 == 6 && kind == start)
+                    {
+                        "penchan"
+                    } else {
+                        "ryanmen"
+                    };
+                    sequence_waits.push(json!({"wait_type":wait_type,
+                        "needed_concealed_kinds":partners.into_iter().map(|tile|kind_name(Tile::new(tile).unwrap().kind())).collect::<Vec<_>>(),
+                        "ruled_out_by_visible_counts":!exhausted.is_empty(),"exhausted_required_kinds":exhausted,
+                        "ruled_out_by_four_fixed_melds":public.melds.len()==4}));
+                }
+            }
             tiles.insert(format_tile(tile),json!({
                 "in_opponent_river":river[kind as usize],"passed_after_riichi":passed.get(&kind_name(tile.kind())),
                 "known_safe_against_ron_from_this_player":safe[kind as usize],
@@ -93,9 +121,19 @@ pub(super) fn analyze(snapshot: &Snapshot) -> Result<Value, ToolError> {
                 "missing_suji_endpoints":missing_suji_endpoints,
                 "visible_copies":4-snapshot.unseen[kind as usize],"unseen_copies":snapshot.unseen[kind as usize],
                 "remaining_known_safe_copies_after_discard":remaining_safe_copies,
+                "sequence_wait_shapes":sequence_waits,
+                "tanki_not_ruled_out_by_counts":snapshot.unseen[kind as usize]>=1,
+                "shanpon_not_ruled_out_by_counts":public.melds.len()<4 && snapshot.unseen[kind as usize]>=2,
+                "sequence_and_pair_checks_do_not_cover_kokushi":true,
             }));
         }
-        opponents.insert(index.to_string(),json!({"player":index,"riichi":public.riichi,"open_meld_count":public.melds.iter().filter(|m| m.kind!="ankan").count(),"tiles":tiles}));
+        let safe_kinds: Vec<_> = (0..34u8)
+            .filter(|&kind| safe[kind as usize])
+            .map(|kind| kind_name(Tile::new(kind).unwrap().kind()))
+            .collect();
+        let open_meld_count = public.melds.iter().filter(|m| m.kind != "ankan").count();
+        opponents.insert(index.to_string(),json!({"player":index,"riichi":public.riichi,"known_safe_kinds":safe_kinds,
+            "open_meld_count":open_meld_count,"riichi_blocked_by_open_melds":open_meld_count>0,"tiles":tiles}));
     }
     let safe_against_all: Vec<_> = snapshot
         .hand

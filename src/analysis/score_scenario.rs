@@ -1,4 +1,4 @@
-//! 单人和牌的条件点数变化，不修改真实牌局，也不预测比赛是否结束。
+//! 和牌、荒牌流局的条件点数变化，不修改真实牌局，也不预测比赛是否结束。
 
 use super::Payments;
 use crate::mahjong::player_index::PlayerIndex;
@@ -13,6 +13,17 @@ pub(crate) struct ScoreOutcome {
     pub scores: [i64; 4],
     pub deltas: [i64; 4],
     pub ranks: [u8; 4],
+}
+
+/// 四人荒牌流局按总计3000点罚符结算。听牌组合是给定条件，不由暗牌猜测。
+pub(crate) fn apply_exhaustive_draw(scores: [i32; 4], tenpai: [bool; 4]) -> ScoreOutcome {
+    let ready = tenpai.iter().filter(|&&ready| ready).count() as i64;
+    let deltas = std::array::from_fn(|player| match ready {
+        0 | 4 => 0,
+        _ if tenpai[player] => 3000 / ready,
+        _ => -3000 / (4 - ready),
+    });
+    score_outcome(scores, deltas)
 }
 
 /// 项目固定玩家0为东一起家；同点按起家顺序比较。本场每家100，荣和合计300。
@@ -74,17 +85,21 @@ pub(crate) fn apply_win(
         }
     }
     deltas[winner] += i64::from(sticks) * 1000;
+    Ok(score_outcome(scores, deltas))
+}
+
+fn score_outcome(scores: [i32; 4], deltas: [i64; 4]) -> ScoreOutcome {
     let scores = std::array::from_fn(|i| i64::from(scores[i]) + deltas[i]);
     let ranks = std::array::from_fn(|i| {
         1 + (0..4)
             .filter(|&j| scores[j] > scores[i] || (scores[j] == scores[i] && j < i))
             .count() as u8
     });
-    Ok(ScoreOutcome {
+    ScoreOutcome {
         scores,
         deltas,
         ranks,
-    })
+    }
 }
 
 #[cfg(test)]

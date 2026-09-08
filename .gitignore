@@ -37,6 +37,10 @@ Icon?
 /mortal/models/*.part
 /docs/*
 !/docs/majsoul-service.md
+!/docs/analysis/
+/docs/analysis/*
+!/docs/analysis/design.md
+!/docs/analysis/algorithm.md
 /fixtures/*
 !/fixtures/tenhou/
 /fixtures/tenhou/*

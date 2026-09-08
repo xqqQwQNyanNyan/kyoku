@@ -13,9 +13,12 @@ use crate::{
 mod client;
 mod comparison;
 mod evidence;
-mod output;
+mod options;
 mod position;
 mod progress;
+mod usage;
+pub use options::{ChatTokenLimit, ModelOptions, Thinking, TokenPrices};
+pub use usage::RequestUsage;
 #[cfg(test)]
 mod progress_tests;
 mod session;
@@ -35,7 +38,6 @@ const MAX_QUESTION_BYTES: usize = 16 * 1024;
 enum RequestMode {
     ReviewProbe,
     Analysis,
-    Repair,
 }
 
 /// 固定事件的可见证据；可从已有分析或只回放牌谱建立，不要求运行 Mortal。
@@ -96,7 +98,7 @@ impl AgentContext {
         })
     }
 
-    /// 当前快照的只读证据，与会话提供给模型的内容一致。
+    /// 当前快照的只读证据；发给模型时压缩重复字段，保留相同信息。
     pub fn evidence(&self) -> &Value {
         &self.evidence
     }
@@ -111,6 +113,8 @@ pub struct AgentConfig<'a> {
     /// 调用方为此地址明确提供的密钥；库不读取环境变量。
     /// 本地无认证服务可省略；远程服务要求提供密钥。
     pub api_key: Option<&'a str>,
+    /// 模型能力、输出上限和单轮用量预算。
+    pub options: ModelOptions,
 }
 
 impl AgentConfig<'_> {
@@ -122,11 +126,19 @@ impl AgentConfig<'_> {
     /// 通过两次不含牌谱的请求，检查工具调用及返回工具结果后的续答能力。
     /// 此操作可能产生服务商的调用费用，不保存服务端会话。
     pub fn test_connection(&self) -> Result<(), AgentError> {
+        self.test_connection_with_control(&QuestionControl::default())
+    }
+
+    /// 连接测试也报告逐次用量并遵守同一轮预算。
+    pub fn test_connection_with_control(
+        &self,
+        control: &QuestionControl,
+    ) -> Result<(), AgentError> {
         let client = client::Client::new(self)?;
         let mut input = vec![
             json!({"role": "user", "content": "连接测试：请调用 get_review；收到 connection_test=true 后直接确认连接成功，不再调用工具。这不是牌谱分析。"}),
         ];
-        let response = client.respond(&input, RequestMode::ReviewProbe)?;
+        let response = client.respond_with_control(&input, RequestMode::ReviewProbe, control)?;
         if response["status"] != "completed" {
             return Err(AgentError::IncompleteResponse);
         }
@@ -155,7 +167,7 @@ impl AgentConfig<'_> {
             json!({"type":"function_call_output","call_id":calls[0]["call_id"],
             "output":json!({"ok":true,"connection_test":true}).to_string()}),
         );
-        let response = client.respond(&input, RequestMode::Analysis)?;
+        let response = client.respond_with_control(&input, RequestMode::Analysis, control)?;
         if response["status"] != "completed" {
             return Err(AgentError::IncompleteResponse);
         }
@@ -197,7 +209,7 @@ pub struct ProviderError {
     pub message: Option<String>,
 }
 
-/// Agent 调用失败，不包含认证密钥、完整 HTTP 正文或未经校验的模型输出。
+/// Agent 调用失败，不包含认证密钥、完整 HTTP 正文或模型回答正文。
 #[derive(Debug)]
 pub enum AgentError {
     InvalidConfig {
@@ -218,16 +230,33 @@ pub enum AgentError {
     },
     Refused,
     IncompleteResponse,
+    /// 服务明确报告输出额度耗尽，不能把截断内容作为完整答案。
+    OutputLimit,
     MissingEvidence,
     RequestLimit,
     HistoryLimit,
     /// 用户停止本轮问答；已有有效历史保持不变。
     Cancelled,
+    /// 当前轮次没有足够预算发起下一次请求。
+    TokenBudget,
+    /// 供应商没有报告用量，无法继续执行有预算的任务。
+    UnknownUsage,
+    /// 估算输入加输出上限超过用户配置的上下文。
+    ContextLimit,
 }
 
 impl fmt::Display for AgentError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::TokenBudget => write!(
+                f,
+                "本轮 Token 预算已用尽或不足以发起下一次请求；可调整预算后重试"
+            ),
+            Self::UnknownUsage => write!(f, "服务商未返回完整 Token 用量，已停止本轮以保护预算"),
+            Self::ContextLimit => write!(
+                f,
+                "估算输入加输出上限超过上下文长度，请调大上下文、降低输出上限或新建会话"
+            ),
             Self::Cancelled => write!(f, "已停止本次回答"),
             Self::InvalidConfig { field, reason } => write!(f, "invalid {field}: {reason}"),
             Self::InvalidQuestion => write!(
@@ -236,14 +265,25 @@ impl fmt::Display for AgentError {
             ),
             Self::Transport { kind } => write!(f, "LLM request failed ({kind})"),
             Self::Http { status, error } => {
-                let hint = match status {
-                    400 | 422 => "请求参数被服务端拒绝，请检查模型名和接口参数兼容性",
-                    401 | 403 => "认证或访问权限失败，请检查该服务的 API Key 和模型权限",
-                    402 => "服务账户余额不足，请检查账户额度",
-                    404 => "接口或模型不存在，请检查完整服务地址和模型名",
-                    429 => "请求频率或配额受限，请检查服务额度并稍后重试",
-                    500..=599 => "服务端暂时不可用，请稍后重试",
-                    _ => "请检查服务配置与状态",
+                // 兼容服务可能用403报告余额不足；明确错误码比状态码更具体。
+                let quota_exhausted = error.as_ref().is_some_and(|error| {
+                    matches!(
+                        error.code.as_deref(),
+                        Some("insufficient_user_quota" | "insufficient_quota")
+                    )
+                });
+                let hint = if quota_exhausted {
+                    "服务账户额度不足，请检查余额或配额"
+                } else {
+                    match status {
+                        400 | 422 => "请求参数被服务端拒绝，请检查模型名和接口参数兼容性",
+                        401 | 403 => "认证或访问权限失败，请检查该服务的 API Key 和模型权限",
+                        402 => "服务账户余额不足，请检查账户额度",
+                        404 => "接口或模型不存在，请检查完整服务地址和模型名",
+                        429 => "请求频率或配额受限，请检查服务额度并稍后重试",
+                        500..=599 => "服务端暂时不可用，请稍后重试",
+                        _ => "请检查服务配置与状态",
+                    }
                 };
                 write!(f, "LLM returned HTTP {status}: {hint}")?;
                 if let Some(error) = error {
@@ -266,6 +306,10 @@ impl fmt::Display for AgentError {
             Self::IncompleteResponse => write!(
                 f,
                 "LLM response did not complete; no partial answer was saved"
+            ),
+            Self::OutputLimit => write!(
+                f,
+                "模型已达到单次输出上限，思考内容也可能占用额度；本轮未保存不完整答案。可在设置中提高单次输出上限，或缩小问题范围后重试。"
             ),
             Self::MissingEvidence => {
                 write!(f, "LLM tried to answer before obtaining review evidence")
@@ -347,6 +391,7 @@ impl AgentSession {
         {
             return Err(AgentError::HistoryLimit);
         }
+        self.client.reset_usage();
         let mut trace = Vec::new();
         let result = answer_controlled(
             &self.evidence,
@@ -361,17 +406,24 @@ impl AgentSession {
             Ok((answer, history)) => {
                 self.history = history;
                 self.has_evidence = true;
-                self.archive
-                    .record(question, Some(&answer), None, trace, &self.history);
+                self.archive.record(
+                    question,
+                    Ok(&answer),
+                    trace,
+                    &self.history,
+                    self.client.usage(),
+                    self.client.options(),
+                );
                 Ok(answer)
             }
             Err(error) => {
                 self.archive.record(
                     question,
-                    None,
-                    Some(error.to_string()),
+                    Err(&error),
                     trace,
                     &self.history,
+                    self.client.usage(),
+                    self.client.options(),
                 );
                 Err(error)
             }
@@ -487,41 +539,43 @@ fn answer_controlled(
         staged.push(initial_evidence(evidence));
         has_evidence = true;
     }
-    let mut verified = evidence_with_history(evidence, &staged);
-    let mut corrections = 0;
-    let mut previous_error = None;
     let mut call_ids: HashSet<String> = history
         .iter()
         .filter(|item| item["type"] == "function_call")
         .filter_map(|item| item["call_id"].as_str().map(str::to_owned))
         .collect();
     staged.push(json!({"role": "user", "content": question}));
-    // 纠错时临时给模型看被拒绝的输出，但不让错误回答进入后续追问的历史。
-    let mut accepted = staged.clone();
     for request in 1..=MAX_REQUESTS {
         control.report(QuestionProgress::Model { request })?;
         check_history(&staged)?;
         if json!(trace).to_string().len() > 8 * 1024 * 1024 {
             return Err(AgentError::HistoryLimit);
         }
-        let mode = if corrections > 0 {
-            RequestMode::Repair
-        } else {
-            RequestMode::Analysis
-        };
-        trace.push(
-            json!({"kind": "request", "input": staged, "needs_evidence": !has_evidence,
-            "answer_only": mode == RequestMode::Repair}),
-        );
-        let response = respond(&staged, mode)?;
+        trace.push(json!({"kind": "request", "input": staged, "needs_evidence": !has_evidence}));
+        let response = respond(&staged, RequestMode::Analysis)?;
         trace.push(json!({"kind": "response", "output": response}));
         control.check()?;
         if response["status"] != "completed" {
+            if response["status"] == "incomplete"
+                && response["incomplete_details"]["reason"] == "max_output_tokens"
+            {
+                return Err(AgentError::OutputLimit);
+            }
             return Err(AgentError::IncompleteResponse);
         }
         let output = response["output"]
             .as_array()
             .ok_or(invalid("missing output array"))?;
+        if response["_budget_unknown"] == true
+            && output.iter().any(|item| item["type"] == "function_call")
+        {
+            return Err(AgentError::UnknownUsage);
+        }
+        if response["_budget_exhausted"] == true
+            && output.iter().any(|item| item["type"] == "function_call")
+        {
+            return Err(AgentError::TokenBudget);
+        }
         let mut text = Vec::new();
         let mut tool_results = Vec::new();
         for item in output {
@@ -529,12 +583,6 @@ fn answer_controlled(
                 // 原样保留推理项及 encrypted_content，以支持 store=false 的后续请求。
                 Some("reasoning") => {}
                 Some("function_call") => {
-                    if mode == RequestMode::Repair {
-                        trace.push(
-                            json!({"kind":"validation","error":"回答纠错阶段不允许再次调用工具。"}),
-                        );
-                        return Err(invalid("tool calls are not allowed during answer repair"));
-                    }
                     if item["status"] != "completed" {
                         return Err(invalid("expected completed function call"));
                     }
@@ -548,8 +596,6 @@ fn answer_controlled(
                         .ok_or(invalid("missing function arguments"))?;
                     control.report(QuestionProgress::Tool { name: name.into() })?;
                     let (result, success) = execute_tool(evidence, name, arguments);
-                    comparison::remember(&mut verified, &result);
-                    strategy::remember(&mut verified, &result);
                     has_evidence |= success;
                     trace.push(json!({"kind": "tool", "call_id": id, "name": name, "arguments": arguments, "result": result}));
                     control.check()?;
@@ -578,40 +624,13 @@ fn answer_controlled(
             if !has_evidence {
                 return Err(AgentError::MissingEvidence);
             }
-            let mut text = text.join("\n");
+            let text = text.join("\n");
             if text.trim().is_empty() {
                 return Err(invalid("no answer or tool call"));
             }
-            let repair = output::repair_references(&text, &verified);
-            let mut repair_hint = String::new();
-            if let Some((repaired, paths)) = repair {
-                text = repaired;
-                repair_hint = format!(" 引用路径已在本地核对：{paths}，请使用这些完整路径。");
-                trace.push(json!({"kind":"reference_repair","repairs":paths}));
-            }
-            match output::render(&text, &verified) {
-                Ok(rendered) => {
-                    accepted.extend(output.iter().cloned());
-                    check_history(&accepted)?;
-                    control.check()?;
-                    return Ok((rendered, accepted));
-                }
-                Err(reason) => {
-                    trace.push(json!({"kind": "validation", "error": reason}));
-                    if corrections >= 2 || previous_error.as_ref() == Some(&reason) {
-                        return Err(invalid(
-                            "answer format or evidence references failed validation",
-                        ));
-                    }
-                    corrections += 1;
-                    staged.push(json!({"role": "developer", "content": format!("回答校验失败：\n{reason}{repair_hint}\n仅修正这份回答的格式和证据引用，复用已有工具结果。不要调用工具、增加新分析或重写已正确的内容；缺少支持证据的判断应删去或改为说明证据不足。") }));
-                    previous_error = Some(reason);
-                }
-            }
-        }
-        if !tool_results.is_empty() {
-            accepted.extend(output.iter().cloned());
-            accepted.extend(tool_results.iter().cloned());
+            check_history(&staged)?;
+            control.check()?;
+            return Ok((text.trim().to_owned(), staged));
         }
         staged.extend(tool_results);
     }
@@ -635,35 +654,6 @@ fn context_evidence(item: &Value) -> Option<Value> {
         .strip_prefix("当前固定局面的 review 证据（已提供，无需再调用 get_review）：")?;
     let evidence = serde_json::from_str(text).ok()?;
     (*item == initial_evidence(&evidence)).then_some(evidence)
-}
-
-fn evidence_with_history(evidence: &Value, history: &[Value]) -> Value {
-    let mut current = evidence.clone();
-    current["comparisons"] = json!({});
-    current["analyses"] = json!({});
-    let mut past = Vec::new();
-    let mut seen_context = false;
-    for item in history {
-        if let Some(snapshot) = context_evidence(item) {
-            if seen_context {
-                past.push(current);
-            }
-            current = snapshot;
-            current["comparisons"] = json!({});
-            current["analyses"] = json!({});
-            seen_context = true;
-        } else if item["type"] == "function_call_output"
-            && let Some(output) = item["output"].as_str()
-            && let Ok(result) = serde_json::from_str::<Value>(output)
-        {
-            comparison::remember(&mut current, &result);
-            strategy::remember(&mut current, &result);
-        }
-    }
-    if !past.is_empty() {
-        current["past"] = json!(past);
-    }
-    current
 }
 
 fn check_history(history: &[Value]) -> Result<(), AgentError> {

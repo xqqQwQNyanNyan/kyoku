@@ -11,6 +11,11 @@ use super::AgentError;
 pub enum QuestionProgress {
     /// 正在准备本轮局面与会话。
     Preparing,
+    /// 每次请求结束后的本轮用量；包括失败和中止请求。
+    Usage {
+        requests: Vec<super::RequestUsage>,
+        budget: Option<u64>,
+    },
     /// 正在等待本轮第几次模型请求。
     Model { request: usize },
     /// 正在执行模型选择的本地工具。

@@ -1,3 +1,4 @@
+import { UsageSummary, UsageDetails } from './Usage';
 import { useEffect, useState } from 'react';
 import type { QuestionProgress } from './types';
 
@@ -18,7 +19,12 @@ const toolLabels: Record<string, string> = {
 export function QuestionStatus({
   progress,
 }: {
-  progress?: { stage: QuestionProgress; startedAt: number; stopping: boolean };
+  progress?: {
+    stage: QuestionProgress;
+    startedAt: number;
+    stopping: boolean;
+    usage?: Extract<QuestionProgress, { phase: 'usage' }>;
+  };
 }) {
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
@@ -45,6 +51,15 @@ export function QuestionStatus({
       <small className="question-elapsed" aria-live="off">
         已用 {elapsed}
       </small>
+      {progress?.usage && (
+        <>
+          <UsageSummary requests={progress.usage.requests} budget={progress.usage.budget} />
+          <details>
+            <summary>逐次用量</summary>
+            <UsageDetails requests={progress.usage.requests} />
+          </details>
+        </>
+      )}
       <p>
         {progress?.stopping
           ? '正在结束本轮问答；问题和执行记录会保留。'

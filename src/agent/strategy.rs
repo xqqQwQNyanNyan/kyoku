@@ -5,6 +5,7 @@ use serde_json::{Value, json};
 
 mod actions;
 mod defense;
+mod facts;
 mod hand;
 mod scores;
 
@@ -21,6 +22,11 @@ fn definition(name: &str, description: &str, properties: Value) -> Value {
 
 pub(super) fn definitions() -> Vec<Value> {
     vec![
+        definition(
+            "compare_discard_facts",
+            "完整比较两个已有切牌候选时首先调用。已包含双方analyze_hand的事实、舍牌安全依据、防守库存和流局组合，不需为相同问题再调用analyze_hand或analyze_defense。draw=null比较当前事实；指定普通牌则保留该次假设摸牌后的所有切牌事实，不按受入筛选。没有综合评分，不模拟他家未来。",
+            json!({"first":{"type":"string"},"second":{"type":"string"},"draw":{"type":["string","null"]}}),
+        ),
         definition(
             "analyze_hand",
             "分析当前等效13张手牌，或当前候选切牌之后的手牌：向听、常用役种路线、完整待牌及荣和/自摸条件打点，符合条件时比较立直。检查自家舍牌振听，不声称已完成全部和牌合法性检查。discard=null 分析当前13张，否则须用当前 discards 中的牌。",
@@ -46,6 +52,17 @@ pub(super) fn definitions() -> Vec<Value> {
             "按当前点数、本场、立直棒和起家同点顺序，计算超过指定玩家所需的荣和支付门槛以及自摸支付档位。是本次单人和牌后的点差条件，不是终局预测，也不代表自家手牌可达到相应打点。",
             json!({"target":{"type":"integer","minimum":0,"maximum":3}}),
         ),
+        definition(
+            "analyze_draw_outcomes",
+            "枚举荒牌流局时四家听牌与未听的16种给定组合，计算3000点罚符、当前顺位、本场供托与继续比赛时的庄家。不是流局概率，不含途中流局、流局满贯或终局预测。",
+            json!({}),
+        ),
+        definition(
+            "analyze_win_outcome",
+            "给定和牌者、付款者、符和总番，计算本场供托及四家点数顺位变化；可核验放铳损失、自摸或横移的条件后果。payer=null 表示自摸。符番由问题条件明确给出，至少有一役；不推测他家暗手价值，不判断该符番可达。",
+            json!({"winner":{"type":"integer","minimum":0,"maximum":3},"payer":{"type":["integer","null"],"minimum":0,"maximum":3},
+                "fu":{"type":"integer","minimum":20,"maximum":110},"han":{"type":"integer","minimum":1,"maximum":13}}),
+        ),
     ]
 }
 
@@ -69,11 +86,14 @@ pub(super) fn execute(name: &str, evidence: &Value, arguments: &str) -> Value {
         }
         let snapshot = Snapshot::read(evidence)?;
         let (key, analysis) = match name {
+            "compare_discard_facts" => facts::compare(&snapshot, evidence, &args)?,
             "analyze_hand" => hand::analyze(&snapshot, evidence, &args)?,
             "analyze_yaku_route" => hand::route(&snapshot, evidence, &args)?,
             "analyze_defense" => ("defense".into(), defense::analyze(&snapshot)?),
             "analyze_actions" => ("actions".into(), actions::analyze(&snapshot, evidence)?),
             "analyze_score_targets" => scores::analyze(&snapshot, &args)?,
+            "analyze_draw_outcomes" => ("draw_outcomes".into(), scores::draws(&snapshot)),
+            "analyze_win_outcome" => scores::win(&snapshot, &args)?,
             _ => return Err(invalid_arguments()),
         };
         Ok(json!({"ok":true,"key":key,"reference":format!("/analyses/{key}"),"analysis":analysis}))
@@ -89,15 +109,6 @@ fn invalid_arguments() -> ToolError {
         "invalid_arguments",
         "参数必须包含工具要求的全部字段，且不能添加额外字段。".into(),
     )
-}
-
-pub(super) fn remember(evidence: &mut Value, result: &Value) {
-    if result["ok"] == true
-        && result["analysis"].is_object()
-        && let Some(key) = result["key"].as_str()
-    {
-        evidence["analyses"][key] = result["analysis"].clone();
-    }
 }
 
 #[cfg(test)]

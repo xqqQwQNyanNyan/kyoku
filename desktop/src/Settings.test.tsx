@@ -2,6 +2,7 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { defaultModelOptions } from './ModelSettings';
 import { SettingsPanel } from './Settings';
 import type { Bridge, Settings } from './types';
 
@@ -71,8 +72,9 @@ it('加载设置不回显密钥，保存时可保留原密钥', async () => {
     model: 'next-model',
     api_key: '',
     clear_key: false,
+    options: defaultModelOptions,
   });
-  await screen.findByText('设置已保存，新会话使用新配置，历史会话会保留。');
+  await screen.findByText('设置已保存，后续提问使用新参数，历史会话会保留。');
 });
 
 it('换地址提示重新填写密钥；测试使用草稿而不会保存', async () => {
@@ -84,12 +86,16 @@ it('换地址提示重新填写密钥；测试使用草稿而不会保存', asyn
   expect(screen.getByPlaceholderText('填写此服务的专用密钥')).toBeTruthy();
   await userEvent.type(screen.getByLabelText('API Key'), 'new-key');
   await userEvent.click(screen.getByRole('button', { name: '测试连接' }));
-  expect(bridge.testConnection).toHaveBeenCalledWith({
-    endpoint: 'https://another.example/v1/responses',
-    model: 'test-model',
-    api_key: 'new-key',
-    clear_key: false,
-  });
+  expect(bridge.testConnection).toHaveBeenCalledWith(
+    {
+      endpoint: 'https://another.example/v1/responses',
+      model: 'test-model',
+      api_key: 'new-key',
+      clear_key: false,
+      options: defaultModelOptions,
+    },
+    expect.any(Function),
+  );
   await screen.findByRole('status');
   expect(bridge.saveSettings).not.toHaveBeenCalled();
 });
@@ -115,6 +121,7 @@ it('可删除密钥并独立检查本地引擎', async () => {
   expect(bridge.saveSettings).toHaveBeenCalledWith(
     expect.objectContaining({ clear_key: true, api_key: '' }),
   );
+  await userEvent.click(screen.getByRole('tab', { name: '本地分析' }));
   await userEvent.click(screen.getByRole('button', { name: '检查引擎' }));
   await waitFor(() => expect(screen.getByText('应用内置 · 引擎检查通过')).toBeTruthy());
   expect(bridge.testConnection).not.toHaveBeenCalled();
@@ -133,11 +140,80 @@ it('允许填写 Chat Completions 地址、测试连接并保存', async () => {
   await screen.findByText('连接成功，模型支持工具调用。');
   expect(bridge.testConnection).toHaveBeenCalledWith(
     expect.objectContaining({ endpoint, api_key: 'chat-key' }),
+    expect.any(Function),
   );
   await userEvent.click(screen.getByRole('button', { name: '保存设置' }));
-  await screen.findByText('设置已保存，新会话使用新配置，历史会话会保留。');
+  await screen.findByText('设置已保存，后续提问使用新参数，历史会话会保留。');
   expect(bridge.saveSettings).toHaveBeenCalledWith(
     expect.objectContaining({ endpoint, api_key: 'chat-key' }),
   );
   expect((screen.getByLabelText('服务地址') as HTMLInputElement).value).toBe(endpoint);
+});
+
+it('高级参数和价格跨标签页保留，并随草稿一起保存', async () => {
+  const bridge = api();
+  render(<SettingsPanel api={bridge} onClose={vi.fn()} />);
+  await screen.findByPlaceholderText('已有密钥，留空保留');
+  await userEvent.click(screen.getByRole('tab', { name: '模型参数' }));
+  await userEvent.clear(screen.getByLabelText('单次输出上限（Token）'));
+  await userEvent.type(screen.getByLabelText('单次输出上限（Token）'), '16384');
+  await userEvent.type(screen.getByLabelText('上下文长度（Token，可留空）'), '128000');
+  await userEvent.click(screen.getByRole('combobox', { name: '思考模式' }));
+  await userEvent.click(screen.getByRole('option', { name: 'high' }));
+  await userEvent.click(screen.getByRole('combobox', { name: 'Chat 输出参数' }));
+  await userEvent.click(screen.getByRole('option', { name: 'max_tokens' }));
+  await userEvent.click(screen.getByRole('tab', { name: '用量与费用' }));
+  await userEvent.type(screen.getByLabelText('每轮 Token 预算（可留空）'), '200000');
+  await userEvent.click(screen.getByLabelText('配置价格，估算 API 费用'));
+  await userEvent.clear(screen.getByLabelText('输入价格 / 百万 Token'));
+  await userEvent.type(screen.getByLabelText('输入价格 / 百万 Token'), '2');
+  await userEvent.clear(screen.getByLabelText('输出价格 / 百万 Token'));
+  await userEvent.type(screen.getByLabelText('输出价格 / 百万 Token'), '8');
+  await userEvent.click(screen.getByRole('button', { name: '保存设置' }));
+  expect(bridge.saveSettings).toHaveBeenCalledWith(
+    expect.objectContaining({
+      options: {
+        max_output_tokens: 16384,
+        context_tokens: 128000,
+        thinking: 'high',
+        chat_token_limit: 'max_tokens',
+        token_budget: 200000,
+        prices: { currency: 'CNY', input: 2, output: 8, cached_input: null },
+      },
+    }),
+  );
+});
+
+it('上下文小于输出上限时，保存和测试都不发送无效配置', async () => {
+  const bridge = api();
+  render(<SettingsPanel api={bridge} onClose={vi.fn()} />);
+  await screen.findByPlaceholderText('已有密钥，留空保留');
+  await userEvent.click(screen.getByRole('tab', { name: '模型参数' }));
+  await userEvent.type(screen.getByLabelText('上下文长度（Token，可留空）'), '100');
+  await userEvent.click(screen.getByRole('tab', { name: '连接' }));
+  await userEvent.click(screen.getByRole('button', { name: '测试连接' }));
+  await userEvent.click(screen.getByRole('button', { name: '保存设置' }));
+  expect(bridge.testConnection).not.toHaveBeenCalled();
+  expect(bridge.saveSettings).not.toHaveBeenCalled();
+  expect(screen.getByRole('tab', { name: '模型参数' }).getAttribute('aria-selected')).toBe('true');
+  expect(document.activeElement).toBe(screen.getByLabelText('上下文长度（Token，可留空）'));
+});
+
+it('标签页支持键盘切换，草稿和统一保存操作始终保留', async () => {
+  const bridge = api();
+  render(<SettingsPanel api={bridge} onClose={vi.fn()} />);
+  await screen.findByPlaceholderText('已有密钥，留空保留');
+  await userEvent.clear(screen.getByLabelText('模型名'));
+  await userEvent.type(screen.getByLabelText('模型名'), 'draft-model');
+  const connection = screen.getByRole('tab', { name: '连接' });
+  connection.focus();
+  await userEvent.keyboard('{ArrowRight}');
+  expect(screen.getByRole('tabpanel').getAttribute('id')).toBe('settings-panel-model');
+  expect(screen.getAllByRole('combobox')).toHaveLength(2);
+  expect(document.querySelector('select')).toBeNull();
+  expect(screen.getByRole('button', { name: '保存设置' })).toBeTruthy();
+  await userEvent.keyboard('{End}');
+  expect(screen.getByRole('tabpanel').getAttribute('id')).toBe('settings-panel-runtime');
+  await userEvent.keyboard('{Home}');
+  expect((screen.getByLabelText('模型名') as HTMLInputElement).value).toBe('draft-model');
 });
