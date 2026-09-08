@@ -2175,3 +2175,89 @@ button.session-location:hover {
 .settings-footer[hidden] {
   display: none;
 }
+
+.round-result-dialog {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  margin: 0;
+  width: 580px;
+  max-width: none;
+  max-height: calc(90vh / var(--app-scale, 1));
+  transform: translate(-50%, -50%) scale(var(--app-scale, 1));
+  padding: 24px;
+  border: 1px solid #ffffff24;
+  border-radius: 16px;
+  background: #18231f;
+  color: #e6e9e5;
+  box-shadow: 0 24px 100px #0009;
+}
+.round-result-dialog[open] {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.round-result-dialog::backdrop {
+  background: #080f0dcc;
+}
+.round-result-dialog h2 {
+  margin: 6px 0 0;
+}
+.round-result-dialog h3 {
+  margin: 0 0 12px;
+  font-size: 15px;
+}
+.round-result-content {
+  overflow-y: auto;
+  min-height: 0;
+}
+.round-win {
+  margin-bottom: 24px;
+}
+.round-score {
+  color: #dcc58e;
+}
+.round-draw-reason {
+  margin: 4px 0 24px;
+  font-size: 18px;
+}
+.round-result-dialog table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.round-result-dialog th,
+.round-result-dialog td {
+  text-align: right;
+  padding: 10px 8px;
+  border-bottom: 1px solid #ffffff12;
+  font-variant-numeric: tabular-nums;
+}
+.round-result-dialog th:first-child,
+.round-result-dialog td:first-child {
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.round-result-dialog th {
+  color: #a3b1a7;
+  font-weight: 400;
+}
+.round-result-dialog .muted {
+  font-size: 12px;
+}
+.score-gain {
+  color: #8cd5ae;
+}
+.score-loss {
+  color: #f2a6a0;
+}
+.round-result-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.event-counter small {
+  display: block;
+  margin-top: 3px;
+}

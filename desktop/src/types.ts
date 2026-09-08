@@ -44,7 +44,19 @@ export interface Replay {
   mortal_supported: boolean;
   names: string[];
   frames: Frame[];
-  rounds: { frame_index: number; label: string }[];
+  rounds: { frame_index: number; label: string; result?: RoundResult | null }[];
+}
+export interface RoundResult {
+  wins: [number, number][];
+  deltas: number[];
+  scores: number[];
+  details:
+    | {
+        kind: 'hora';
+        wins: { actor: number; target: number; score: string | null; yaku: string[] }[];
+      }
+    | { kind: 'ryukyoku'; reason: string }
+    | null;
 }
 export interface Action {
   type: string;

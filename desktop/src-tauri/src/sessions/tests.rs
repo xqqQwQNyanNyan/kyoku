@@ -274,7 +274,10 @@ fn session_titles_are_bounded_and_renames_preserve_saved_context() {
 fn local_sessions_share_replays_and_exports_restore_without_the_original_library() {
     let directory = Directory::new();
     let store = new_store(directory.0.clone());
-    let game = fixture_game();
+    let mut game = fixture_game();
+    let (_, data) =
+        crate::replay::parse(include_str!("../../../../fixtures/tenhou/ranked_game.json")).unwrap();
+    game.round_details = data.round_details();
     store
         .create("one", "对局".into(), archive("http://localhost/responses"))
         .unwrap();
@@ -307,6 +310,10 @@ fn local_sessions_share_replays_and_exports_restore_without_the_original_library
     let portable = fs::read_to_string(&export).unwrap();
     let portable_json: serde_json::Value = serde_json::from_str(&portable).unwrap();
     assert_eq!(portable_json["version"], 2);
+    assert_eq!(
+        portable_json["game"]["round_details"],
+        serde_json::to_value(&game.round_details).unwrap()
+    );
     assert!(
         !portable_json["game"]["events"]
             .as_array()
@@ -316,6 +323,18 @@ fn local_sessions_share_replays_and_exports_restore_without_the_original_library
     let other_directory = Directory::new();
     let other = new_store(other_directory.0.clone());
     let imported = other.import(&portable).unwrap();
+    assert_eq!(
+        serde_json::to_value(
+            other
+                .open_game(&imported.document.id)
+                .unwrap()
+                .game
+                .unwrap()
+                .round_details
+        )
+        .unwrap(),
+        serde_json::to_value(&game.round_details).unwrap()
+    );
     fs::remove_file(replay_files.join(format!("{}.json", game.key))).unwrap();
     assert_eq!(
         other
@@ -792,6 +811,7 @@ fn fixture_game() -> SessionGame {
     SessionGame {
         key: SessionGame::key(&events).unwrap(),
         events,
+        round_details: Vec::new(),
     }
 }
 

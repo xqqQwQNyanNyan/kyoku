@@ -795,12 +795,15 @@ describe('完整回放与问答边界', () => {
     await userEvent.click(screen.getByLabelText('下一页牌局'));
     await userEvent.click(screen.getByRole('button', { name: /第 8 局/ }));
     expect((screen.getByLabelText('牌谱进度') as HTMLInputElement).value).toBe('7');
-    fireEvent.change(screen.getByLabelText('牌谱进度'), { target: { value: '17' } });
+    await userEvent.click(screen.getByLabelText('下一页牌局'));
+    await userEvent.click(screen.getByRole('button', { name: /第 18 局/ }));
     expect(screen.getByRole('button', { name: /第 18 局/ }).getAttribute('aria-current')).toBe(
       'step',
     );
     expect((screen.getByLabelText('下一页牌局') as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.change(screen.getByLabelText('牌谱进度'), { target: { value: '0' } });
+    await userEvent.click(screen.getByLabelText('上一页牌局'));
+    await userEvent.click(screen.getByLabelText('上一页牌局'));
+    await userEvent.click(screen.getByRole('button', { name: /第 1 局/ }));
     expect(screen.getByRole('button', { name: /第 1 局/ }).getAttribute('aria-current')).toBe(
       'step',
     );
@@ -1529,5 +1532,168 @@ describe('牌谱会话的恢复与定位', () => {
     expect(bridge.ask).toHaveBeenCalledOnce();
     expect((screen.getByLabelText('牌谱进度') as HTMLInputElement).value).toBe('2');
     expect(screen.getByRole('combobox', { name: '复盘玩家' }).textContent).toBe('下家');
+  });
+});
+
+describe('局间结算', () => {
+  const result = {
+    wins: [
+      [3, 2],
+      [0, 2],
+    ] as [number, number][],
+    deltas: [8000, 0, -15700, 7700],
+    scores: [33000, 25000, 9300, 32700],
+    details: {
+      kind: 'hora' as const,
+      wins: [
+        {
+          actor: 3,
+          target: 2,
+          score: '30符4飜7700点',
+          yaku: ['役牌 發(1飜)', '混一色(2飜)', '赤ドラ(1飜)'],
+        },
+        { actor: 0, target: 2, score: '満貫8000点', yaku: ['立直(1飜)', 'ドラ(4飜)'] },
+      ],
+    },
+  };
+  const rounds: Replay = {
+    ...replay,
+    rounds: [
+      { label: '东一局 · 0 本场', frame_index: 0, result },
+      {
+        label: '东二局 · 0 本场',
+        frame_index: 4,
+        result: {
+          wins: [],
+          deltas: [0, 0, 0, 0],
+          scores: result.scores,
+          details: { kind: 'ryukyoku', reason: '九種九牌' },
+        },
+      },
+    ],
+    frames: [
+      'start_kyoku',
+      'hora',
+      'hora',
+      'end_kyoku',
+      'start_kyoku',
+      'ryukyoku',
+      'end_kyoku',
+      'end_game',
+    ].map((kind, i) => ({
+      ...first,
+      event_index: 101 + i,
+      round: i < 4 ? '东一局' : '东二局',
+      event: { kind, actor: null, target: null, tile: null },
+    })),
+  };
+  async function setup() {
+    const bridge = api();
+    vi.mocked(bridge.importLog).mockResolvedValueOnce(rounds);
+    await load(bridge);
+  }
+  it('进度条限于本局，双响结算关闭后进入下一局，向后跨局不弹窗', async () => {
+    await setup();
+    const slider = screen.getByLabelText('牌谱进度') as HTMLInputElement;
+    expect([slider.min, slider.max]).toEqual(['0', '3']);
+    expect(screen.getByText('本局 G101–G104')).toBeTruthy();
+    fireEvent.change(slider, { target: { value: '3' } });
+    expect(screen.queryByRole('dialog')).toBeNull();
+    await userEvent.click(screen.getByLabelText('下一事件'));
+    const dialog = screen.getByRole('dialog', { name: '和牌结算' });
+    expect(within(dialog).getByText('上家 · 荣和（对家 放铳）')).toBeTruthy();
+    expect(within(dialog).getByText('自己 · 荣和（对家 放铳）')).toBeTruthy();
+    expect(within(dialog).getByRole('cell', { name: '混一色' })).toBeTruthy();
+    expect(within(dialog).getByRole('cell', { name: '2番' })).toBeTruthy();
+    expect(within(dialog).getByRole('cell', { name: '-15700' })).toBeTruthy();
+    fireEvent.keyDown(document.body, { code: 'ArrowRight' });
+    fireEvent.keyDown(document.body, { code: 'Space' });
+    expect(slider.value).toBe('3');
+    await userEvent.click(within(dialog).getByRole('button', { name: '关闭并进入下一局' }));
+    expect([slider.min, slider.max, slider.value]).toEqual(['4', '6', '4']);
+    expect(screen.getByText('本局 G105–G107')).toBeTruthy();
+    expect(screen.getByLabelText('播放')).toBeTruthy();
+    await userEvent.click(screen.getByLabelText('上一事件'));
+    expect(slider.value).toBe('3');
+    expect(screen.queryByRole('dialog')).toBeNull();
+    fireEvent.keyDown(document.body, { code: 'ArrowRight' });
+    fireEvent(screen.getByRole('dialog'), new Event('cancel', { cancelable: true }));
+    expect(slider.value).toBe('4');
+  });
+  it('自动播放等待双响全部结算后暂停，最后一局关闭后留在局末', async () => {
+    await setup();
+    fireEvent.change(screen.getByLabelText('牌谱进度'), { target: { value: '1' } });
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(screen.getByLabelText('播放'));
+      await act(async () => {
+        vi.advanceTimersByTime(850);
+      });
+      expect(screen.queryByRole('dialog')).toBeNull();
+      await act(async () => {
+        vi.advanceTimersByTime(850);
+      });
+      expect(screen.getByRole('dialog', { name: '和牌结算' })).toBeTruthy();
+      await act(async () => {
+        vi.advanceTimersByTime(5000);
+      });
+      expect((screen.getByLabelText('牌谱进度') as HTMLInputElement).value).toBe('3');
+      fireEvent.click(screen.getByLabelText('关闭结算'));
+      await act(async () => {
+        vi.advanceTimersByTime(5000);
+      });
+      expect((screen.getByLabelText('牌谱进度') as HTMLInputElement).value).toBe('4');
+    } finally {
+      vi.useRealTimers();
+    }
+    fireEvent.change(screen.getByLabelText('牌谱进度'), { target: { value: '6' } });
+    await userEvent.click(screen.getByLabelText('下一事件'));
+    const dialog = screen.getByRole('dialog', { name: '流局结算' });
+    expect(within(dialog).getByText('九种九牌')).toBeTruthy();
+    expect(within(dialog).getByText('全场回放结束')).toBeTruthy();
+    await userEvent.click(within(dialog).getByRole('button', { name: '关闭' }));
+    expect((screen.getByLabelText('牌谱进度') as HTMLInputElement).value).toBe('6');
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+  it('自摸和役满按原谱显示，旧牌谱缺失明细时仍显示点差', async () => {
+    const bridge = api();
+    vi.mocked(bridge.importLog).mockResolvedValueOnce({
+      ...rounds,
+      rounds: [
+        {
+          ...rounds.rounds[0],
+          result: {
+            ...result,
+            wins: [[3, 3]],
+            details: {
+              kind: 'hora',
+              wins: [{ actor: 3, target: 3, score: '役満32000点', yaku: ['四槓子(役満)'] }],
+            },
+          },
+        },
+        { ...rounds.rounds[1], result: { ...result, details: null } },
+      ],
+    });
+    await load(bridge);
+    fireEvent.change(screen.getByLabelText('牌谱进度'), { target: { value: '3' } });
+    await userEvent.click(screen.getByLabelText('下一事件'));
+    expect(screen.getByText('上家 · 自摸')).toBeTruthy();
+    expect(screen.getByRole('cell', { name: '役满' })).toBeTruthy();
+    await userEvent.click(screen.getByLabelText('关闭结算'));
+    fireEvent.change(screen.getByLabelText('牌谱进度'), { target: { value: '6' } });
+    await userEvent.click(screen.getByLabelText('下一事件'));
+    expect(
+      screen.getAllByText('此旧牌谱未保存役种和番数，重新导入原始牌谱后可查看。'),
+    ).toHaveLength(2);
+    expect(screen.getByRole('cell', { name: '-15700' })).toBeTruthy();
+  });
+
+  it('直接选择牌局不弹窗，拖动不能越出本局', async () => {
+    await setup();
+    await userEvent.click(screen.getByRole('button', { name: /东二局.*0 本场/ }));
+    const slider = screen.getByLabelText('牌谱进度') as HTMLInputElement;
+    fireEvent.change(slider, { target: { value: '0' } });
+    expect(slider.value).toBe('4');
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
 });

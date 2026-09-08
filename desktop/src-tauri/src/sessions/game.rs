@@ -9,6 +9,8 @@ pub(crate) struct SessionGame {
     pub key: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub events: Vec<Event>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub round_details: Vec<crate::replay::RoundDetails>,
 }
 
 impl SessionGame {
@@ -27,6 +29,9 @@ impl SessionGame {
     pub(crate) fn validate(&self) -> Result<(), UiError> {
         if self.events.is_empty() || Self::key(&self.events)? != self.key {
             return Err(UiError::new("session_format", "会话关联的牌谱无效"));
+        }
+        if !self.round_details.is_empty() {
+            crate::replay::replay(&self.events)?.with_details(&self.round_details)?;
         }
         Ok(())
     }

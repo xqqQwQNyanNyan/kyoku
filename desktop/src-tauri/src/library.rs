@@ -124,10 +124,11 @@ impl ReplayLibrary {
         fs::create_dir_all(self.directory(false)).map_err(|_| io_error())?;
         fs::create_dir_all(self.directory(true)).map_err(|_| io_error())?;
         for (name, json) in EXAMPLES {
-            let (events, _) = replay::parse(json)?;
+            let (events, data) = replay::parse(json)?;
             let game = SessionGame {
                 key: SessionGame::key(&events)?,
                 events,
+                round_details: data.round_details(),
             };
             if self
                 .deleted_path(&game.key)?
@@ -146,6 +147,12 @@ impl ReplayLibrary {
                     .try_exists()
                     .map_err(|_| io_error())?
             {
+                if self
+                    .get(&game.key)
+                    .is_ok_and(|saved| saved.game.round_details.is_empty())
+                {
+                    self.save(&game, name, ReplayOrigin::Example)?;
+                }
                 continue;
             }
             self.save(&game, name, ReplayOrigin::Example)?;
@@ -179,7 +186,7 @@ impl ReplayLibrary {
         for example in [true, false] {
             let path = self.path(&game.key, example)?;
             if path.try_exists().map_err(|_| io_error())? {
-                let existing = read(&path)?;
+                let mut existing = read(&path)?;
                 if existing.game.key != game.key || existing.game.events != game.events {
                     return Err(UiError::new(
                         "replay_format",
@@ -190,6 +197,11 @@ impl ReplayLibrary {
                     && deleted.try_exists().map_err(|_| io_error())?
                 {
                     fs::remove_file(&deleted).map_err(|_| io_error())?;
+                }
+                // 重新导入原谱时为旧副本补齐详情，保持名称和内容标识。
+                if existing.game.round_details.is_empty() && !game.round_details.is_empty() {
+                    existing.game.round_details = game.round_details.clone();
+                    write_record(&path, &existing)?;
                 }
                 return Ok(existing.name);
             }
@@ -404,7 +416,7 @@ pub(crate) fn parse_input(
     if serde_json::from_str::<serde_json::Value>(json).is_ok_and(|v| v["format"] == "kyoku-replay")
     {
         let record = SavedReplay::parse(json)?;
-        let data = replay::replay(&record.game.events)?;
+        let data = replay::replay(&record.game.events)?.with_details(&record.game.round_details)?;
         Ok((record.game.events, data))
     } else {
         replay::parse(json)

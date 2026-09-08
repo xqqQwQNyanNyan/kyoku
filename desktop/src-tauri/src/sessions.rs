@@ -243,6 +243,7 @@ impl SessionStore {
                 self.library
                     .save(game, &document.context_label, ReplayOrigin::Session)?;
                 game.events.clear();
+                game.round_details.clear();
             }
             compact.version = 3;
         }

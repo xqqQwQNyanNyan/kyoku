@@ -12,6 +12,7 @@ import { replayName } from './display';
 import { ChatPanel, HistoryDialog, useSessions } from './Sessions';
 import { ReplayLibrary } from './ReplayLibrary';
 import { RenameReplayDialog } from './RenameReplayDialog';
+import { RoundResultDialog } from './RoundResultDialog';
 
 const roundsPerPage = 7;
 const reviewTabs = [
@@ -29,6 +30,7 @@ export default function App({ api = bridge }: { api?: Bridge }) {
   const [player, setPlayer] = useState(0);
   const [reveal, setReveal] = useState(false);
   const [playing, setPlaying] = useState(false);
+  const [showResult, setShowResult] = useState(false);
   const [speed, setSpeed] = useState(1);
   const [selected, setSelected] = useState<string | null>(null);
   const [decisions, setDecisions] = useState<Record<number, Decision[]>>({});
@@ -50,6 +52,12 @@ export default function App({ api = bridge }: { api?: Bridge }) {
   const points = decisions[player];
   const decision = frame ? points?.find((d) => d.event_index === frame.event_index) : undefined;
   const activeRound = replay?.rounds.findLastIndex((round) => round.frame_index <= index) ?? -1;
+  const round = replay?.rounds[activeRound];
+  const roundStart = round?.frame_index ?? 0;
+  const nextRound = replay?.rounds[activeRound + 1];
+  const roundEnd = nextRound
+    ? nextRound.frame_index - 1
+    : Math.max(0, replay?.frames.findLastIndex((f) => f.event.kind !== 'end_game') ?? 0);
 
   useEffect(() => {
     setRoundPage(Math.floor(Math.max(0, activeRound) / roundsPerPage));
@@ -66,7 +74,26 @@ export default function App({ api = bridge }: { api?: Bridge }) {
 
   function jump(next: number) {
     setPlaying(false);
+    setShowResult(false);
     selectFrame(next);
+  }
+
+  function forward() {
+    if (showResult) return;
+    if (round?.result && index + 1 >= roundEnd) {
+      selectFrame(roundEnd);
+      setPlaying(false);
+      setShowResult(true);
+    } else if (index >= roundEnd && nextRound) {
+      selectFrame(nextRound.frame_index);
+    } else {
+      selectFrame(Math.min(index + 1, roundEnd));
+    }
+  }
+
+  function closeResult() {
+    setShowResult(false);
+    if (nextRound) jump(nextRound.frame_index);
   }
 
   function changePlayer(next: number) {
@@ -89,6 +116,7 @@ export default function App({ api = bridge }: { api?: Bridge }) {
       analysisJob.current += 1;
       setSelected(null);
       setReplay(loaded);
+      setShowResult(false);
       setFilename(loaded.name ?? name);
       setIndex(
         Math.max(
@@ -153,18 +181,19 @@ export default function App({ api = bridge }: { api?: Bridge }) {
   }
 
   useEffect(() => {
-    if (!playing || !replay) return;
-    if (index >= replay.frames.length - 1) {
+    if (!playing || !replay || showResult) return;
+    if (index >= roundEnd && !nextRound && !round?.result) {
       setPlaying(false);
       return;
     }
-    const timer = window.setTimeout(() => selectFrame(index + 1), 850 / speed);
+    const timer = window.setTimeout(forward, 850 / speed);
     return () => window.clearTimeout(timer);
   });
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
-      if (showSettings || showImport || showHistory || showLibrary || showRename) return;
+      if (showSettings || showImport || showHistory || showLibrary || showRename || showResult)
+        return;
       if (!replay || event.altKey || event.ctrlKey || event.metaKey || event.isComposing) return;
       if (
         (event.target as HTMLElement).closest(
@@ -182,7 +211,8 @@ export default function App({ api = bridge }: { api?: Bridge }) {
       }
       if (event.code === 'ArrowRight') {
         event.preventDefault();
-        jump(index + 1);
+        setPlaying(false);
+        forward();
       }
     }
     window.addEventListener('keydown', onKey);
@@ -368,6 +398,15 @@ export default function App({ api = bridge }: { api?: Bridge }) {
         />
       )}
       {showSettings && <SettingsPanel api={api} onClose={() => setShowSettings(false)} />}
+      {showResult && replay && round?.result && (
+        <RoundResultDialog
+          label={round.label}
+          result={round.result}
+          names={replay.names}
+          nextLabel={nextRound?.label}
+          onClose={closeResult}
+        />
+      )}
       {showRename && replay && (
         <RenameReplayDialog
           api={api}
@@ -567,16 +606,21 @@ export default function App({ api = bridge }: { api?: Bridge }) {
             <section className="transport" aria-label="回放控制">
               <input
                 type="range"
-                min="0"
-                max={replay.frames.length - 1}
+                min={roundStart}
+                max={roundEnd}
                 value={index}
                 aria-label="牌谱进度"
-                onChange={(e) => jump(Number(e.target.value))}
+                onChange={(e) =>
+                  jump(Math.max(roundStart, Math.min(roundEnd, Number(e.target.value))))
+                }
               />
               <div className="transport-buttons">
                 <span className="event-counter">
-                  G{String(frame.event_index).padStart(3, '0')}{' '}
-                  <small>/ {replay.frames.at(-1)?.event_index}</small>
+                  事件 {Math.min(index, roundEnd) - roundStart + 1} / {roundEnd - roundStart + 1}
+                  <small>
+                    本局 G{replay.frames[roundStart].event_index}–G
+                    {replay.frames[roundEnd].event_index}
+                  </small>
                 </span>
                 <div className="playback-buttons">
                   <button
@@ -591,15 +635,18 @@ export default function App({ api = bridge }: { api?: Bridge }) {
                     className="play"
                     aria-label={playing ? '暂停' : '播放'}
                     onClick={() => setPlaying(!playing)}
-                    disabled={index === replay.frames.length - 1}
+                    disabled={index >= roundEnd && !nextRound && !round?.result}
                   >
                     {playing ? 'Ⅱ' : '▶'}
                   </button>
                   <button
                     aria-label="下一事件"
                     title="下一事件 →"
-                    onClick={() => jump(index + 1)}
-                    disabled={index === replay.frames.length - 1}
+                    onClick={() => {
+                      setPlaying(false);
+                      forward();
+                    }}
+                    disabled={index >= roundEnd && !nextRound && !round?.result}
                   >
                     ›
                   </button>

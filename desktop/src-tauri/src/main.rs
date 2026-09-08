@@ -68,6 +68,7 @@ struct Game {
     key: String,
     mortal_supported: bool,
     events: Vec<Event>,
+    round_details: Vec<replay::RoundDetails>,
     reviews: Mutex<[Option<Arc<GameReview>>; 4]>,
 }
 
@@ -129,6 +130,7 @@ async fn import_log(
             &sessions::SessionGame {
                 key: sessions::SessionGame::key(&events)?,
                 events: events.clone(),
+                round_details: data.round_details(),
             },
             &name,
             library::ReplayOrigin::File,
@@ -157,6 +159,7 @@ async fn import_link(
             &sessions::SessionGame {
                 key: sessions::SessionGame::key(&events)?,
                 events: events.clone(),
+                round_details: data.round_details(),
             },
             &link,
             library::ReplayOrigin::Link,
@@ -266,7 +269,7 @@ async fn open_replay(
             .read()?
             .library()
             .get(&key)?;
-        let data = replay::replay(&saved.game.events)?;
+        let data = replay::replay(&saved.game.events)?.with_details(&saved.game.round_details)?;
         Ok::<_, UiError>((saved.game.events, data, saved.name))
     })
     .await
@@ -386,6 +389,7 @@ fn finish_import(
         id,
         key: game_key.clone(),
         mortal_supported: data.mortal_supported,
+        round_details: data.round_details(),
         events,
         reviews: Mutex::new(std::array::from_fn(|_| None)),
     }));
@@ -491,6 +495,7 @@ async fn ask(
         let saved_game = sessions::SessionGame {
             key: game.key.clone(),
             events: game.events.clone(),
+            round_details: game.round_details.clone(),
         };
         app.state::<storage::Storage>()
             .read()?
@@ -658,7 +663,7 @@ async fn open_session_game(
         None
     };
     let (game, data) = tauri::async_runtime::spawn_blocking(move || {
-        let data = replay::replay(&game.events)?;
+        let data = replay::replay(&game.events)?.with_details(&game.round_details)?;
         Ok::<_, UiError>((game, data))
     })
     .await
@@ -886,6 +891,7 @@ mod tests {
             key: sessions::SessionGame::key(&events).unwrap(),
             mortal_supported: true,
             events,
+            round_details: Vec::new(),
             reviews: Mutex::new(std::array::from_fn(|_| None)),
         };
         for (player, event) in [(0, 1), (0, 2), (0, 4), (1, 4)] {
@@ -908,6 +914,7 @@ mod tests {
             key: "test".into(),
             mortal_supported: true,
             events: Vec::new(),
+            round_details: Vec::new(),
             reviews: Mutex::new(std::array::from_fn(|_| None)),
         }));
         assert_eq!(state.game(1).err().unwrap().code, "stale_game");

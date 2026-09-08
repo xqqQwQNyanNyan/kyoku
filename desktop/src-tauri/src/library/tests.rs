@@ -25,6 +25,7 @@ fn game() -> SessionGame {
     SessionGame {
         key: SessionGame::key(&events).unwrap(),
         events,
+        round_details: Vec::new(),
     }
 }
 
@@ -199,4 +200,37 @@ fn invalid_missing_and_corrupt_files_do_not_replace_existing_records() {
     library.initialize().unwrap();
     assert_eq!(fs::read_to_string(&path).unwrap(), "broken");
     assert_eq!(library.list().unwrap().warnings.len(), 1);
+}
+
+#[test]
+fn reimport_enriches_old_replay_and_preserves_name_and_key() {
+    let directory = Directory::new();
+    let library = ReplayLibrary::new(directory.0.clone());
+    let mut game = game();
+    library
+        .save(&game, "自己起的名字", ReplayOrigin::File)
+        .unwrap();
+    assert!(
+        library
+            .get(&game.key)
+            .unwrap()
+            .game
+            .round_details
+            .is_empty()
+    );
+    let (_, data) =
+        replay::parse(include_str!("../../../../fixtures/tenhou/ranked_game.json")).unwrap();
+    game.round_details = data.round_details();
+    assert_eq!(
+        library.save(&game, "重新导入", ReplayOrigin::File).unwrap(),
+        "自己起的名字"
+    );
+    let saved = library.get(&game.key).unwrap();
+    assert_eq!(saved.game.key, game.key);
+    let json = serde_json::to_string(&saved).unwrap();
+    let (_, restored) = parse_input(&json).unwrap();
+    assert_eq!(
+        serde_json::to_value(restored.round_details()).unwrap(),
+        serde_json::to_value(game.round_details).unwrap()
+    );
 }

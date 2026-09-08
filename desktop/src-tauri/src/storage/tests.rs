@@ -35,6 +35,7 @@ fn seed(storage: &Storage) -> (String, String) {
     let game = SessionGame {
         key: SessionGame::key(&events).unwrap(),
         events,
+        round_details: Vec::new(),
     };
     let archive = AgentSession::with_context(
         &context,
