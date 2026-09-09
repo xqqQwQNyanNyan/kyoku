@@ -105,10 +105,10 @@ it('被鸣走的牌保留原位，摸切与立直标记同时保留', () => {
   render(<Board {...props} />);
   const river = within(screen.getByLabelText('自己的牌河'));
   expect(river.getAllByRole('img')).toHaveLength(4);
-  expect(river.getByTitle('一筒 · 手切')).toBeTruthy();
-  expect(river.getByTitle('二筒 · 摸切')).toBeTruthy();
-  expect(river.getByTitle('三筒 · 手切 · 已被鸣走')).toBeTruthy();
-  expect(river.getByTitle('四筒 · 摸切 · 已被鸣走 · 立直宣言牌')).toBeTruthy();
+  expect(river.getByTitle('一饼 · 手切')).toBeTruthy();
+  expect(river.getByTitle('二饼 · 摸切')).toBeTruthy();
+  expect(river.getByTitle('三饼 · 手切 · 已被鸣走')).toBeTruthy();
+  expect(river.getByTitle('四饼 · 摸切 · 已被鸣走 · 立直宣言牌')).toBeTruthy();
 });
 
 it('副露保留全部牌和来源，暗杠仍只展示中间两张', () => {

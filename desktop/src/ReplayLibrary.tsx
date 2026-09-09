@@ -146,7 +146,6 @@ export function ReplayLibrary({
       <div className="library-heading">
         <div>
           <h2 id="replay-library-title">牌谱库</h2>
-          <p>导入和下载的牌谱会自动保存，可离线打开。</p>
         </div>
         <button onClick={() => void openDirectory()} disabled={openingDirectory}>
           打开数据文件夹
@@ -283,14 +282,11 @@ export function ReplayLibrary({
           </p>
         )}
       </div>
-      <footer>
-        <span>
-          {list
-            ? `${list.replays.length} 份牌谱 · 同一牌谱可有多个会话`
-            : '牌谱与会话保存在同一数据目录'}
-        </span>
-        {list && <small title={list.directory}>{list.directory}</small>}
-      </footer>
+      {list && (
+        <footer>
+          <span>{list.replays.length} 份牌谱</span>
+        </footer>
+      )}
       {deletion && (
         <DeleteDialog
           title="删除牌谱"

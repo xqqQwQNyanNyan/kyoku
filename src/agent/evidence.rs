@@ -156,7 +156,6 @@ pub(super) fn position_evidence(
         "limitations": [
             "unseen_includes_opponent_hands",
             "winning_shape_is_not_legal_agari",
-            "q_is_not_probability_or_expected_points",
             "recommended_overrides_q_ranking",
             "kan_q_is_separate",
             "conditional_scoring_requires_analysis_tool",

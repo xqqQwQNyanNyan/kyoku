@@ -107,7 +107,7 @@ impl ComparisonContext {
         })
     }
 
-    /// 枚举全部仍有不可见副本的摸牌分支；枚数仅作覆盖统计，不当作事件概率。
+    /// 枚举全部仍有未见副本的摸牌分支；枚数仅作覆盖统计，不当作事件概率。
     pub(crate) fn compare_all(
         &self,
         first: Tile,
@@ -139,7 +139,7 @@ impl ComparisonContext {
         let followup = match draw {
             None => None,
             Some(draw) => {
-                // 切出的牌仍然可见；假设摸入的牌才会让不可见枚数减少一张。
+                // 切出的牌仍然可见；假设摸入的牌才会让未见枚数减少一张。
                 let mut unseen = self.unseen;
                 unseen[draw.as_u8() as usize] -= 1;
                 let tile = Tile::try_from(draw.as_u8())

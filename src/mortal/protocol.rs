@@ -26,7 +26,7 @@ pub enum Action {
     Pass,
 }
 
-/// 一个可选动作的原始 Q 值；不是和牌率、置信度或期望点数。
+/// 一个可选动作的原始 Q 值。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Candidate {
     pub action: Action,

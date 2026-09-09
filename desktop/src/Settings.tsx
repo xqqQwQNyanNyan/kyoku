@@ -217,9 +217,6 @@ export function SettingsPanel({ api, onClose }: { api: Bridge; onClose: () => vo
             data-settings-tab="connection"
             hidden={tab !== 'connection'}
           >
-            <p className="settings-description">
-              配置 Agent 问答服务。回放和本地分析无需 API Key。
-            </p>
             <fieldset disabled={!saved || !!busy}>
               <label htmlFor="llm-endpoint">服务地址</label>
               <input
@@ -373,7 +370,9 @@ export function SettingsPanel({ api, onClose }: { api: Bridge; onClose: () => vo
             </p>
           )}
           <div className="settings-actions">
-            <small>保存问答服务设置</small>
+            <p className="settings-footnote">
+              连接测试可能产生费用，不会自动保存；保存设置会保留历史会话。
+            </p>
             <button
               type="button"
               disabled={
@@ -393,9 +392,6 @@ export function SettingsPanel({ api, onClose }: { api: Bridge; onClose: () => vo
               {busy === 'save' ? '正在保存…' : '保存设置'}
             </button>
           </div>
-          <p className="settings-footnote">
-            连接测试可能产生费用，不会自动保存；保存设置会保留历史会话。
-          </p>
         </footer>
       </form>
     </dialog>

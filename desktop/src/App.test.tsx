@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
+import { differsFromRecommendation } from './Analysis';
 import type { Bridge, Decision, Frame, Replay, SessionView } from './types';
 import { examples } from './examples';
 import { sessionTitle } from './display';
@@ -236,7 +237,7 @@ async function openChat() {
 }
 
 async function openLink() {
-  await userEvent.click(screen.getByRole('button', { name: '＋ 导入牌谱' }));
+  await userEvent.click(screen.getByRole('button', { name: '＋ 选择牌谱' }));
   await userEvent.click(screen.getByRole('button', { name: /天凤.*雀魂链接/ }));
 }
 
@@ -470,7 +471,7 @@ describe('复盘工具标签', () => {
     await load(bridge);
     await userEvent.click(screen.getAllByRole('button', { name: '分析此玩家' })[0]);
     await screen.findByRole('button', { name: '分析已完成' });
-    await userEvent.click(screen.getByRole('button', { name: '下一决策 ›' }));
+    await userEvent.click(screen.getByRole('button', { name: '下一决策' }));
     await openChat();
     await userEvent.click(screen.getByText('这里的几个选择差在哪里？'));
     await screen.findByText('【计算】测试回答');
@@ -498,7 +499,7 @@ describe('复盘工具标签', () => {
     await load(bridge);
     await userEvent.click(screen.getAllByRole('button', { name: '分析此玩家' })[0]);
     await screen.findByRole('button', { name: '分析已完成' });
-    await userEvent.click(screen.getByRole('button', { name: '下一决策 ›' }));
+    await userEvent.click(screen.getByRole('button', { name: '下一决策' }));
     await openChat();
     await userEvent.click(screen.getByText('这里的几个选择差在哪里？'));
     await userEvent.click(screen.getByRole('tab', { name: '决策分析' }));
@@ -534,16 +535,16 @@ describe('统一导入入口', () => {
     render(<App api={bridge} />);
     expect(screen.queryByRole('button', { name: '链接导入' })).toBeNull();
     expect(screen.queryByRole('button', { name: '粘贴天凤 / 雀魂链接' })).toBeNull();
-    await userEvent.click(screen.getByRole('button', { name: '导入牌谱 ↗' }));
-    expect(screen.getByRole('dialog', { name: '导入牌谱' })).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: '选择牌谱 ↗' }));
+    expect(screen.getByRole('dialog', { name: '选择牌谱' })).toBeTruthy();
     expect(screen.getByRole('button', { name: /本地文件/ })).toBeTruthy();
     expect(screen.getByRole('button', { name: /天凤.*雀魂链接/ })).toBeTruthy();
     await userEvent.click(screen.getByRole('button', { name: /示例牌谱/ }));
     await userEvent.click(screen.getByRole('button', { name: '导入示例' }));
     await screen.findByLabelText('牌谱进度');
     await userEvent.click(screen.getByLabelText('下一事件'));
-    await userEvent.click(screen.getByRole('button', { name: '＋ 导入牌谱' }));
-    const dialog = screen.getByRole('dialog', { name: '导入牌谱' });
+    await userEvent.click(screen.getByRole('button', { name: '＋ 选择牌谱' }));
+    const dialog = screen.getByRole('dialog', { name: '选择牌谱' });
     fireEvent.keyDown(dialog, { code: 'ArrowRight' });
     expect((screen.getByLabelText('牌谱进度') as HTMLInputElement).value).toBe('1');
     fireEvent(dialog, new Event('cancel', { bubbles: false, cancelable: true }));
@@ -554,7 +555,7 @@ describe('统一导入入口', () => {
   it('选择本地文件后沿用文件导入，成功时关闭弹窗', async () => {
     const bridge = api();
     render(<App api={bridge} />);
-    await userEvent.click(screen.getByRole('button', { name: '＋ 导入牌谱' }));
+    await userEvent.click(screen.getByRole('button', { name: '＋ 选择牌谱' }));
     const fileInput = screen.getByLabelText('选择天凤牌谱文件');
     const choose = vi.spyOn(fileInput, 'click');
     await userEvent.click(screen.getByRole('button', { name: /本地文件/ }));
@@ -572,7 +573,7 @@ describe('统一导入入口', () => {
     const bridge = api();
     vi.mocked(bridge.importLog).mockRejectedValueOnce({ message: '示例导入失败' });
     render(<App api={bridge} />);
-    await userEvent.click(screen.getByRole('button', { name: '＋ 导入牌谱' }));
+    await userEvent.click(screen.getByRole('button', { name: '＋ 选择牌谱' }));
     await userEvent.click(screen.getByRole('button', { name: /示例牌谱/ }));
     const select = screen.getByRole('combobox', { name: '选择示例牌谱' });
     await userEvent.click(select);
@@ -591,7 +592,7 @@ describe('统一导入入口', () => {
     );
     expect(screen.getByText('rinshan')).toBeTruthy();
     expect(screen.queryByRole('dialog')).toBeNull();
-    await userEvent.click(screen.getByRole('button', { name: '＋ 导入牌谱' }));
+    await userEvent.click(screen.getByRole('button', { name: '＋ 选择牌谱' }));
     await userEvent.click(screen.getByRole('button', { name: /示例牌谱/ }));
     await userEvent.click(screen.getByRole('combobox', { name: '选择示例牌谱' }));
     await userEvent.click(screen.getByRole('option', { name: '双响' }));
@@ -755,7 +756,7 @@ describe('天凤 / 雀魂链接导入', () => {
     await load(bridge);
     await userEvent.click(screen.getAllByRole('button', { name: '分析此玩家' })[0]);
     await screen.findByRole('button', { name: '分析已完成' });
-    await userEvent.click(screen.getByRole('button', { name: '下一决策 ›' }));
+    await userEvent.click(screen.getByRole('button', { name: '下一决策' }));
     await openChat();
     await userEvent.click(screen.getByText('这里的几个选择差在哪里？'));
     await screen.findByText('【计算】测试回答');
@@ -763,12 +764,12 @@ describe('天凤 / 雀魂链接导入', () => {
     const input = screen.getByLabelText('牌谱链接');
     await userEvent.type(input, link);
     fireEvent.keyDown(input, { code: 'ArrowRight' });
-    expect(screen.getByTestId('event-caption').textContent).toBe('自己 · 摸牌 一筒');
+    expect(screen.getByTestId('event-caption').textContent).toBe('自己 · 摸牌 一饼');
     await userEvent.click(screen.getByRole('button', { name: '导入链接' }));
     await screen.findByText('下载天凤牌谱超时，请重试');
     expect((input as HTMLInputElement).value).toBe(link);
-    expect(screen.getByText('test')).toBeTruthy();
-    expect(screen.getByTestId('event-caption').textContent).toBe('自己 · 摸牌 一筒');
+    expect(screen.getByText('test', { selector: '.document-title' })).toBeTruthy();
+    expect(screen.getByTestId('event-caption').textContent).toBe('自己 · 摸牌 一饼');
     expect(screen.getByText('【计算】测试回答')).toBeTruthy();
     await userEvent.click(screen.getByRole('button', { name: '导入链接' }));
     await screen.findByText(link);
@@ -820,7 +821,7 @@ describe('完整回放与问答边界', () => {
     messages.scrollTo = scrollTo;
     await userEvent.click(screen.getAllByRole('button', { name: '分析此玩家' })[0]);
     await screen.findByRole('button', { name: '分析已完成' });
-    await userEvent.click(screen.getByRole('button', { name: '下一决策 ›' }));
+    await userEvent.click(screen.getByRole('button', { name: '下一决策' }));
     await openChat();
     await userEvent.click(screen.getByText('这里的几个选择差在哪里？'));
     await screen.findByText('【计算】测试回答');
@@ -918,13 +919,13 @@ describe('完整回放与问答边界', () => {
     await load(bridge);
     await userEvent.click(screen.getAllByRole('button', { name: '分析此玩家' })[0]);
     await screen.findByRole('button', { name: '分析已完成' });
-    await userEvent.click(screen.getByRole('button', { name: '下一决策 ›' }));
+    await userEvent.click(screen.getByRole('button', { name: '下一决策' }));
     expect(document.querySelector('.recommendation strong')?.textContent).toBe('切 二万');
     await openChat();
     const input = screen.getByLabelText('复盘问题');
     await userEvent.type(input, '比较一下');
     fireEvent.keyDown(input, { code: 'ArrowRight' });
-    expect(screen.getByTestId('event-caption').textContent).toBe('自己 · 摸牌 一筒');
+    expect(screen.getByTestId('event-caption').textContent).toBe('自己 · 摸牌 一饼');
   });
 
   it('回答期间切换事件仍显示同一会话，追问带上新位置', async () => {
@@ -934,7 +935,7 @@ describe('完整回放与问答边界', () => {
     await load(bridge);
     await userEvent.click(screen.getAllByRole('button', { name: '分析此玩家' })[0]);
     await screen.findByRole('button', { name: '分析已完成' });
-    await userEvent.click(screen.getByRole('button', { name: '下一决策 ›' }));
+    await userEvent.click(screen.getByRole('button', { name: '下一决策' }));
     await openChat();
     await userEvent.click(screen.getByText('这里的几个选择差在哪里？'));
     await waitFor(() => expect(bridge.ask).toHaveBeenCalledOnce());
@@ -977,7 +978,7 @@ describe('完整回放与问答边界', () => {
       pending.resolve([decision]);
     });
     expect(screen.queryByText('分析已完成')).toBeNull();
-    expect((screen.getByRole('button', { name: '下一决策 ›' }) as HTMLButtonElement).disabled).toBe(
+    expect((screen.getByRole('button', { name: '下一决策' }) as HTMLButtonElement).disabled).toBe(
       true,
     );
   });
@@ -992,7 +993,7 @@ describe('完整回放与问答边界', () => {
     await userEvent.click(screen.getByLabelText('下一事件'));
     await userEvent.click(screen.getAllByRole('button', { name: '分析此玩家' })[0]);
     await screen.findByText('测试：模型未准备');
-    expect(screen.getByTestId('event-caption').textContent).toBe('自己 · 摸牌 一筒');
+    expect(screen.getByTestId('event-caption').textContent).toBe('自己 · 摸牌 一饼');
     await userEvent.click(screen.getAllByRole('button', { name: '分析此玩家' })[0]);
     await screen.findByRole('button', { name: '分析已完成' });
   });
@@ -1101,7 +1102,7 @@ describe('独立会话与历史上下文', () => {
     await load(bridge);
     await userEvent.click(screen.getAllByRole('button', { name: '分析此玩家' })[0]);
     await screen.findByRole('button', { name: '分析已完成' });
-    await userEvent.click(screen.getByRole('button', { name: '下一决策 ›' }));
+    await userEvent.click(screen.getByRole('button', { name: '下一决策' }));
     await openChat();
     await userEvent.click(screen.getByText('这里的几个选择差在哪里？'));
     await screen.findByText('【计算】测试回答');
@@ -1167,7 +1168,7 @@ describe('独立会话与历史上下文', () => {
     expect(screen.getByText('东一局的押引', { selector: '.session-title' })).toBeTruthy();
   });
 
-  it('重新打开应用后，不导入牌谱也能查看轨迹并继续历史会话', async () => {
+  it('重新打开应用后，不选择牌谱也能查看轨迹并继续历史会话', async () => {
     const bridge = api();
     await start(bridge);
     const id = vi.mocked(bridge.ask).mock.calls[0][3];
@@ -1470,7 +1471,7 @@ describe('牌谱会话的恢复与定位', () => {
     expect(screen.getByLabelText('当前会话').textContent).toBe(
       sessionTitle((await bridge.getSession(id)).title),
     );
-    await userEvent.click(screen.getByRole('button', { name: '玩家 0 · G1' }));
+    await userEvent.click(screen.getByRole('button', { name: '自己 · G1' }));
     expect((screen.getByLabelText('牌谱进度') as HTMLInputElement).value).toBe('0');
     expect(screen.getByRole('combobox', { name: '复盘玩家' }).textContent).toBe('自己');
     expect(screen.getByText('【计算】测试回答')).toBeTruthy();
@@ -1696,4 +1697,127 @@ describe('局间结算', () => {
     expect(slider.value).toBe('4');
     expect(screen.queryByRole('dialog')).toBeNull();
   });
+});
+
+it('播放倍速使用自定义菜单，键盘选择不会推进牌谱', async () => {
+  await load(api());
+  const picker = screen.getByRole('combobox', { name: '播放速度' });
+  expect(picker.tagName).toBe('BUTTON');
+  await userEvent.click(picker);
+  await userEvent.click(screen.getByRole('option', { name: '2×' }));
+  expect(picker.textContent).toContain('2×');
+  picker.focus();
+  await userEvent.keyboard('{ArrowDown}{ArrowDown}{Enter}');
+  expect(picker.textContent).toContain('4×');
+  await userEvent.click(picker);
+  await userEvent.click(screen.getByRole('option', { name: '8×' }));
+  expect(picker.textContent).toContain('8×');
+  await userEvent.click(picker);
+  await userEvent.click(screen.getByRole('option', { name: '16×' }));
+  expect(picker.textContent).toContain('16×');
+  expect(screen.queryByRole('listbox', { name: '播放速度' })).toBeNull();
+  expect((screen.getByLabelText('牌谱进度') as HTMLInputElement).value).toBe('0');
+});
+
+it('顶部实时累计用量，完成后不重复计费', async () => {
+  const bridge = api();
+  const pending = deferred<SessionView>();
+  vi.mocked(bridge.ask).mockReturnValueOnce(pending.promise);
+  await load(bridge);
+  await openChat();
+  await userEvent.type(screen.getByLabelText('复盘问题'), '第一问{Enter}');
+  const call = vi.mocked(bridge.ask).mock.calls[0];
+  const usage = {
+    input_tokens: 100,
+    output_tokens: 20,
+    cached_input_tokens: null,
+    reasoning_tokens: null,
+    cost: 0.01,
+    prices: { currency: 'USD', input: 1, output: 1, cached_input: null },
+  };
+  act(() => call[6].onProgress({ phase: 'usage', requests: [usage], budget: null }));
+  expect(screen.getByText('会话累计 · 1 次请求 · 输入 100 / 输出 20 Token')).toBeTruthy();
+  act(() => call[6].onProgress({ phase: 'usage', requests: [usage, usage], budget: null }));
+  expect(screen.getByText('会话累计 · 2 次请求 · 输入 200 / 输出 40 Token')).toBeTruthy();
+  const saved = savedSession(call[3], '第一答', '第一问');
+  saved.archive.turns[0].usage = [usage, usage];
+  await act(async () => pending.resolve(saved));
+  expect(screen.getAllByText('估算费用 0.020000 USD')).toHaveLength(1);
+  expect(screen.getByRole('log', { name: '复盘对话' }).querySelector('.usage-summary')).toBeNull();
+  const second = deferred<SessionView>();
+  vi.mocked(bridge.ask).mockReturnValueOnce(second.promise);
+  await userEvent.type(screen.getByLabelText('复盘问题'), '第二问{Enter}');
+  const next = vi.mocked(bridge.ask).mock.calls[1];
+  act(() => next[6].onProgress({ phase: 'usage', requests: [usage], budget: null }));
+  expect(screen.getByText('会话累计 · 3 次请求 · 输入 300 / 输出 60 Token')).toBeTruthy();
+  saved.archive.turns.push({
+    ...saved.archive.turns[0],
+    question: '第二问',
+    answer: '第二答',
+    usage: [usage],
+  });
+  await act(async () => second.resolve({ ...saved }));
+  expect(screen.getByText('会话累计 · 3 次请求 · 输入 300 / 输出 60 Token')).toBeTruthy();
+});
+
+it('决策箭头逐点跳转，失误按钮跳过与推荐一致的动作', async () => {
+  const bridge = api();
+  vi.mocked(bridge.analyze).mockResolvedValue(
+    [1, 2, 3, 4].map((event_index) => ({
+      ...decision,
+      event_index,
+      actual: { kind: 'taken', action: { type: 'dahai', pai: event_index % 2 ? '2m' : '1m' } },
+    })),
+  );
+  await load(bridge);
+  await userEvent.click(screen.getAllByRole('button', { name: '分析此玩家' })[0]);
+  await screen.findByRole('button', { name: '分析已完成' });
+  const slider = screen.getByLabelText('牌谱进度') as HTMLInputElement;
+  expect((screen.getByRole('button', { name: '上一失误' }) as HTMLButtonElement).disabled).toBe(
+    true,
+  );
+  await userEvent.click(screen.getByRole('button', { name: '下一决策' }));
+  expect(slider.value).toBe('1');
+  await userEvent.click(screen.getByRole('button', { name: '下一失误' }));
+  expect(slider.value).toBe('3');
+  expect((screen.getByRole('button', { name: '下一失误' }) as HTMLButtonElement).disabled).toBe(
+    true,
+  );
+  await userEvent.click(screen.getByRole('button', { name: '上一失误' }));
+  expect(slider.value).toBe('1');
+  await userEvent.click(screen.getByRole('button', { name: '上一决策' }));
+  expect(slider.value).toBe('0');
+});
+
+it('推荐比较区分赤牌和鸣牌用牌，跳过未知选择，正确识别过牌', () => {
+  const compare = (
+    actual: Decision['actual'],
+    recommended: NonNullable<Decision['evidence']['mortal']['decision']>['recommended'],
+  ) =>
+    differsFromRecommendation({
+      ...decision,
+      actual,
+      evidence: {
+        ...decision.evidence,
+        mortal: {
+          ...decision.evidence.mortal,
+          decision: { ...decision.evidence.mortal.decision!, recommended },
+        },
+      },
+    });
+  expect(compare({ kind: 'passed' }, { type: 'none' })).toBe(false);
+  expect(compare({ kind: 'passed' }, { type: 'pon', pai: '1p' })).toBe(true);
+  expect(compare({ kind: 'unresolved' }, { type: 'dahai', pai: '2m' })).toBe(false);
+  expect(
+    compare({ kind: 'taken', action: { type: 'dahai', pai: '5pr' } }, { type: 'dahai', pai: '5p' }),
+  ).toBe(true);
+  const chi = { type: 'chi', pai: '3m', target: 3, consumed: ['1m', '2m'] };
+  expect(compare({ kind: 'taken', action: chi }, { ...chi, consumed: ['2m', '1m'] })).toBe(false);
+  expect(compare({ kind: 'taken', action: chi }, { ...chi, consumed: ['4m', '5m'] })).toBe(true);
+  expect(
+    compare(
+      { kind: 'taken', action: { type: 'ankan', consumed: ['1p', '1p', '1p', '1p'] } },
+      { type: 'ankan', consumed: ['2p', '2p', '2p', '2p'] },
+    ),
+  ).toBe(true);
 });

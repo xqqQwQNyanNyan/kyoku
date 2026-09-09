@@ -117,6 +117,19 @@ h2 {
   border-bottom: 1px solid var(--line);
   background: #121c19;
 }
+.header-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 8px;
+}
+.header-actions > button {
+  width: 92px;
+  height: 34px;
+  padding: 0 8px;
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+}
 .brand {
   display: flex;
   align-items: center;
@@ -236,6 +249,15 @@ h2 {
   text-align: center;
   letter-spacing: 0.09em;
 }
+.welcome h1 > span,
+.welcome h1 > em {
+  display: block;
+  position: relative;
+  padding-left: 0.09em;
+}
+.welcome .title-punctuation {
+  position: absolute;
+}
 .welcome em {
   font-style: normal;
   color: var(--accent);
@@ -259,13 +281,6 @@ h2 {
   color: #75867d;
   font-size: 12px;
   margin-top: 14px;
-}
-.welcome-footer {
-  margin-top: 40px;
-  display: flex;
-  gap: 54px;
-  color: #89998f;
-  font-size: 12px;
 }
 .workspace {
   display: grid;
@@ -777,11 +792,20 @@ input[type='range'] {
   background: #d8c794;
   color: #24382c;
 }
-.playback-buttons select {
+.playback-buttons .custom-select {
+  width: 64px;
+}
+.playback-buttons .select-trigger {
   font-size: 10px;
-  padding: 4px;
-  border: 0;
-  background: transparent;
+  padding: 2px 7px;
+  gap: 6px;
+  border: 1px solid #ffffff20;
+}
+.playback-buttons .select-menu {
+  font-size: 10px;
+}
+.playback-buttons .select-menu li {
+  padding: 5px 8px;
 }
 .decision-buttons {
   display: flex;
@@ -802,22 +826,27 @@ input[type='range'] {
 .review-tabs {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 6px;
-  padding: 10px 12px;
   background: #121c19;
   border-bottom: 1px solid var(--line);
 }
 .review-tabs button {
-  padding: 10px 8px;
-  border-color: transparent;
+  padding: 14px 8px;
+  border: 0;
+  border-radius: 0;
   background: transparent;
   color: var(--muted);
   font-size: 12px;
 }
+.review-tabs button + button {
+  border-left: 1px solid var(--line);
+}
 .review-tabs button[aria-selected='true'] {
-  background: #d5bc8614;
-  border-color: #d5bc8638;
+  background: #d5bc861c;
   color: var(--accent);
+  box-shadow: inset 0 -2px var(--accent);
+}
+.review-tabs button:focus-visible {
+  outline-offset: -3px;
 }
 .review-tabpanel {
   display: flex;
@@ -960,22 +989,8 @@ tr.chosen {
 .effective-tiles small {
   color: #91a88f;
 }
-.evidence {
-  color: #91a88f;
-  font-size: 10px;
-}
 summary {
   cursor: pointer;
-}
-.evidence pre {
-  font-size: 10px;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  background: #0c1711;
-  padding: 12px;
-}
-.evidence p {
-  margin-top: 8px;
 }
 .chat-panel {
   display: flex;
@@ -1019,22 +1034,12 @@ summary {
   border: 1px solid #ffffff15;
   border-radius: 4px;
 }
-.chat-context {
-  font-size: 10px;
-  color: #7d9c86;
-  padding: 10px 20px;
-  background: #90ad8710;
-}
-.chat-context .status-dot {
-  width: 4px;
-  height: 4px;
-  margin-right: 6px;
-}
 .messages {
   flex: 1;
   overflow: auto;
   overscroll-behavior: contain;
   min-height: 0;
+  border-top: 1px solid #ffffff24;
   padding: 20px;
 }
 .chat-welcome h3 {
@@ -1081,11 +1086,24 @@ summary {
   color: #9bb291;
   margin-bottom: 8px;
 }
+.message.user .message-author {
+  margin-bottom: 2px;
+}
+.message.user .session-location {
+  margin-top: 0;
+}
 .message.user {
   border: 1px solid #ffffff0c;
   background: #25372b;
   padding: 12px;
   border-radius: 8px;
+}
+.message.user:has(+ .session-trace),
+.message.user:has(+ .thinking) {
+  margin-bottom: 4px;
+}
+.message.user + .thinking {
+  padding-top: 4px;
 }
 .message p + p {
   margin-top: 10px;
@@ -1145,7 +1163,7 @@ summary {
   line-height: 1.8;
 }
 .composer {
-  margin: 12px 16px 0;
+  margin: 12px 16px 16px;
   border: 1px solid #b4cba22a;
   background: #1c2b21;
   border-radius: 9px;
@@ -1183,12 +1201,6 @@ summary {
   background: #c5c18f;
   color: #223724;
   font-size: 19px;
-}
-.chat-footnote {
-  color: #607865;
-  font-size: 9px;
-  line-height: 1.7;
-  padding: 9px 20px 16px;
 }
 ::-webkit-scrollbar {
   width: 5px;
@@ -1577,17 +1589,6 @@ summary {
 .chat-heading p {
   overflow-wrap: anywhere;
 }
-.session-context {
-  padding: 8px 20px;
-  font-size: 10px;
-  max-height: 150px;
-  overflow: auto;
-  border-bottom: 1px solid #ffffff12;
-  flex-shrink: 0;
-}
-.session-context p {
-  overflow-wrap: anywhere;
-}
 .session-trace {
   font-size: 11px;
   color: #a2b9a6;
@@ -1637,8 +1638,7 @@ details[open] > .trace-step::before {
   min-width: 0;
   overflow-wrap: anywhere;
 }
-.session-trace pre,
-.session-context pre {
+.session-trace pre {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   max-height: 260px;
@@ -1913,6 +1913,10 @@ button.session-location:hover {
 .replay-library::backdrop {
   background: #080f0dcc;
 }
+.library-heading h2,
+.history-heading h2 {
+  font-size: 18px;
+}
 .library-heading,
 .library-toolbar {
   display: flex;
@@ -2047,22 +2051,28 @@ button.session-location:hover {
   min-height: 0;
 }
 .settings-tabs {
-  display: flex;
-  gap: 6px;
-  padding: 8px 0 16px;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  background: #121c19;
   border-bottom: 1px solid var(--line);
 }
 .settings-tabs button {
-  flex: 1;
-  border-color: transparent;
+  border: 0;
+  border-radius: 0;
   background: transparent;
   color: var(--muted);
-  padding: 10px 8px;
+  padding: 14px 8px;
+}
+.settings-tabs button + button {
+  border-left: 1px solid var(--line);
 }
 .settings-tabs button[aria-selected='true'] {
-  color: var(--gold);
-  background: #d9c78614;
-  border-color: #d9c78640;
+  color: var(--accent);
+  background: #d5bc861c;
+  box-shadow: inset 0 -2px var(--accent);
+}
+.settings-tabs button:focus-visible {
+  outline-offset: -3px;
 }
 .settings-content {
   flex: 1;
@@ -2092,15 +2102,17 @@ button.session-location:hover {
   padding-top: 14px;
 }
 .settings-footer .settings-actions {
+  justify-content: flex-end;
   margin-top: 0;
   gap: 10px;
 }
-.settings-footer .settings-actions > small {
-  margin-right: auto;
-  margin-top: 0;
-}
 .settings-footer .settings-footnote {
-  margin-top: 10px;
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+}
+.settings-footer .settings-actions > button {
+  flex-shrink: 0;
 }
 .settings-footer .settings-error,
 .settings-footer .settings-notice {
@@ -2124,6 +2136,33 @@ button.session-location:hover {
   padding: 8px 16px;
   font-size: 12px;
   color: var(--muted);
+}
+.session-model {
+  min-width: 0;
+  padding: 2px 6px;
+  border: 1px solid #bccea522;
+  border-radius: 4px;
+  background: #bccea508;
+  font-size: 10px;
+  line-height: 1.4;
+  color: #9bad9d;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.chat-title-row h2 {
+  flex-shrink: 0;
+}
+.session-picker:has(+ .usage-summary) {
+  padding-bottom: 2px;
+}
+.chat-panel > .usage-summary {
+  padding: 4px 20px 8px;
 }
 .usage-details {
   overflow-x: auto;

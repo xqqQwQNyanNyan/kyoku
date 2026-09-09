@@ -54,7 +54,7 @@ pub struct ModelOptions {
 impl Default for ModelOptions {
     fn default() -> Self {
         Self {
-            max_output_tokens: NonZeroU64::new(4096).unwrap(),
+            max_output_tokens: NonZeroU64::new(16384).unwrap(),
             context_tokens: None,
             thinking: Thinking::Default,
             chat_token_limit: ChatTokenLimit::default(),
@@ -112,9 +112,9 @@ mod tests {
     #[test]
     fn defaults_and_partial_configuration_preserve_model_defaults() {
         let options: ModelOptions =
-            serde_json::from_value(json!({"max_output_tokens": 16384})).unwrap();
+            serde_json::from_value(json!({"max_output_tokens": 32768})).unwrap();
         options.validate().unwrap();
-        assert_eq!(options.max_output_tokens.get(), 16384);
+        assert_eq!(options.max_output_tokens.get(), 32768);
         assert_eq!(options.thinking, Thinking::Default);
         assert!(options.token_budget.is_none());
     }
@@ -131,7 +131,7 @@ mod tests {
             assert!(serde_json::from_value::<ModelOptions>(value).is_err());
         }
         for value in [
-            json!({"context_tokens":4096}),
+            json!({"context_tokens":16384}),
             json!({"max_output_tokens":1000000001}),
             json!({"prices":{"currency":"usd","input":1,"output":1}}),
             json!({"prices":{"currency":"USD","input":-1,"output":1}}),

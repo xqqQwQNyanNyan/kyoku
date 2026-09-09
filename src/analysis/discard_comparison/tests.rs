@@ -89,7 +89,7 @@ fn discarded_tiles_stay_visible_and_hypothetical_draw_consumes_one_copy() {
             assert_eq!(candidate.unseen, expected);
         }
     }
-    // 切东后再摸东、再切 2p，牌形与先切 2p 相同，但东的不可见枚数少一张。
+    // 切东后再摸东、再切 2p，牌形与先切 2p 相同，但东的未见枚数少一张。
     let followup = comparison.second.followup.unwrap();
     let discard_two_pin = followup
         .next_discards

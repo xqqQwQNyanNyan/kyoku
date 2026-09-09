@@ -47,6 +47,7 @@ pub(crate) struct SessionDocument {
 pub(crate) struct SessionView {
     #[serde(flatten)]
     pub document: SessionDocument,
+    player_names: Option<[String; 4]>,
     busy: bool,
 }
 
@@ -223,6 +224,27 @@ impl SessionStore {
         Ok(self.directory.join(format!("{id}.json")))
     }
 
+    fn view(&self, document: SessionDocument, busy: bool) -> SessionView {
+        let player_names = document.game.as_ref().and_then(|game| {
+            let saved;
+            let events = if game.events.is_empty() {
+                saved = self.library.get(&game.key).ok()?;
+                &saved.game.events
+            } else {
+                &game.events
+            };
+            events.iter().find_map(|event| match event {
+                convlog::Event::StartGame { names, .. } => Some(names.clone()),
+                _ => None,
+            })
+        });
+        SessionView {
+            document,
+            player_names,
+            busy,
+        }
+    }
+
     fn begin(&self, id: &str) -> Result<SessionOperation<'_>, UiError> {
         self.path(id)?;
         if !lock(&self.gate)?.insert(id.into()) {
@@ -387,7 +409,7 @@ impl SessionStore {
         if was_busy && !busy {
             document = read(&path)?;
         }
-        Ok(SessionView { document, busy })
+        Ok(self.view(document, busy))
     }
 
     /// 修改本地标题，不改变问题和模型上下文。
@@ -407,10 +429,7 @@ impl SessionStore {
         document.title = title.into();
         document.updated_at = now().max(document.updated_at.saturating_add(1));
         self.save(&document)?;
-        Ok(SessionView {
-            document,
-            busy: false,
-        })
+        Ok(self.view(document, false))
     }
 
     /// 删除会话文件，保留关联牌谱；与问答和位置保存互斥。
@@ -550,10 +569,7 @@ impl SessionStore {
                 .save(game, &document.context_label, ReplayOrigin::File)?;
         }
         self.save(&document)?;
-        Ok(SessionView {
-            document,
-            busy: false,
-        })
+        Ok(self.view(document, false))
     }
 
     pub fn export(&self, id: &str, directory: &Path) -> Result<String, UiError> {
@@ -695,10 +711,7 @@ impl SessionStore {
         document.updated_at = now().max(document.updated_at.saturating_add(1));
         self.save(&document)?;
         result.map_err(|e| UiError::new("agent", e.to_string()))?;
-        Ok(SessionView {
-            document,
-            busy: false,
-        })
+        Ok(self.view(document, false))
     }
 }
 

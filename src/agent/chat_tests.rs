@@ -81,7 +81,7 @@ fn chat_roundtrip_preserves_tool_groups_markdown_and_followups_without_repairs()
         false
     );
     assert_eq!(request["tool_choice"], json!("auto"));
-    assert_eq!(request["max_completion_tokens"], 4096);
+    assert_eq!(request["max_completion_tokens"], 16384);
     assert_eq!(request["store"], false);
     assert_eq!(request["parallel_tool_calls"], true);
     for field in ["instructions", "input", "include", "max_output_tokens"] {

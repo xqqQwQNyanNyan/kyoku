@@ -26,6 +26,22 @@ export function actionText(action: Action) {
   return `${actions[action.type] ?? action.type}${action.pai ? ` ${tileName(action.pai)}` : ''}`;
 }
 
+export function differsFromRecommendation(decision: Decision) {
+  const recommended = decision.evidence.mortal.decision?.recommended;
+  if (!recommended || decision.actual.kind === 'unresolved') return false;
+  if (decision.actual.kind === 'passed') return recommended.type !== 'none';
+  const actual = decision.actual.action;
+  if (!actual) return false;
+  // 比较动作与用牌，保留赤牌差异；同张牌的摸切、手切不算推荐分歧。
+  return (
+    actual.type !== recommended.type ||
+    actual.pai !== recommended.pai ||
+    actual.target !== recommended.target ||
+    [...(actual.consumed ?? [])].sort().join(',') !==
+      [...(recommended.consumed ?? [])].sort().join(',')
+  );
+}
+
 export function Analysis({
   decision,
   ready,
@@ -95,7 +111,6 @@ export function Analysis({
                   ? actionText(decision.actual.action)
                   : '无法确定'}
             </span>
-            <span className="muted">Q 值不是概率</span>
           </div>
           <div className="candidate-scroll">
             <table>
@@ -104,7 +119,7 @@ export function Analysis({
                   <th>候选动作</th>
                   <th>Q 值</th>
                   <th>向听</th>
-                  <th>不可见进张枚数</th>
+                  <th>未见进张枚数</th>
                 </tr>
               </thead>
               <tbody>
@@ -162,14 +177,6 @@ export function Analysis({
                 ))}
               </div>
             )}
-            <p className="detail-line">不可见枚数包含对手手牌；完成牌形不代表可以合法和牌。</p>
-            <details className="evidence">
-              <summary>原始证据与模型信息</summary>
-              <p>
-                {decision.evidence.mortal.model.tag} · V{decision.evidence.mortal.model.version}
-              </p>
-              <pre>{JSON.stringify(decision.evidence, null, 2)}</pre>
-            </details>
           </div>
         </>
       )}

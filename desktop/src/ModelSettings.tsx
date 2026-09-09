@@ -2,7 +2,7 @@ import { Select } from './Select';
 import type { ModelOptions, TokenPrices } from './types';
 
 export const defaultModelOptions: ModelOptions = {
-  max_output_tokens: 4096,
+  max_output_tokens: 16384,
   context_tokens: null,
   thinking: 'default',
   chat_token_limit: 'max_completion_tokens',
@@ -58,10 +58,6 @@ export function ModelSettings({
           />
         </div>
       </div>
-      <small>
-        不支持思考参数时选“模型默认”。Chat 输出参数按服务商要求选择，DeepSeek 官方自动使用
-        max_tokens。
-      </small>
       <div className="settings-credentials">
         <div>
           <label htmlFor="llm-output">单次输出上限（Token）</label>
@@ -92,9 +88,6 @@ export function ModelSettings({
           />
         </div>
       </div>
-      <small>
-        上下文包含输入和输出，预检采用保守估算，不会裁剪历史。实际 Token 以服务商返回为准。
-      </small>
     </>
   );
 }
@@ -125,9 +118,6 @@ export function UsageSettings({
           change({ token_budget: e.target.value === '' ? null : Number(e.target.value) })
         }
       />
-      <small>
-        累计本轮输入与输出，预算不足或用量未知时停止继续调用。追问和重试重新计数；本地预算不是账单硬限额。
-      </small>
       <label className="settings-clear">
         <input
           type="checkbox"
@@ -200,9 +190,6 @@ export function UsageSettings({
               />
             </div>
           </div>
-          <small>
-            请填写服务商当前价格；费用仅供估算，以账单为准。思考 Token 已包含在输出中，不重复计费。
-          </small>
         </>
       )}
     </>

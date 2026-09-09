@@ -103,7 +103,6 @@ export function StorageSettings({
 
   return (
     <div className="storage-settings">
-      <p className="settings-description">牌谱和对话一起保存，切换位置后无需重启。</p>
       <label htmlFor="data-location">当前保存位置</label>
       <input id="data-location" readOnly value={location?.directory ?? '正在读取…'} />
       {location && !location.available && (
@@ -153,8 +152,7 @@ export function StorageSettings({
         </div>
       )}
       <small className="storage-help">
-        请先等待问答、导入和保存结束。迁移失败或取消时继续使用原目录。API
-        设置和内置模型的位置不随之改变。
+        请先等待问答、导入和保存结束。迁移失败或取消时继续使用原目录。
       </small>
       {error && (
         <p role="alert" className="settings-error">

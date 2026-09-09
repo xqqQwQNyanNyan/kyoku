@@ -131,10 +131,7 @@ pub(super) fn write_review(mut output: impl Write, review: &Review) -> io::Resul
             review.player.get_id()
         )?,
     }
-    writeln!(
-        output,
-        "Raw Q values are not probabilities or expected points."
-    )
+    Ok(())
 }
 
 fn tiles(values: &[Tile]) -> String {

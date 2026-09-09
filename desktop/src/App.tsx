@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import type { Bridge, Decision, Replay, SessionPosition, SessionView } from './types';
 import { bridge, errorMessage } from './bridge';
 import { Board, eventText } from './Board';
-import { Analysis } from './Analysis';
+import { Analysis, differsFromRecommendation } from './Analysis';
 import { Tile } from './Tile';
 import { SettingsPanel } from './Settings';
 import { useWindowScale } from './useWindowScale';
@@ -50,6 +50,7 @@ export default function App({ api = bridge }: { api?: Bridge }) {
   const importBusy = useRef(false);
   const frame = replay?.frames[index];
   const points = decisions[player];
+  const mistakes = points?.filter(differsFromRecommendation);
   const decision = frame ? points?.find((d) => d.event_index === frame.event_index) : undefined;
   const activeRound = replay?.rounds.findLastIndex((round) => round.frame_index <= index) ?? -1;
   const round = replay?.rounds[activeRound];
@@ -171,12 +172,13 @@ export default function App({ api = bridge }: { api?: Bridge }) {
     }
   }
 
-  function nextDecision(direction: -1 | 1) {
+  function nextDecision(direction: -1 | 1, mistakesOnly = false) {
     if (!replay || !frame || !points) return;
+    const candidates = mistakesOnly ? mistakes : points;
     const point =
       direction === 1
-        ? points.find((d) => d.event_index > frame.event_index)
-        : points.findLast((d) => d.event_index < frame.event_index);
+        ? candidates?.find((d) => d.event_index > frame.event_index)
+        : candidates?.findLast((d) => d.event_index < frame.event_index);
     if (point) jump(replay.frames.findIndex((f) => f.event_index === point.event_index));
   }
 
@@ -321,13 +323,11 @@ export default function App({ api = bridge }: { api?: Bridge }) {
         </div>
         <div className="document-heading">
           <div className="document-title" title={replay ? replayName(filename) : undefined}>
-            {replay ? (
+            {replay && (
               <>
                 <span className="status-dot" />
                 {replayName(filename)}
               </>
-            ) : (
-              '从一份牌谱，重新看懂每一步。'
             )}
           </div>
           {replay && (
@@ -358,36 +358,38 @@ export default function App({ api = bridge }: { api?: Bridge }) {
             />
           </div>
         )}
-        <button className="import-button" disabled={loading} onClick={openImport}>
-          {loading ? '正在读取…' : '＋ 导入牌谱'}
-        </button>
-        <button
-          onClick={() => {
-            setPlaying(false);
-            setError('');
-            setShowLibrary(true);
-          }}
-          disabled={loading}
-        >
-          牌谱库
-        </button>
-        <button
-          onClick={() => {
-            setPlaying(false);
-            setShowHistory(true);
-          }}
-        >
-          历史会话
-        </button>
-        <button
-          onClick={() => {
-            setPlaying(false);
-            setShowSettings(true);
-          }}
-          disabled={asking}
-        >
-          设置
-        </button>
+        <div className="header-actions">
+          <button className="import-button" disabled={loading} onClick={openImport}>
+            {loading ? '正在读取…' : '＋ 选择牌谱'}
+          </button>
+          <button
+            onClick={() => {
+              setPlaying(false);
+              setError('');
+              setShowLibrary(true);
+            }}
+            disabled={loading}
+          >
+            牌谱库
+          </button>
+          <button
+            onClick={() => {
+              setPlaying(false);
+              setShowHistory(true);
+            }}
+          >
+            历史会话
+          </button>
+          <button
+            onClick={() => {
+              setPlaying(false);
+              setShowSettings(true);
+            }}
+            disabled={asking}
+          >
+            设置
+          </button>
+        </div>
       </header>
       {showHistory && (
         <HistoryDialog
@@ -476,23 +478,21 @@ export default function App({ api = bridge }: { api?: Bridge }) {
           </div>
           <span className="eyebrow">REPLAY · COMPARE · UNDERSTAND</span>
           <h1>
-            再看一局，
-            <br />
-            <em>多懂一步。</em>
+            <span>
+              再看一局<span className="title-punctuation">，</span>
+            </span>
+            <em>
+              多懂一步<span className="title-punctuation">。</span>
+            </em>
           </h1>
           <p>
             回到每一次摸打，比较当时的选择，
             <br />和 Agent 一起梳理你的判断。
           </p>
           <button className="primary large" onClick={openImport} disabled={loading}>
-            {loading ? '正在读取牌谱…' : '导入牌谱'} <span>↗</span>
+            {loading ? '正在读取牌谱…' : '选择牌谱'} <span>↗</span>
           </button>
           <span className="welcome-hint">本地文件 · 天凤 / 雀魂链接 · 示例牌谱</span>
-          <div className="welcome-footer">
-            <span>01 完整牌局回放</span>
-            <span>02 Mortal 动作对比</span>
-            <span>03 局面问答</span>
-          </div>
         </main>
       ) : (
         <main className="workspace">
@@ -624,6 +624,14 @@ export default function App({ api = bridge }: { api?: Bridge }) {
                 </span>
                 <div className="playback-buttons">
                   <button
+                    aria-label="上一决策"
+                    title="上一决策"
+                    onClick={() => nextDecision(-1)}
+                    disabled={!points?.some((d) => d.event_index < frame.event_index)}
+                  >
+                    «
+                  </button>
+                  <button
                     aria-label="上一事件"
                     title="上一事件 ←"
                     onClick={() => jump(index - 1)}
@@ -650,29 +658,36 @@ export default function App({ api = bridge }: { api?: Bridge }) {
                   >
                     ›
                   </button>
-                  <select
-                    aria-label="播放速度"
-                    value={speed}
-                    onChange={(e) => setSpeed(Number(e.target.value))}
-                  >
-                    <option value="0.5">0.5×</option>
-                    <option value="1">1×</option>
-                    <option value="2">2×</option>
-                    <option value="4">4×</option>
-                  </select>
-                </div>
-                <div className="decision-buttons">
                   <button
-                    onClick={() => nextDecision(-1)}
-                    disabled={!points?.some((d) => d.event_index < frame.event_index)}
-                  >
-                    上一决策
-                  </button>
-                  <button
+                    aria-label="下一决策"
+                    title="下一决策"
                     onClick={() => nextDecision(1)}
                     disabled={!points?.some((d) => d.event_index > frame.event_index)}
                   >
-                    下一决策 ›
+                    »
+                  </button>
+                  <Select
+                    label="播放速度"
+                    value={String(speed)}
+                    options={[0.5, 1, 2, 4, 8, 16].map((value) => ({
+                      value: String(value),
+                      label: `${value}×`,
+                    }))}
+                    onChange={(value) => setSpeed(Number(value))}
+                  />
+                </div>
+                <div className="decision-buttons">
+                  <button
+                    onClick={() => nextDecision(-1, true)}
+                    disabled={!mistakes?.some((d) => d.event_index < frame.event_index)}
+                  >
+                    上一失误
+                  </button>
+                  <button
+                    onClick={() => nextDecision(1, true)}
+                    disabled={!mistakes?.some((d) => d.event_index > frame.event_index)}
+                  >
+                    下一失误
                   </button>
                 </div>
               </div>
@@ -745,6 +760,7 @@ export default function App({ api = bridge }: { api?: Bridge }) {
                 workspace={workspace}
                 id={chatId}
                 source={chatSource}
+                playerNames={replay.names}
                 ready={!!decision}
                 visible={reviewTab === 'chat' && !showHistory}
                 onFocus={() => setPlaying(false)}

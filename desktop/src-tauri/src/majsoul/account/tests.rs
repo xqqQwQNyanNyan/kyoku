@@ -216,3 +216,42 @@ fn stalled_process_has_a_bounded_response_wait() {
     drop(session);
     assert!(start.elapsed() < Duration::from_secs(5));
 }
+
+#[test]
+fn startup_failure_is_read_even_after_the_worker_has_exited() {
+    let mut command = Command::new("node");
+    command.args([
+        "-e",
+        "process.stdout.write('{\"error\":\"component_start_failed\"}\\n')",
+    ]);
+    let mut session = Session::spawn(command).unwrap();
+    session.child.wait().unwrap();
+    let response = session.request(&json!({ "action": "login" })).unwrap();
+    assert_eq!(response.error.as_deref(), Some("component_start_failed"));
+}
+
+#[test]
+fn network_and_component_failures_are_not_reported_as_account_logout() {
+    for (code, expected) in [
+        ("component_start_failed", "majsoul_runtime"),
+        ("component_failed", "majsoul_component"),
+        ("gateway_failed", "majsoul_network"),
+        ("connection_closed", "majsoul_connection"),
+        ("heartbeat_failed", "majsoul_network"),
+        ("account_logout", "majsoul_logout"),
+    ] {
+        let fixture = Fixture::new(&format!(
+            "require('node:readline').createInterface({{input:process.stdin}}).on('line', () => {{\
+             process.stdout.write('{{\"error\":\"{code}\"}}\\n', () => process.exit(1)); }});"
+        ));
+        let mut account = Account::default();
+        assert_eq!(
+            account
+                .login(&fixture.paths, credentials())
+                .unwrap_err()
+                .code,
+            expected
+        );
+        assert!(!account.logged_in());
+    }
+}

@@ -11,7 +11,7 @@ use super::shanten::hand_shanten;
 
 const TILE_KIND_COUNT: usize = 34;
 
-/// 一种候选牌及其当前不可见枚数。
+/// 一种候选牌及其当前未见枚数。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TileAvailability {
     pub kind: TileKind,
@@ -87,7 +87,7 @@ pub fn winning_tile_kinds(hand: &Hand) -> Result<Vec<TileKind>, AnalysisError> {
     candidate_tile_kinds(hand, |candidate_shanten| candidate_shanten == -1)
 }
 
-/// 返回当前玩家视角下一种牌的不可见枚数。
+/// 返回当前玩家视角下一种牌的未见枚数。
 pub fn unseen_count(state: &RoundState, player: PlayerIndex, kind: TileKind) -> u8 {
     let own_concealed = state
         .player(player)
@@ -122,7 +122,7 @@ pub fn unseen_count(state: &RoundState, player: PlayerIndex, kind: TileKind) -> 
     4usize.saturating_sub(visible) as u8
 }
 
-/// 分析打出指定牌后的向听数、候选进张和不可见枚数。
+/// 分析打出指定牌后的向听数、候选进张和未见枚数。
 pub fn discard_efficiency(
     state: &RoundState,
     player: PlayerIndex,

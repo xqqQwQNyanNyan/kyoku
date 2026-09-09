@@ -31,7 +31,7 @@ fn budget_and_context_preflight_do_not_send_any_request() {
     let saved = serde_json::to_value(session.archive()).unwrap();
     assert!(saved["turns"][0]["usage"].is_null());
     config.options.token_budget = None;
-    config.options.context_tokens = NonZeroU64::new(4097);
+    config.options.context_tokens = NonZeroU64::new(config.options.max_output_tokens.get() + 1);
     let mut session = AgentSession::new(&review(), &config).unwrap();
     assert!(matches!(
         session.ask_draft("提问"),

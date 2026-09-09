@@ -7,17 +7,38 @@ console.log =
   console.debug =
     () => {};
 const { createInterface } = require("node:readline");
-const { createSession } = require("./desktop-session.cjs");
-const session = createSession(require("./client.cjs"));
+let stopping = false;
+function stop(code) {
+  if (stopping) return;
+  stopping = true;
+  // 先写完白名单错误再退出，否则父进程只能看到管道断开。
+  process.stdout.write(JSON.stringify({ error: code }) + "\n", () =>
+    process.exit(1),
+  );
+}
+process.stdout.on("error", () => process.exit(1));
+process.on("uncaughtException", () => stop("component_failed"));
+process.on("unhandledRejection", () => stop("component_failed"));
+
+let session;
+try {
+  const { createSession } = require("./desktop-session.cjs");
+  const client = require("./client.cjs");
+  session = createSession({
+    connect: (config) => client.connect(config, stop),
+    download: client.download,
+  });
+} catch {
+  stop("component_start_failed");
+}
 const input = createInterface({ input: process.stdin, terminal: false });
 
 // 父进程退出或崩溃时，管道关闭立即结束登录会话。
 process.stdin.on("end", () => process.exit(0));
-process.on("uncaughtException", () => process.exit(1));
-process.on("unhandledRejection", () => process.exit(1));
 
 (async () => {
   for await (const line of input) {
+    if (stopping) break;
     let result;
     try {
       result =
@@ -27,6 +48,6 @@ process.on("unhandledRejection", () => process.exit(1));
     } catch {
       result = { error: "invalid_request" };
     }
-    process.stdout.write(JSON.stringify(result) + "\n");
+    if (!stopping) process.stdout.write(JSON.stringify(result) + "\n");
   }
 })();

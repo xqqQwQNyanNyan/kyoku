@@ -1063,3 +1063,24 @@ fn a_session_cannot_be_reused_for_another_game_and_invalid_import_keeps_original
     assert_eq!(fs::read(directory.0.join("one.json")).unwrap(), original);
     assert_eq!(server.join().unwrap().len(), 2);
 }
+
+#[test]
+fn session_view_resolves_nicknames_without_changing_saved_history() {
+    let directory = Directory::new();
+    let store = new_store(directory.0.clone());
+    let game = fixture_game();
+    saved_game_session(&store, "names", &game);
+    let names = game
+        .events
+        .iter()
+        .find_map(|event| match event {
+            convlog::Event::StartGame { names, .. } => Some(names.clone()),
+            _ => None,
+        })
+        .unwrap();
+    let view = store.get("names").unwrap();
+    assert_eq!(view.player_names, Some(names));
+    assert!(view.document.game.unwrap().events.is_empty());
+    store.library.delete(&game.key).unwrap();
+    assert!(store.get("names").unwrap().player_names.is_none());
+}

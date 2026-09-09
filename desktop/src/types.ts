@@ -63,6 +63,7 @@ export interface Action {
   actor?: number;
   target?: number;
   pai?: string;
+  consumed?: string[];
 }
 export interface Efficiency {
   discard: string;
@@ -246,6 +247,7 @@ export interface SessionTurn {
   evidence?: SessionEvidence | null;
 }
 export interface SessionView {
+  player_names?: string[] | null;
   id: string;
   game?: { key: string } | null;
   position?: SessionPosition | null;

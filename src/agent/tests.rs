@@ -218,9 +218,7 @@ fn current_tool_chain_preserves_reasoning_and_followup_keeps_it_only_in_history(
                 )
                 .unwrap();
                 assert_eq!(tool["review"], evidence);
-                Ok(response(vec![message(
-                    "听牌，完成牌形的东风有 3 枚不可见。",
-                )]))
+                Ok(response(vec![message("听牌，完成牌形的东风有 3 枚未见。")]))
             }
         },
     )
@@ -246,7 +244,7 @@ fn current_tool_chain_preserves_reasoning_and_followup_keeps_it_only_in_history(
                     !input.iter().any(|item| item["type"] == "reasoning"
                         || item["type"] == "function_call_output")
                 );
-                Ok(response(vec![message("不是，不可见牌也可能在对手手中。")]))
+                Ok(response(vec![message("不是，未见牌也可能在对手手中。")]))
             },
         )
         .unwrap();
@@ -1239,7 +1237,7 @@ fn live_strategy_tools_on_real_decisions() {
         runtime: std::path::Path::new("mortal/runtime"),
         checkpoint: std::path::Path::new("mortal/models/mortal_582500.pth"),
     };
-    let cases=[("ranked_game", &events, PlayerIndex::new(0).unwrap(), 2,vec!["完整比较切2p和3m的所有下一张摸牌：双方分别有多少不可见枚数的分支占优、多少指标相同？举一个具体差异，但不要把覆盖统计解释成整体收益。".to_owned()]),
+    let cases=[("ranked_game", &events, PlayerIndex::new(0).unwrap(), 2,vec!["完整比较切2p和3m的所有下一张摸牌：双方分别有多少未见枚数的分支占优、多少指标相同？举一个具体差异，但不要把覆盖统计解释成整体收益。".to_owned()]),
         ("four_reach", &tenpai_events, tenpai_player, tenpai_event,vec![
             format!("分析切{}后的完整待牌、舍牌振听和默听/立直条件打点。另外请单独核验这手牌到二杯口还有几向听。",crate::replay::inspector::format_tile(discard)),
             format!("检查手中牌分别针对各家的防守依据，并计算超过玩家{}需要的荣和与自摸条件；如果已经排在他前面请直接说明。",(tenpai_player.get_id()+1)%4),

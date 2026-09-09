@@ -1,4 +1,3 @@
-import { UsageSummary, UsageDetails } from './Usage';
 import { useEffect, useState } from 'react';
 import type { QuestionProgress } from './types';
 
@@ -57,20 +56,7 @@ export function QuestionStatus({
       <small className="question-elapsed" aria-live="off">
         已用 {elapsed}
       </small>
-      {progress?.usage && (
-        <>
-          <UsageSummary requests={progress.usage.requests} budget={progress.usage.budget} />
-          <details>
-            <summary>逐次用量</summary>
-            <UsageDetails requests={progress.usage.requests} />
-          </details>
-        </>
-      )}
-      <p>
-        {progress?.stopping
-          ? '正在结束本轮问答；问题和执行记录会保留。'
-          : '可以切换局面，结果会保留在此会话。'}
-      </p>
+      {progress?.stopping && <p>正在结束本轮问答；问题和执行记录会保留。</p>}
     </div>
   );
 }

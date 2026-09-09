@@ -49,7 +49,7 @@ pub(super) fn request(
         "model": model, "messages": messages,
         "tools": tools,
         "tool_choice": "auto",
-        "parallel_tool_calls": mode == RequestMode::Analysis, "store": false, "max_completion_tokens": 4096,
+        "parallel_tool_calls": mode == RequestMode::Analysis, "store": false, "max_completion_tokens": 16384,
     }))
 }
 

@@ -60,7 +60,7 @@ pub(super) fn detail(
         return Err(("invalid_arguments", "过牌不带分支；立直指定discard；吃碰指定variant和discard；杠指定variant，可用draw查看一张岭上牌。".into()));
     }
     if draw.is_some_and(|t| snapshot.unseen[t.kind().as_u8() as usize] == 0) {
-        return Err(("exhausted_draw", "指定摸牌已无不可见副本。".into()));
+        return Err(("exhausted_draw", "指定摸牌已无未见副本。".into()));
     }
     let selected = Selection {
         action,

@@ -6,6 +6,7 @@ import type {
   Bridge,
   QuestionProgress,
   QuestionRun,
+  RequestUsage,
   SessionEvidence,
   SessionPosition,
   SessionSummary,
@@ -28,6 +29,7 @@ export interface SessionSource {
 }
 
 interface PendingProgress {
+  previousUsage: RequestUsage[];
   stage: QuestionProgress;
   usage?: Extract<QuestionProgress, { phase: 'usage' }>;
   startedAt: number;
@@ -257,6 +259,7 @@ export function useSessions(api: Bridge) {
       return;
     busy.current.add(id);
     const run: ActiveQuestion = {
+      previousUsage: documents[id]?.archive.turns.flatMap(turnUsage) ?? [],
       requestId: crypto.randomUUID(),
       stage: { phase: 'preparing' },
       startedAt: Date.now(),
@@ -434,20 +437,23 @@ function Trace({ turn }: { turn: SessionTurn }) {
   );
 }
 
-function positionLabel(evidence: SessionEvidence) {
+function positionLabel(evidence: SessionEvidence, playerNames?: string[] | null) {
   const round = evidence.position?.round;
   const winds: Record<string, string> = { E: '东', S: '南', W: '西', N: '北' };
   const label = round
     ? `${winds[round.wind] ?? round.wind}${round.number}局 · ${evidence.position?.honba}本场 · `
     : '';
-  return `${label}玩家 ${evidence.player} · G${evidence.event_index}`;
+  const player = playerNames?.[evidence.player]?.trim() || `玩家 ${evidence.player}`;
+  return `${label}${player} · G${evidence.event_index}`;
 }
 
 function Location({
   evidence,
+  playerNames,
   onLocate,
 }: {
   evidence: SessionEvidence;
+  playerNames?: string[] | null;
   onLocate?: (position: SessionPosition) => void;
 }) {
   return onLocate ? (
@@ -456,10 +462,10 @@ function Location({
       title="回到提问时的局面"
       onClick={() => onLocate(evidence)}
     >
-      {positionLabel(evidence)}
+      {positionLabel(evidence, playerNames)}
     </button>
   ) : (
-    <small className="session-location">{positionLabel(evidence)}</small>
+    <small className="session-location">{positionLabel(evidence, playerNames)}</small>
   );
 }
 
@@ -558,6 +564,7 @@ export function ChatPanel({
   workspace: w,
   id,
   source,
+  playerNames,
   ready = true,
   visible = true,
   onFocus,
@@ -569,6 +576,7 @@ export function ChatPanel({
   workspace: Workspace;
   id: string;
   source?: SessionSource;
+  playerNames?: string[];
   ready?: boolean;
   visible?: boolean;
   onFocus?: () => void;
@@ -578,6 +586,12 @@ export function ChatPanel({
   onLocate?: (position: SessionPosition) => void;
 }) {
   const doc = w.documents[id];
+  const names = doc?.player_names ?? playerNames;
+  const progress = w.progress[id];
+  // 使用本轮开始前的累计，避免后台存档更新时把同一请求重复计入。
+  const usage = progress
+    ? [...progress.previousUsage, ...(progress.usage?.requests ?? [])]
+    : (doc?.archive.turns.flatMap(turnUsage) ?? []);
   const turns = doc?.archive.turns ?? [];
   const pending = w.pending[id] || (doc?.busy ? doc.pending_question : null);
   const canAsk = !!(doc || source);
@@ -608,7 +622,14 @@ export function ChatPanel({
           </svg>
         </span>
         <div>
-          <h2>一起复盘</h2>
+          <div className="chat-title-row">
+            <h2>一起复盘</h2>
+            {doc && (
+              <span className="session-model" title={doc.archive.model}>
+                {doc.archive.model}
+              </span>
+            )}
+          </div>
           <p>
             {source?.label ??
               (doc ? positionLabel(doc.position ?? doc.archive.evidence) : '围绕这份牌谱展开讨论')}
@@ -631,29 +652,7 @@ export function ChatPanel({
           editable={!!doc && !pending}
         />
       )}
-      <div className="chat-context">
-        <span className="status-dot" />
-        {doc ? '会话已自动保存 · 每次提问使用发送时的局面' : '仅使用所选玩家当时可见的信息'}
-      </div>
-      {doc && <UsageSummary label="会话累计" requests={doc.archive.turns.flatMap(turnUsage)} />}
-      {doc && (
-        <details className="session-context">
-          <summary>会话上下文 · {doc.archive.model}</summary>
-          <p>{doc.archive.endpoint}</p>
-          <details>
-            <summary>最近提问的局面证据</summary>
-            <pre>{JSON.stringify(doc.archive.evidence, null, 2)}</pre>
-          </details>
-          <details>
-            <summary>工具定义</summary>
-            <pre>{JSON.stringify(doc.archive.tools, null, 2)}</pre>
-          </details>
-          <details>
-            <summary>系统提示词</summary>
-            <pre>{doc.archive.instructions}</pre>
-          </details>
-        </details>
-      )}
+      <UsageSummary label="会话累计" requests={usage} />
       <div className="messages" role="log" aria-label="复盘对话" aria-live="polite">
         {!turns.length && !pending && (
           <div className="chat-welcome">
@@ -679,7 +678,7 @@ export function ChatPanel({
             )}
             <small>
               {!canAsk
-                ? '导入牌谱后即可提问。'
+                ? '选择牌谱后即可提问。'
                 : !ready
                   ? '可以直接提问；当前局面暂无 Mortal 决策结果。'
                   : '回答会区分计算、Mortal 与推测。'}
@@ -690,10 +689,13 @@ export function ChatPanel({
           <Fragment key={i}>
             <div className="message user">
               <span className="message-author">你</span>
-              <Location evidence={turn.evidence ?? doc!.archive.evidence} onLocate={onLocate} />
+              <Location
+                evidence={turn.evidence ?? doc!.archive.evidence}
+                playerNames={names}
+                onLocate={onLocate}
+              />
               <Markdown text={turn.question} />
             </div>
-            <UsageSummary requests={turnUsage(turn)} budget={turn.options?.token_budget} />
             <Trace turn={turn} />
             {turn.answer && (
               <div className="message assistant">
@@ -716,7 +718,11 @@ export function ChatPanel({
             <div className="message user">
               <span className="message-author">你</span>
               {w.pendingPositions[id] && (
-                <Location evidence={w.pendingPositions[id]} onLocate={onLocate} />
+                <Location
+                  evidence={w.pendingPositions[id]}
+                  playerNames={names}
+                  onLocate={onLocate}
+                />
               )}
               <Markdown text={pending} />
             </div>
@@ -745,7 +751,7 @@ export function ChatPanel({
       >
         <textarea
           aria-label="复盘问题"
-          placeholder={canAsk ? '聊聊这份牌谱或当前局面…' : '导入牌谱后提问…'}
+          placeholder={canAsk ? '聊聊这份牌谱或当前局面…' : '选择牌谱后提问…'}
           value={question}
           disabled={!canAsk || !!pending}
           rows={2}
@@ -781,7 +787,6 @@ export function ChatPanel({
           )}
         </div>
       </form>
-      <p className="chat-footnote">切换局面保留会话，可从「历史会话」找回或导出。</p>
     </section>
   );
 }
@@ -921,7 +926,6 @@ export function HistoryDialog({
       <div className="history-heading">
         <div>
           <h2 id="history-title">历史会话</h2>
-          <p>独立保存每次复盘的上下文与工作流程</p>
         </div>
         <button onClick={() => input.current?.click()} disabled={loading}>
           加载 JSON
@@ -1034,7 +1038,7 @@ export function HistoryDialog({
           ) : (
             <div className="history-empty">
               选择一个会话，查看记录、工作流程或继续追问。
-              <small>无需重新导入牌谱或运行 Mortal。</small>
+              <small>无需重新选择牌谱或运行 Mortal。</small>
             </div>
           )}
         </div>

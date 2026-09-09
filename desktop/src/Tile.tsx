@@ -11,7 +11,7 @@ const numerals = ['', '一', '二', '三', '四', '五', '六', '七', '八', '�
 export function tileName(tile: string): string {
   if (tile === '?') return '暗牌';
   if (honors[tile]) return honors[tile];
-  return `${tile.endsWith('r') ? '赤' : ''}${numerals[Number(tile[0])]}${{ m: '万', p: '筒', s: '索' }[tile[1]] ?? ''}`;
+  return `${tile.endsWith('r') ? '赤' : ''}${numerals[Number(tile[0])]}${{ m: '万', p: '饼', s: '索' }[tile[1]] ?? ''}`;
 }
 
 const faces = import.meta.glob<string>('./assets/tiles/*.svg', {

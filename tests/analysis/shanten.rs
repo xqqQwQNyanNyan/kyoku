@@ -765,7 +765,7 @@ fn off_suit_tiles_do_not_help_chinitsu() {
 
 #[test]
 fn chinitsu_chooses_the_closest_suit() {
-    // 筒子已有四个面子；万子和索子各只有一张，筒子目标最近。
+    // 饼子已有四个面子；万子和索子各只有一张，饼子目标最近。
     let hand = counts(&[
         (4, 1),
         (9, 2),

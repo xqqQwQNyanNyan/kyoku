@@ -38,7 +38,7 @@ function routeRequest(rpc, method, data) {
 }
 
 // 旧版公开协议仍可解码牌谱；Unity 网关还需要平台字段。
-async function connect(config) {
+async function connect(config, onDisconnect = () => process.exit(1)) {
   const base = config.base.replace(/\/$/, "");
   const { version } = await fetchJson(`${base}/version.json`);
   const resources = await fetchJson(`${base}/resversion${version}.json`);
@@ -101,9 +101,9 @@ async function connect(config) {
     },
   });
   // 连接失效后结束工作进程，父进程在下一次导入时重新发现线路并登录。
-  rpc.on("error", () => process.exit(1));
-  rpc.on("close", () => process.exit(1));
-  rpc.on("NotifyAccountLogout", () => process.exit(1));
+  rpc.on("error", () => onDisconnect("gateway_failed"));
+  rpc.on("close", () => onDisconnect("connection_closed"));
+  rpc.on("NotifyAccountLogout", () => onDisconnect("account_logout"));
   await new Promise((resolve) => rpc.open(resolve));
   if (unity) {
     const request = root.lookupType("ReqRequestConnection");
@@ -156,7 +156,7 @@ async function connect(config) {
   if (unity) {
     const heartbeat = setInterval(() => {
       routeRequest(rpc, "heartbeat", { platform: 11 }).catch(() =>
-        process.exit(1),
+        onDisconnect("heartbeat_failed"),
       );
     }, 4000);
     heartbeat.unref();

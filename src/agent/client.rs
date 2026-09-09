@@ -454,11 +454,11 @@ mod tests {
         };
         let mut deepseek = build("https://api.deepseek.com/chat/completions");
         let generic = build("https://example.com/chat/completions");
-        assert_eq!(deepseek["max_tokens"], 4096);
+        assert_eq!(deepseek["max_tokens"], 16384);
         assert!(deepseek.get("max_completion_tokens").is_none());
         assert!(generic.get("max_tokens").is_none());
         deepseek.as_object_mut().unwrap().remove("max_tokens");
-        deepseek["max_completion_tokens"] = json!(4096);
+        deepseek["max_completion_tokens"] = json!(16384);
         assert_eq!(deepseek, generic);
         assert_eq!(
             build("https://api.deepseek.com.example.com/chat/completions"),
@@ -479,7 +479,7 @@ mod tests {
         assert!(request.get("reasoning_effort").is_none());
         assert!(request.get("response_format").is_none());
         assert!(request.get("thinking").is_none());
-        assert_eq!(request["max_tokens"], 4096);
+        assert_eq!(request["max_tokens"], 16384);
         let response_request = Client::new(&AgentConfig {
             endpoint: "https://example.com/v1/responses",
             model: "deepseek-v4-flash",
@@ -492,7 +492,7 @@ mod tests {
             RequestMode::Analysis,
         )
         .unwrap();
-        assert_eq!(response_request["max_output_tokens"], 4096);
+        assert_eq!(response_request["max_output_tokens"], 16384);
         assert!(response_request.get("reasoning").is_none());
         assert!(response_request.get("text").is_none());
     }
@@ -522,7 +522,7 @@ mod tests {
             .unwrap();
             let request = client.request(&input, RequestMode::Analysis).unwrap();
             assert_eq!(request["thinking"]["type"], "disabled");
-            assert_eq!(request["max_tokens"], 4096);
+            assert_eq!(request["max_tokens"], 16384);
             assert!(
                 request["messages"]
                     .as_array()
@@ -553,7 +553,7 @@ mod tests {
                 )
                 .unwrap();
             assert_eq!(request["reasoning"]["effort"], "none");
-            assert_eq!(request["max_output_tokens"], 4096);
+            assert_eq!(request["max_output_tokens"], 16384);
             assert!(request.get("include").is_none());
             assert_eq!(request["input"].as_array().unwrap().len(), 1);
         }
@@ -575,7 +575,7 @@ mod tests {
                     model: "new-model-with-no-hardcoded-rules",
                     api_key: Some("test-key"),
                     options: ModelOptions {
-                        max_output_tokens: std::num::NonZeroU64::new(16384).unwrap(),
+                        max_output_tokens: std::num::NonZeroU64::new(32768).unwrap(),
                         thinking,
                         ..Default::default()
                     },
@@ -587,7 +587,7 @@ mod tests {
                         RequestMode::Analysis,
                     )
                     .unwrap();
-                assert_eq!(request[field], 16384);
+                assert_eq!(request[field], 32768);
                 if thinking == Thinking::Default {
                     assert!(request.get("reasoning").is_none());
                     assert!(request.get("reasoning_effort").is_none());

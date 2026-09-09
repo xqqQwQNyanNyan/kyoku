@@ -6,6 +6,7 @@ const { connect } = require("../client.cjs");
 
 test("Unity 线路发现、平台握手和资源版本用于实际登录请求", async (t) => {
   const requests = [];
+  const disconnects = [];
   const schema = {
     nested: {
       lq: {
@@ -76,7 +77,7 @@ test("Unity 线路发现、平台握手和资源版本用于实际登录请求",
     username: "test-account",
     password: "test-password",
     resourceVersion: "0.16.999",
-  });
+  }, (code) => disconnects.push(code));
   assert.equal(connection.rpc.url, "wss://route.example:443/gateway");
   assert.equal(connection.clientVersion, "WebGL_2022-0.16.999");
   assert.deepEqual(
@@ -103,4 +104,12 @@ test("Unity 线路发现、平台握手和资源版本用于实际登录请求",
     { code: "upstream_unavailable" },
   );
   assert.equal(requests.length, 3);
+  connection.rpc.emit("error", new Error("private upstream details"));
+  connection.rpc.emit("NotifyAccountLogout", { message: "private account" });
+  connection.rpc.emit("close");
+  assert.deepEqual(disconnects, [
+    "gateway_failed",
+    "account_logout",
+    "connection_closed",
+  ]);
 });

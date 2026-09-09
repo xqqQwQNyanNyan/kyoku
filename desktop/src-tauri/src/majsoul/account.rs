@@ -239,11 +239,10 @@ impl Session {
 
     fn request(&mut self, input: &Value) -> Result<Response, UiError> {
         let stdin = self.stdin.as_mut().ok_or_else(connection_error)?;
-        serde_json::to_writer(&mut *stdin, input).map_err(|_| connection_error())?;
-        stdin
-            .write_all(b"\n")
-            .and_then(|()| stdin.flush())
-            .map_err(|_| connection_error())?;
+        let mut message = serde_json::to_vec(input).map_err(|_| connection_error())?;
+        message.push(b'\n');
+        // 组件可能已报告启动失败并退出；写入失败时仍读取已排队的错误。
+        let _ = stdin.write_all(&message).and_then(|()| stdin.flush());
         self.read_response(RESPONSE_TIMEOUT)
     }
 
@@ -303,13 +302,37 @@ fn runtime_error() -> UiError {
 fn connection_error() -> UiError {
     UiError::new(
         "majsoul_connection",
-        "雀魂连接已断开，请重新登录；如另一客户端正在使用该账号，请先退出",
+        "雀魂下载组件已退出或返回了无效响应，请重启 Kyoku 后重试；这不表示账号在其他客户端登录",
     )
 }
 
 fn service_error(code: &str) -> UiError {
     // 上游任意文本、账号和 token 均不能进入 UI、日志或 Agent 会话。
     match code {
+        "component_start_failed" => UiError::new(
+            "majsoul_runtime",
+            "雀魂下载组件启动失败，可能缺少依赖文件，请重新安装完整安装包",
+        ),
+        "component_failed" => UiError::new(
+            "majsoul_component",
+            "雀魂下载组件运行异常，会话已结束，请更新 Kyoku 后重试",
+        ),
+        "gateway_failed" => UiError::new(
+            "majsoul_network",
+            "无法连接雀魂网关，请检查网络、防火墙或安全软件是否阻止 Kyoku 内置的 node.exe 联网",
+        ),
+        "connection_closed" => UiError::new(
+            "majsoul_connection",
+            "雀魂网关连接已关闭，请重新登录；仅凭断线无法确定是否为账号冲突",
+        ),
+        "account_logout" => UiError::new(
+            "majsoul_logout",
+            "雀魂服务器通知账号已退出，请重新登录；如其他客户端正在使用该账号，请先退出",
+        ),
+        "heartbeat_failed" => UiError::new(
+            "majsoul_network",
+            "雀魂连接心跳失败，会话已结束，请检查网络后重新登录",
+        ),
         "risk_not_accepted" => UiError::new("majsoul_risk", "请先阅读并确认雀魂账号使用风险"),
         "invalid_credentials" => UiError::new("majsoul_credentials", "请输入有效的雀魂账号和密码"),
         "login_required" => UiError::new("majsoul_login_required", "请先登录雀魂账号"),

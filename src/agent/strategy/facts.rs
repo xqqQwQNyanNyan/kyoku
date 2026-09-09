@@ -86,7 +86,7 @@ pub(super) fn followup(
         )
     };
     if snapshot.unseen[draw.kind().as_u8() as usize] == 0 {
-        return Err(("exhausted_draw", "指定摸牌已无不可见副本。".into()));
+        return Err(("exhausted_draw", "指定摸牌已无未见副本。".into()));
     }
     if snapshot.position.remaining_draws == 0
         || snapshot.position.players[snapshot.player].riichi != "not_declared"

@@ -159,7 +159,7 @@ export function ImportDialog({
     >
       <div className="import-heading">
         <div>
-          <h2 id="import-title">导入牌谱</h2>
+          <h2 id="import-title">选择牌谱</h2>
           <p>选择一种方式，开始复盘。</p>
         </div>
         <button type="button" onClick={onClose} disabled={busy} aria-label="关闭导入">
