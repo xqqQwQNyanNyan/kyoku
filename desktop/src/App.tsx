@@ -1,8 +1,16 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
-import type { Bridge, Decision, Replay, SessionPosition, SessionView } from './types';
+import type {
+  AnalysisProgress,
+  Bridge,
+  Decision,
+  Replay,
+  SessionPosition,
+  SessionView,
+} from './types';
 import { bridge, errorMessage } from './bridge';
 import { Board, eventText } from './Board';
 import { Analysis, differsFromRecommendation } from './Analysis';
+import { AnalysisStatus } from './AnalysisStatus';
 import { Tile } from './Tile';
 import { SettingsPanel } from './Settings';
 import { useWindowScale } from './useWindowScale';
@@ -13,6 +21,14 @@ import { ChatPanel, HistoryDialog, useSessions } from './Sessions';
 import { ReplayLibrary } from './ReplayLibrary';
 import { RenameReplayDialog } from './RenameReplayDialog';
 import { RoundResultDialog } from './RoundResultDialog';
+
+interface AnalysisJob {
+  id: number;
+  requestId: string;
+  ready: boolean;
+  stopping: boolean;
+  settled: boolean;
+}
 
 const roundsPerPage = 7;
 const reviewTabs = [
@@ -46,7 +62,12 @@ export default function App({ api = bridge }: { api?: Bridge }) {
   const asking = Object.keys(workspace.pending).length > 0;
   const fileInput = useRef<HTMLInputElement>(null);
   const documentId = useRef<number | null>(null);
-  const analysisJob = useRef(0);
+  const analysisJob = useRef<AnalysisJob | null>(null);
+  const [analysisProgress, setAnalysisProgress] = useState<AnalysisProgress>({
+    phase: 'preparing',
+  });
+  const [analysisStopping, setAnalysisStopping] = useState(false);
+  const [analysisStarted, setAnalysisStarted] = useState(0);
   const importBusy = useRef(false);
   const frame = replay?.frames[index];
   const points = decisions[player];
@@ -114,7 +135,7 @@ export default function App({ api = bridge }: { api?: Bridge }) {
       const loaded = await read();
       const attached = await workspace.attachGame(loaded.game_key);
       documentId.current = loaded.id;
-      analysisJob.current += 1;
+      releaseAnalysis();
       setSelected(null);
       setReplay(loaded);
       setShowResult(false);
@@ -154,21 +175,79 @@ export default function App({ api = bridge }: { api?: Bridge }) {
     setShowImport(true);
   }
 
+  async function sendAnalysisCancel(job: AnalysisJob) {
+    if (job.settled) return;
+    try {
+      await api.cancelAnalysis(job.id, job.requestId);
+    } catch (error) {
+      if (analysisJob.current === job && !job.settled) {
+        job.stopping = false;
+        setAnalysisStopping(false);
+        setError(errorMessage(error));
+      }
+    }
+  }
+
+  function cancelAnalysis() {
+    const job = analysisJob.current;
+    if (!job || job.stopping) return;
+    job.stopping = true;
+    setAnalysisStopping(true);
+    setError('');
+    if (job.ready) void sendAnalysisCancel(job);
+  }
+
+  function releaseAnalysis() {
+    const job = analysisJob.current;
+    if (job) {
+      job.stopping = true;
+      if (job.ready) void sendAnalysisCancel(job);
+    }
+    analysisJob.current = null;
+  }
+
+  useEffect(() => () => releaseAnalysis(), []);
+
   async function analyze() {
-    if (!replay || !replay.mortal_supported || analyzing !== null) return;
+    if (!replay || !replay.mortal_supported || analysisJob.current) return;
     const id = replay.id;
     const perspective = player;
-    const job = ++analysisJob.current;
+    const job: AnalysisJob = {
+      id,
+      requestId: crypto.randomUUID(),
+      ready: false,
+      stopping: false,
+      settled: false,
+    };
+    analysisJob.current = job;
     setAnalyzing(perspective);
+    setAnalysisProgress({ phase: 'preparing' });
+    setAnalysisStopping(false);
+    setAnalysisStarted(Date.now());
     setError('');
     try {
-      const result = await api.analyze(id, perspective);
-      if (documentId.current === id)
+      const result = await api.analyze(id, perspective, {
+        requestId: job.requestId,
+        onProgress(progress) {
+          if (job.settled) return;
+          if (!job.ready) {
+            job.ready = true;
+            // 首条进度确认后端已登记，补发登记前的取消（包括切换牌谱）。
+            if (job.stopping) void sendAnalysisCancel(job);
+          }
+          if (analysisJob.current === job) setAnalysisProgress(progress);
+        },
+      });
+      if (analysisJob.current === job && documentId.current === id)
         setDecisions((current) => ({ ...current, [perspective]: result }));
     } catch (error) {
-      if (documentId.current === id) setError(errorMessage(error));
+      if (analysisJob.current === job) setError(errorMessage(error));
     } finally {
-      if (analysisJob.current === job) setAnalyzing(null);
+      job.settled = true;
+      if (analysisJob.current === job) {
+        analysisJob.current = null;
+        setAnalyzing(null);
+      }
     }
   }
 
@@ -253,7 +332,7 @@ export default function App({ api = bridge }: { api?: Bridge }) {
       const loaded = opened.replay;
       await workspace.attachGame(loaded.game_key);
       if (documentId.current !== loaded.id) {
-        analysisJob.current += 1;
+        releaseAnalysis();
         setDecisions({});
         setAnalyzing(null);
       }
@@ -433,7 +512,7 @@ export default function App({ api = bridge }: { api?: Bridge }) {
             workspace.forget(sessionIds, key ?? undefined);
             if (key && key === replay?.game_key) {
               documentId.current = null;
-              analysisJob.current += 1;
+              releaseAnalysis();
               setPlaying(false);
               setReplay(null);
               setFilename('');
@@ -553,13 +632,23 @@ export default function App({ api = bridge }: { api?: Bridge }) {
                       ? '正在分析整场…'
                       : '分析后可按决策跳转'}
               </p>
-              <button
-                className="secondary"
-                onClick={() => void analyze()}
-                disabled={!replay.mortal_supported || analyzing !== null || !!points}
-              >
-                {points ? '分析已完成' : analyzing !== null ? '分析中…' : '分析此玩家'}
-              </button>
+              {analyzing !== null ? (
+                <AnalysisStatus
+                  player={replay.names[analyzing]}
+                  progress={analysisProgress}
+                  startedAt={analysisStarted}
+                  stopping={analysisStopping}
+                  onCancel={cancelAnalysis}
+                />
+              ) : (
+                <button
+                  className="secondary"
+                  onClick={() => void analyze()}
+                  disabled={!replay.mortal_supported || analyzing !== null || !!points}
+                >
+                  {points ? '分析已完成' : '分析此玩家'}
+                </button>
+              )}
             </div>
           </aside>
           <div className="replay-column">

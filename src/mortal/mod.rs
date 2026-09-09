@@ -8,6 +8,10 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -47,6 +51,8 @@ pub enum MortalError {
     UnexpectedEof,
     Timeout,
     Closed,
+    /// 用户已取消本次推理，进程会被结束并回收。
+    Cancelled,
     /// 当前引擎按半庄处理终盘，不能分析东风场。
     UnsupportedGameLength,
     Exit(ExitStatus),
@@ -64,6 +70,7 @@ impl fmt::Display for MortalError {
                 write!(f, "Mortal closed stdout unexpectedly; see engine stderr")
             }
             Self::Timeout => write!(f, "Mortal did not respond within 60 seconds"),
+            Self::Cancelled => write!(f, "已取消 Mortal 分析"),
             Self::Closed => write!(f, "Mortal session is closed after an earlier failure"),
             Self::UnsupportedGameLength => {
                 write!(f, "当前 Mortal 仅支持四人半庄分析，东风场可继续回放")
@@ -92,11 +99,20 @@ pub struct Mortal {
     player: PlayerIndex,
     model: ModelInfo,
     failed: bool,
+    cancelled: Arc<AtomicBool>,
 }
 
 impl Mortal {
     /// 加载模型并等待就绪；启动失败、无响应或协议不兼容均返回错误。
     pub fn start(config: &MortalConfig<'_>, player: PlayerIndex) -> Result<Self, MortalError> {
+        Self::start_with_cancellation(config, player, Arc::default())
+    }
+
+    pub(crate) fn start_with_cancellation(
+        config: &MortalConfig<'_>,
+        player: PlayerIndex,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<Self, MortalError> {
         let mut command = Command::new(config.python);
         command
             // 独立运行，避免用户的 Python 环境变量或包影响内置引擎；不写入应用资源。
@@ -104,10 +120,22 @@ impl Mortal {
             .arg(config.runtime)
             .arg(config.checkpoint)
             .arg(player.get_id().to_string());
-        Self::spawn(command, player)
+        Self::spawn_controlled(command, player, cancelled)
     }
 
-    fn spawn(mut command: Command, player: PlayerIndex) -> Result<Self, MortalError> {
+    #[cfg(all(test, unix))]
+    fn spawn(command: Command, player: PlayerIndex) -> Result<Self, MortalError> {
+        Self::spawn_controlled(command, player, Arc::default())
+    }
+
+    fn spawn_controlled(
+        mut command: Command,
+        player: PlayerIndex,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<Self, MortalError> {
+        if cancelled.load(Ordering::Relaxed) {
+            return Err(MortalError::Cancelled);
+        }
         hide_console_window(&mut command);
         let mut child = command
             .stdin(Stdio::piped())
@@ -152,6 +180,7 @@ impl Mortal {
                 sha256: String::new(),
             },
             failed: false,
+            cancelled,
         };
         engine.model = serde_json::from_str(&engine.read_line()?).map_err(MortalError::Json)?;
         if engine.model.version != 4
@@ -188,6 +217,7 @@ impl Mortal {
     }
 
     fn exchange(&mut self, event: &Event) -> Result<Option<Decision>, MortalError> {
+        self.check_cancelled()?;
         // libriichi 不读取 kyoku_first；直接传入会错误地按半庄判断最终局。
         if matches!(event, Event::StartGame { kyoku_first, .. } if *kyoku_first != 0) {
             return Err(MortalError::UnsupportedGameLength);
@@ -200,10 +230,29 @@ impl Mortal {
     }
 
     fn read_line(&self) -> Result<String, MortalError> {
-        match self.output.recv_timeout(RESPONSE_TIMEOUT) {
-            Ok(line) => line.map_err(MortalError::Read),
-            Err(RecvTimeoutError::Timeout) => Err(MortalError::Timeout),
-            Err(RecvTimeoutError::Disconnected) => Err(MortalError::UnexpectedEof),
+        let deadline = Instant::now() + RESPONSE_TIMEOUT;
+        loop {
+            self.check_cancelled()?;
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(MortalError::Timeout);
+            }
+            match self
+                .output
+                .recv_timeout(remaining.min(Duration::from_millis(50)))
+            {
+                Ok(line) => return line.map_err(MortalError::Read),
+                Err(RecvTimeoutError::Timeout) => continue,
+                Err(RecvTimeoutError::Disconnected) => return Err(MortalError::UnexpectedEof),
+            }
+        }
+    }
+
+    fn check_cancelled(&self) -> Result<(), MortalError> {
+        if self.cancelled.load(Ordering::Relaxed) {
+            Err(MortalError::Cancelled)
+        } else {
+            Ok(())
         }
     }
 
@@ -215,6 +264,7 @@ impl Mortal {
         self.stdin.take();
         let deadline = Instant::now() + RESPONSE_TIMEOUT;
         loop {
+            self.check_cancelled()?;
             if let Some(status) = self.child.try_wait().map_err(MortalError::Read)? {
                 return if status.success() {
                     Ok(())

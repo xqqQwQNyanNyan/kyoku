@@ -1,5 +1,11 @@
 import { Channel, invoke } from '@tauri-apps/api/core';
-import type { Bridge, MigrationProgress, QuestionProgress, QuestionRun } from './types';
+import type {
+  AnalysisProgress,
+  Bridge,
+  MigrationProgress,
+  QuestionProgress,
+  QuestionRun,
+} from './types';
 
 function questionChannel(run: QuestionRun) {
   const channel = new Channel<QuestionProgress>();
@@ -35,7 +41,12 @@ export const bridge: Bridge = {
   majsoulStatus: () => invoke('majsoul_status'),
   loginMajsoul: (input) => invoke('login_majsoul', { input }),
   logoutMajsoul: () => invoke('logout_majsoul'),
-  analyze: (id, player) => invoke('analyze_game', { id, player }),
+  analyze: (id, player, run) => {
+    const channel = new Channel<AnalysisProgress>();
+    channel.onmessage = run.onProgress;
+    return invoke('analyze_game', { id, player, requestId: run.requestId, onProgress: channel });
+  },
+  cancelAnalysis: (id, requestId) => invoke('cancel_analysis', { id, requestId }),
   ask: (id, player, event_index, conversation_id, text, context_label, run) =>
     invoke('ask', {
       question: { id, player, event_index, conversation_id, text, context_label },

@@ -2,12 +2,39 @@
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Channel } from '@tauri-apps/api/core';
-import type { MigrationProgress, QuestionProgress } from './types';
+import type { AnalysisProgress, MigrationProgress, QuestionProgress } from './types';
 import { bridge, errorMessage } from './bridge';
 
 afterEach(clearMocks);
 
 describe('桌面通信', () => {
+  it('Mortal 分析传递事件进度，取消使用相同牌谱和请求编号', async () => {
+    const progress = vi.fn();
+    const commands: string[] = [];
+    mockIPC((command, args) => {
+      commands.push(command);
+      if (command === 'analyze_game') {
+        if (!args || !('onProgress' in args)) throw new Error('缺少分析进度通道');
+        expect(args).toEqual({
+          id: 7,
+          player: 2,
+          requestId: 'analysis-one',
+          onProgress: expect.any(Channel),
+        });
+        (args.onProgress as Channel<AnalysisProgress>).onmessage({
+          phase: 'analyzing',
+          completed: 45,
+          total: 120,
+        });
+        return [];
+      }
+      expect(args).toEqual({ id: 7, requestId: 'analysis-one' });
+    });
+    await bridge.analyze(7, 2, { requestId: 'analysis-one', onProgress: progress });
+    await bridge.cancelAnalysis(7, 'analysis-one');
+    expect(progress).toHaveBeenCalledWith({ phase: 'analyzing', completed: 45, total: 120 });
+    expect(commands).toEqual(['analyze_game', 'cancel_analysis']);
+  });
   it('数据迁移传递 Windows 原路径、编号和进度，取消对应同一次迁移', async () => {
     const directory = 'D:\\复盘资料\\Kyoku';
     const progress = vi.fn();

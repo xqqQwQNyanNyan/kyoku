@@ -1,4 +1,61 @@
 use super::*;
+use serde::Serialize;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+
+/// 整场分析的实际阶段；事件计数不代表剩余时间。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "phase", rename_all = "snake_case")]
+pub enum ReviewProgress {
+    Preparing,
+    Loading,
+    Analyzing { completed: usize, total: usize },
+    Finishing,
+}
+
+/// 一次整场分析的进度回调和取消信号；重试须新建实例。
+#[derive(Clone)]
+pub struct ReviewControl {
+    cancelled: Arc<AtomicBool>,
+    progress: Arc<dyn Fn(ReviewProgress) + Send + Sync>,
+}
+
+impl ReviewControl {
+    /// 回调应及时返回，不阻塞推理。
+    pub fn new(progress: impl Fn(ReviewProgress) + Send + Sync + 'static) -> Self {
+        Self {
+            cancelled: Arc::default(),
+            progress: Arc::new(progress),
+        }
+    }
+
+    /// 停止等待模型并回收进程；本地计算在事件边界停止。
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Relaxed);
+    }
+
+    fn check(&self) -> Result<(), ReviewError> {
+        if self.cancelled.load(Ordering::Relaxed) {
+            Err(ReviewError::Cancelled)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn report(&self, progress: ReviewProgress) -> Result<(), ReviewError> {
+        self.check()?;
+        (self.progress)(progress);
+        self.check()
+    }
+}
+
+impl Default for ReviewControl {
+    fn default() -> Self {
+        Self::new(|_| {})
+    }
+}
 
 /// 整份牌谱中指定玩家的决策缓存，按全局事件编号排列。
 /// 只保留可见快照；查询不会再启动引擎或回放牌谱。
@@ -51,8 +108,41 @@ pub fn review_game(
     player: PlayerIndex,
     config: &MortalConfig<'_>,
 ) -> Result<GameReview, ReviewError> {
+    review_game_with_control(events, player, config, &ReviewControl::default())
+}
+
+/// 分析整场并报告阶段和已完成事件；取消或失败不返回部分结果。
+pub fn review_game_with_control(
+    events: &[Event],
+    player: PlayerIndex,
+    config: &MortalConfig<'_>,
+    control: &ReviewControl,
+) -> Result<GameReview, ReviewError> {
+    // 统一启动、推理和退出等待中的取消结果。
+    let result = review_controlled(events, player, config, control);
+    match result {
+        Err(
+            ReviewError::Start(MortalError::Cancelled)
+            | ReviewError::Inference {
+                source: MortalError::Cancelled,
+                ..
+            }
+            | ReviewError::Finish(MortalError::Cancelled),
+        ) => Err(ReviewError::Cancelled),
+        result => result,
+    }
+}
+
+fn review_controlled(
+    events: &[Event],
+    player: PlayerIndex,
+    config: &MortalConfig<'_>,
+    control: &ReviewControl,
+) -> Result<GameReview, ReviewError> {
+    control.report(ReviewProgress::Preparing)?;
     let mut replay = Replayer::new();
     for (event_index, event) in events.iter().enumerate() {
+        control.check()?;
         replay.apply(event).map_err(|source| ReviewError::Replay {
             event_index,
             source,
@@ -61,10 +151,17 @@ pub fn review_game(
     if events.is_empty() {
         return Ok(GameReview { decisions: vec![] });
     }
-    let mut mortal = Mortal::start(config, player).map_err(ReviewError::Start)?;
+    control.report(ReviewProgress::Loading)?;
+    let mut mortal = Mortal::start_with_cancellation(config, player, control.cancelled.clone())
+        .map_err(ReviewError::Start)?;
+    control.report(ReviewProgress::Analyzing {
+        completed: 0,
+        total: events.len(),
+    })?;
     let mut replay = Replayer::new();
     let mut decisions = Vec::new();
     for (event_index, event) in events.iter().enumerate() {
+        control.check()?;
         replay.apply(event).map_err(|source| ReviewError::Replay {
             event_index,
             source,
@@ -96,8 +193,14 @@ pub fn review_game(
                 },
             });
         }
+        control.report(ReviewProgress::Analyzing {
+            completed: event_index + 1,
+            total: events.len(),
+        })?;
     }
+    control.report(ReviewProgress::Finishing)?;
     mortal.finish().map_err(ReviewError::Finish)?;
+    control.check()?;
     Ok(GameReview { decisions })
 }
 

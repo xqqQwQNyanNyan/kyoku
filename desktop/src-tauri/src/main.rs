@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod analyses;
 mod config;
 mod library;
 mod log_link;
@@ -15,7 +16,7 @@ use kyoku::{
     agent::{AgentContext, QuestionControl, QuestionProgress, review_evidence},
     mahjong::player_index::PlayerIndex,
     mortal::Mortal,
-    review::{GameReview, RecordedAction, review_game},
+    review::{GameReview, RecordedAction, ReviewControl, ReviewProgress, review_game_with_control},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -430,6 +431,8 @@ fn decision_views(review: &GameReview) -> Vec<DecisionView> {
 async fn analyze_game(
     id: u64,
     player: u8,
+    request_id: String,
+    on_progress: Channel<ReviewProgress>,
     state: tauri::State<'_, Desktop>,
     app: tauri::AppHandle,
 ) -> Result<Vec<DecisionView>, UiError> {
@@ -443,7 +446,14 @@ async fn analyze_game(
         ));
     }
     let paths = config::RuntimePaths::resolve(&app)?;
+    let control = ReviewControl::new(move |progress| {
+        let _ = on_progress.send(progress);
+    });
+    let running = app
+        .state::<Arc<analyses::Analyses>>()
+        .begin(id, &request_id, control.clone())?;
     tauri::async_runtime::spawn_blocking(move || {
+        let _running = running;
         // 每份牌谱只允许一个推理任务；后台锁不影响前端已加载的回放。
         let mut cache = game
             .reviews
@@ -451,8 +461,14 @@ async fn analyze_game(
             .map_err(|_| UiError::new("busy", "该牌谱正在分析，请稍候"))?;
         let slot = &mut cache[usize::from(player.get_id())];
         if slot.is_none() {
-            let review = review_game(&game.events, player, &paths.borrowed())
-                .map_err(|error| UiError::new("analysis", format!("Mortal 分析失败：{error}")))?;
+            let review =
+                review_game_with_control(&game.events, player, &paths.borrowed(), &control)
+                    .map_err(|error| match error {
+                        kyoku::review::ReviewError::Cancelled => {
+                            UiError::new("cancelled", error.to_string())
+                        }
+                        _ => UiError::new("analysis", format!("Mortal 分析失败：{error}")),
+                    })?;
             *slot = Some(Arc::new(review));
         }
         match slot {
@@ -462,6 +478,12 @@ async fn analyze_game(
     })
     .await
     .map_err(|_| UiError::new("task", "分析任务异常结束"))?
+}
+
+#[tauri::command]
+fn cancel_analysis(id: u64, request_id: String, app: tauri::AppHandle) -> Result<(), UiError> {
+    app.state::<Arc<analyses::Analyses>>()
+        .cancel(id, &request_id)
 }
 
 #[derive(Deserialize)]
@@ -826,6 +848,7 @@ fn main() {
     let result = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(Desktop::default())
+        .manage(Arc::new(analyses::Analyses::default()))
         .setup(|app| {
             app.manage(
                 storage::Storage::new(app.path().app_config_dir()?, app.path().app_data_dir()?)
@@ -855,6 +878,7 @@ fn main() {
             login_majsoul,
             logout_majsoul,
             analyze_game,
+            cancel_analysis,
             ask,
             cancel_question,
             list_sessions,

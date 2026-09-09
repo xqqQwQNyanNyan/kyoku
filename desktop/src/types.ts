@@ -137,7 +137,8 @@ export interface Bridge {
   majsoulStatus(): Promise<boolean>;
   loginMajsoul(input: { username: string; password: string; accept_risk: boolean }): Promise<void>;
   logoutMajsoul(): Promise<void>;
-  analyze(id: number, player: number): Promise<Decision[]>;
+  analyze(id: number, player: number, run: AnalysisRun): Promise<Decision[]>;
+  cancelAnalysis(id: number, requestId: string): Promise<void>;
   ask(
     id: number,
     player: number,
@@ -158,6 +159,15 @@ export interface Bridge {
   retrySession(id: string, turn: number | undefined, run: QuestionRun): Promise<SessionView>;
   importSession(json: string): Promise<SessionView>;
   exportSession(id: string): Promise<string>;
+}
+
+export type AnalysisProgress =
+  | { phase: 'preparing' | 'loading' | 'finishing' }
+  | { phase: 'analyzing'; completed: number; total: number };
+
+export interface AnalysisRun {
+  requestId: string;
+  onProgress(progress: AnalysisProgress): void;
 }
 
 export type QuestionProgress =

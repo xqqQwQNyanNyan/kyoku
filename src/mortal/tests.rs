@@ -100,3 +100,57 @@ fn east_only_game_is_rejected_before_inference_and_closes_session() {
         Err(MortalError::Closed)
     ));
 }
+
+#[test]
+fn cancellation_interrupts_loading_inference_and_shutdown_and_reaps_the_process() {
+    for stage in ["loading", "inference", "shutdown"] {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let signal = cancelled.clone();
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let mut cmd = if stage == "loading" {
+                let mut cmd = Command::new("sh");
+                cmd.args(["-c", "IFS= read -r ignored"]);
+                cmd
+            } else {
+                command(if stage == "inference" {
+                    "IFS= read -r ignored\nwhile :; do :; done"
+                } else {
+                    "while IFS= read -r ignored; do :; done\nwhile :; do :; done"
+                })
+            };
+            cmd.env_remove("ENV");
+            if stage == "loading" {
+                ready_tx.send(()).unwrap();
+                assert!(matches!(
+                    Mortal::spawn_controlled(cmd, PlayerIndex::new(0).unwrap(), signal),
+                    Err(MortalError::Cancelled)
+                ));
+            } else {
+                let mut mortal =
+                    Mortal::spawn_controlled(cmd, PlayerIndex::new(0).unwrap(), signal).unwrap();
+                ready_tx.send(()).unwrap();
+                if stage == "inference" {
+                    assert!(matches!(
+                        mortal.react(&Event::EndGame),
+                        Err(MortalError::Cancelled)
+                    ));
+                    assert!(mortal.child.try_wait().unwrap().is_some());
+                    assert!(matches!(
+                        mortal.react(&Event::EndGame),
+                        Err(MortalError::Closed)
+                    ));
+                } else {
+                    assert!(matches!(mortal.finish(), Err(MortalError::Cancelled)));
+                }
+            }
+            done_tx.send(()).unwrap();
+        });
+        ready_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        thread::sleep(Duration::from_millis(100));
+        cancelled.store(true, Ordering::Relaxed);
+        done_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        worker.join().unwrap();
+    }
+}

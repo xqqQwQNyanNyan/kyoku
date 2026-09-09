@@ -17,7 +17,10 @@ use crate::replay::replayer::{ReplayError, Replayer};
 
 mod game;
 mod history;
-pub use game::{DecisionPoint, GameReview, RecordedAction, review_game};
+pub use game::{
+    DecisionPoint, GameReview, RecordedAction, ReviewControl, ReviewProgress, review_game,
+    review_game_with_control,
+};
 pub(crate) use history::public_history;
 pub use history::{PublicAction, PublicEvent};
 
@@ -66,6 +69,8 @@ pub struct PublicPlayer {
 /// 复盘失败的步骤与上下文；底层错误保留在 source 中。
 #[derive(Debug)]
 pub enum ReviewError {
+    /// 用户取消整场分析；不返回部分缓存。
+    Cancelled,
     EventOutOfRange {
         event_index: usize,
         event_count: usize,
@@ -210,6 +215,7 @@ fn analyze_discards(
 impl fmt::Display for ReviewError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Cancelled => write!(f, "已取消 Mortal 分析"),
             Self::EventOutOfRange {
                 event_index,
                 event_count,

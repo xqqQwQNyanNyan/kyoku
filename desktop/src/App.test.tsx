@@ -148,6 +148,7 @@ function api(): Bridge {
     loginMajsoul: vi.fn().mockResolvedValue(undefined),
     logoutMajsoul: vi.fn().mockResolvedValue(undefined),
     analyze: vi.fn().mockResolvedValue([decision]),
+    cancelAnalysis: vi.fn().mockResolvedValue(undefined),
     cancelQuestion: vi.fn().mockResolvedValue(undefined),
     ask: vi.fn().mockImplementation(async (_game, player, event, id, text) => {
       const original = stored.get(id);
@@ -974,6 +975,10 @@ describe('完整回放与问答边界', () => {
     Object.defineProperty(file, 'text', { value: () => Promise.resolve('{}') });
     await userEvent.upload(screen.getByLabelText('选择天凤牌谱文件'), file);
     await screen.findByText('second');
+    const oldRun = vi.mocked(bridge.analyze).mock.calls[0][2];
+    await act(async () => oldRun.onProgress({ phase: 'loading' }));
+    expect(bridge.cancelAnalysis).toHaveBeenCalledWith(replay.id, oldRun.requestId);
+    expect(screen.queryByText('正在加载 Mortal 模型…')).toBeNull();
     await act(async () => {
       pending.resolve([decision]);
     });
@@ -996,6 +1001,66 @@ describe('完整回放与问答边界', () => {
     expect(screen.getByTestId('event-caption').textContent).toBe('自己 · 摸牌 一饼');
     await userEvent.click(screen.getAllByRole('button', { name: '分析此玩家' })[0]);
     await screen.findByRole('button', { name: '分析已完成' });
+  });
+});
+
+describe('Mortal 分析进度与取消', () => {
+  it('登记前取消会补发，进度按实际事件更新，取消后可重新分析', async () => {
+    const bridge = api();
+    const pending = deferred<Decision[]>();
+    const retry = deferred<Decision[]>();
+    vi.mocked(bridge.analyze)
+      .mockReturnValueOnce(pending.promise)
+      .mockReturnValueOnce(retry.promise);
+    await load(bridge);
+    await userEvent.click(screen.getAllByRole('button', { name: '分析此玩家' })[0]);
+    const first = vi.mocked(bridge.analyze).mock.calls[0][2];
+    await userEvent.click(screen.getByRole('button', { name: '取消分析' }));
+    expect(bridge.cancelAnalysis).not.toHaveBeenCalled();
+    expect(screen.getByText('正在取消分析…')).toBeTruthy();
+    await act(async () => first.onProgress({ phase: 'preparing' }));
+    expect(bridge.cancelAnalysis).toHaveBeenCalledWith(replay.id, first.requestId);
+    await act(async () => pending.reject({ message: '已取消 Mortal 分析' }));
+    await screen.findByText('已取消 Mortal 分析');
+    expect(screen.queryByRole('button', { name: '分析已完成' })).toBeNull();
+    await userEvent.click(screen.getAllByRole('button', { name: '分析此玩家' })[0]);
+    const second = vi.mocked(bridge.analyze).mock.calls[1][2];
+    expect(second.requestId).not.toBe(first.requestId);
+    await act(async () => {
+      second.onProgress({ phase: 'loading' });
+      first.onProgress({ phase: 'analyzing', completed: 999, total: 1000 });
+    });
+    expect(screen.getByText('正在加载 Mortal 模型…')).toBeTruthy();
+    expect(screen.queryByText('已处理 999 / 1000 个事件')).toBeNull();
+    await act(async () => second.onProgress({ phase: 'analyzing', completed: 45, total: 120 }));
+    expect(screen.getByText('已处理 45 / 120 个事件')).toBeTruthy();
+    const progress = screen.getByRole('progressbar', {
+      name: 'Mortal 分析进度',
+    }) as HTMLProgressElement;
+    expect(progress.value).toBe(45);
+    expect(progress.max).toBe(120);
+    await act(async () => retry.resolve([decision]));
+    await screen.findByRole('button', { name: '分析已完成' });
+    expect(screen.queryByRole('progressbar', { name: 'Mortal 分析进度' })).toBeNull();
+  });
+
+  it('取消命令失败允许重试，取消只针对同一次分析', async () => {
+    const bridge = api();
+    const pending = deferred<Decision[]>();
+    vi.mocked(bridge.analyze).mockReturnValueOnce(pending.promise);
+    vi.mocked(bridge.cancelAnalysis).mockRejectedValueOnce({ message: '测试：取消失败' });
+    await load(bridge);
+    await userEvent.click(screen.getAllByRole('button', { name: '分析此玩家' })[0]);
+    const run = vi.mocked(bridge.analyze).mock.calls[0][2];
+    await act(async () => run.onProgress({ phase: 'loading' }));
+    await userEvent.click(screen.getByRole('button', { name: '取消分析' }));
+    await screen.findByText('测试：取消失败');
+    await userEvent.click(screen.getByRole('button', { name: '取消分析' }));
+    expect(vi.mocked(bridge.cancelAnalysis).mock.calls).toEqual([
+      [replay.id, run.requestId],
+      [replay.id, run.requestId],
+    ]);
+    await act(async () => pending.reject({ message: '已取消 Mortal 分析' }));
   });
 });
 

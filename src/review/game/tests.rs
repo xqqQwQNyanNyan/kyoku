@@ -233,6 +233,68 @@ mod process {
     }
 
     #[test]
+    fn progress_counts_completed_events_and_cancellation_discards_partial_results() {
+        use std::sync::{Arc, Mutex};
+        let engine = Engine::new(&[NONE, DISCARD], 0);
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let capture = received.clone();
+        let control = ReviewControl::new(move |event| capture.lock().unwrap().push(event));
+        let config = MortalConfig {
+            python: &engine.0.join("engine"),
+            runtime: Path::new("."),
+            checkpoint: Path::new("unused"),
+        };
+        let input = &events()[..2];
+        let result = review_game_with_control(input, player(), &config, &control).unwrap();
+        assert_eq!(result.decisions().len(), 1);
+        assert_eq!(
+            *received.lock().unwrap(),
+            vec![
+                ReviewProgress::Preparing,
+                ReviewProgress::Loading,
+                ReviewProgress::Analyzing {
+                    completed: 0,
+                    total: 2
+                },
+                ReviewProgress::Analyzing {
+                    completed: 1,
+                    total: 2
+                },
+                ReviewProgress::Analyzing {
+                    completed: 2,
+                    total: 2
+                },
+                ReviewProgress::Finishing,
+            ]
+        );
+        let signal = Arc::new(Mutex::new(None::<ReviewControl>));
+        let capture = signal.clone();
+        let control = ReviewControl::new(move |event| {
+            if matches!(event, ReviewProgress::Analyzing { completed: 1, .. }) {
+                capture.lock().unwrap().as_ref().unwrap().cancel();
+            }
+        });
+        *signal.lock().unwrap() = Some(control.clone());
+        assert!(matches!(
+            review_game_with_control(input, player(), &config, &control),
+            Err(ReviewError::Cancelled)
+        ));
+        signal.lock().unwrap().take();
+        let sent = fs::read_to_string(engine.0.join("events")).unwrap();
+        assert_eq!(sent.lines().count(), 3);
+        // 新控制器可重新完整分析；取消信号不能泄漏到下一次。
+        assert_eq!(engine.review(input).unwrap().decisions().len(), 1);
+        let before = fs::read_to_string(engine.0.join("starts")).unwrap();
+        let cancelled = ReviewControl::default();
+        cancelled.cancel();
+        assert!(matches!(
+            review_game_with_control(input, player(), &config, &cancelled),
+            Err(ReviewError::Cancelled)
+        ));
+        assert_eq!(fs::read_to_string(engine.0.join("starts")).unwrap(), before);
+    }
+
+    #[test]
     fn game_caches_every_decision_with_one_engine_and_matches_single_position() {
         let engine = Engine::new(&[NONE, DISCARD, DISCARD, NONE, NONE, NONE, PASS, NONE], 0);
         let game = engine.review(&events()).unwrap();

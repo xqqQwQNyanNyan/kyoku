@@ -2300,3 +2300,15 @@ button.session-location:hover {
   display: block;
   margin-top: 3px;
 }
+
+.analysis-progress progress {
+  display: block;
+  width: 100%;
+  height: 6px;
+  accent-color: var(--accent);
+  margin-bottom: 8px;
+}
+.analysis-progress small {
+  display: block;
+  margin-bottom: 12px;
+}
