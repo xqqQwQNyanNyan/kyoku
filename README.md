@@ -47,6 +47,4 @@ Windows 11 x64（PowerShell）：
 
 ## 实例演示
 
-<video src="assets/Kyoku-demo-1x.mp4" controls width="100%"></video>
-
-[无法播放时点击查看视频](assets/Kyoku-demo-1x.mp4)
+![](assets/Kyoku-demo-1x.mp4)
