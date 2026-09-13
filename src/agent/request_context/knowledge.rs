@@ -6,7 +6,7 @@ use crate::{
 };
 use serde_json::{Value, json};
 
-const KNOWLEDGE: &str = include_str!("../../../docs/analysis/mahjong-knowledge.md");
+const KNOWLEDGE: &str = include_str!("reference.md");
 
 pub(super) fn reference(evidence: &Value, current: &[Value]) -> Value {
     let position = &evidence["position"];

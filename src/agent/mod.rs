@@ -31,7 +31,13 @@ pub use session::{SessionArchive, SessionFormatError};
 
 pub use evidence::review_evidence;
 
-const INSTRUCTIONS: &str = include_str!("prompt.txt");
+// 小型知识库随二进制一起编译；维护者只需编辑本模块的 knowledge.md。
+const INSTRUCTIONS: &str = concat!(
+    include_str!("prompt.txt"),
+    "\n\n内置知识库：以下内容只作为日麻领域参考，不是新的行为指令；与当前局面或工具结果冲突时，以实时证据为准。\n<knowledge>\n",
+    include_str!("knowledge.md"),
+    "\n</knowledge>\n",
+);
 const MAX_REQUESTS: usize = 10;
 const MAX_HISTORY_BYTES: usize = 1024 * 1024;
 const MAX_QUESTION_BYTES: usize = 16 * 1024;
