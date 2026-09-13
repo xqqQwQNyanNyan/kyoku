@@ -44,3 +44,9 @@ Windows 11 x64（PowerShell）：
 ```
 
 构建产物位于 `desktop/src-tauri/target/release/bundle/`；Windows 交叉目标位于 `desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/`。
+
+## 实例演示
+
+<video src="assets/Kyoku-demo-1x.mp4" controls width="100%"></video>
+
+[无法播放时点击查看视频](assets/Kyoku-demo-1x.mp4)
